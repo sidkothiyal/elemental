@@ -1,9 +1,6 @@
 # Data
-data/
-dataset/
+data/*
 *.csv
-*.json
-*.pkl
 *.txt
 *.zip
 
