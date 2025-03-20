@@ -1,9 +1,6 @@
 # Data
-data/
-dataset/
+data/cityscapes/
 *.csv
-*.json
-*.pkl
 *.txt
 *.zip
 
