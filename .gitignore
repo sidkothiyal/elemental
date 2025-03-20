@@ -1,0 +1,32 @@
+# Data
+data/
+dataset/
+*.csv
+*.json
+*.pkl
+*.txt
+*.zip
+
+# Models / Checkpoints
+models/
+*.h5
+*.hdf5
+*.pkl
+*.pth
+
+# Logs / Temp files
+logs/
+*.tmp
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Cache
+__pycache__/
+*/__pycache__/
+
+# OS
+.DS_Store
+
+# Environment
+*.lock
