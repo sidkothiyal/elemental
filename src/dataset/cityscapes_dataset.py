@@ -1,4 +1,3 @@
-import os
 import pathlib
 import typing
 
@@ -10,7 +9,7 @@ from torch.utils import data
 class CityscapesDataset(data.Dataset):
     def __init__(
         self,
-        root_dir: typing.Tuple[str, pathlib.Path],
+        root_dir: typing.Union[str, pathlib.Path],
         segmentation_enabled: bool = True,
         depth_enabled: bool = True,
     ):
