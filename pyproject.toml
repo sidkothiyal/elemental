@@ -1,5 +1,5 @@
 [project]
-name = "gan"
+name = "elemental"
 version = "0.0.1"
 authors = [
   { name = "Lisa Malani", email = "monalisamalani@hotmail.com" },
@@ -8,20 +8,21 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
-  "numpy (>=2.0.0, <3)",
-  "torchvision (>=0.21.0, <0.22.0)",
-  "torch (>=2.5.1, <3)",
-  "tqdm (>=4.67.0, <5)",
-  "onnx (>=1.17.0, <2)",
-  "onnxscript (>=0.2, <0.3)",
-  "onnxruntime (>=1.20.0, <2)",
-  "pyyaml (>=6.0.2, <7.0.0)",
-  "wandb (>=0.19.7, <0.20.0)",
-  "osmnx (>=2.0.1, <3.0.0)",
-  "matplotlib (>=3.10.0, <4.0.0)",
   "black (>=25.1.0, <26.0.0)",
-  "scikit-learn (>=1.6.1, <2.0.0)",
-  "torchmetrics (>=1.6.2, <2.0.0)",
+  "matplotlib (>=3.10.0, <4.0.0)", # Unused
+  "numpy (>=2.0.0, <3)",
+  "onnx (>=1.17.0, <2)", # Unused
+  "onnxruntime (>=1.20.0, <2)", # Unused
+  "onnxscript (>=0.2, <0.3)", # Unused
+  "osmnx (>=2.0.1, <3.0.0)", # Unused
+  "pre-commit",
+  "pyyaml (>=6.0.2, <7.0.0)", # Unused
+  "scikit-learn (>=1.6.1, <2.0.0)", # Unused
+  "torch",
+  "torchmetrics (>=1.0.0, <2.0.0)", # Unused
+  "torchvision", # Unused
+  "tqdm (>=4.66.5, <5)", # Unused
+  "wandb (>=0.19.7, <0.20.0)", # Unused
 ]
 
 [dependency-groups]
@@ -50,3 +51,21 @@ addopts = "--cov --cov-report html --cov-report term-missing --cov-fail-under 95
 
 [tool.coverage.run]
 source = ["src"]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch", marker = "sys_platform != 'win32'"},
+  { index = "pytorch-cu126", marker = "sys_platform == 'win32'"},
+]
+torchvision = [
+  { index = "pytorch", marker = "sys_platform != 'win32'"},
+  { index = "pytorch-cu126", marker = "sys_platform == 'win32'"},
+]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl"
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
