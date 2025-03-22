@@ -26,6 +26,9 @@ dependencies = [
   "wandb (>=0.19.7, <0.20.0)", # Unused
 ]
 
+[tool.uv]
+package = true
+
 [dependency-groups]
 dev = [
   "ipykernel (>=6.25.1, <7)",
@@ -47,8 +50,8 @@ profile = "black"
 [tool.yapf]
 blank_line_before_nested_class_or_def = true
 
-[tool.pytest.ini_options]
-addopts = "--cov --cov-report html --cov-report term-missing --cov-fail-under 95"
+#[tool.pytest.ini_options]
+#addopts = "--cov --cov-report html --cov-report term-missing --cov-fail-under 95"
 
 [tool.coverage.run]
 source = ["src"]

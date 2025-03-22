@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from .iou import IoU
+from metrics.iou import IoU
 
 
 @pytest.fixture
