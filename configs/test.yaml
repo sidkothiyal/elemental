@@ -1,0 +1,15 @@
+experiment_name: "elemental_trial"
+
+lr: 0.0001
+num_epochs: 100
+test: false
+
+seed: 30
+
+device: "cuda"
+
+callbacks:
+  - _target_: callback.wandb_callback.WandbCallback
+    exp_name: ${experiment_name}
+    project: "elemental"
+    entity: "elemental-ai"

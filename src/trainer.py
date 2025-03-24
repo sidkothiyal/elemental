@@ -1,9 +1,14 @@
 import os
 import random
+
+import fire
+import hydra
+import hydra.utils as hy_utils
 import numpy as np
 import torch
 import torch.nn as nn
-import wandb
+
+from callback import callback
 
 
 def set_seeds(seed):
@@ -11,13 +16,6 @@ def set_seeds(seed):
     np.random.seed(seed)
     random.seed(seed)
 
-def init_wandb(exp_name="EXP", user_name="elemental_user"):
-    return wandb.init(
-        api_key="WANDB_API_KEY",
-        project="elemental",
-        entity=user_name,
-        name=exp_name,
-    )
 
 def batch_loop(phase, dataloader, model, criterion, optimizer, device):
     running_loss = 0.0
@@ -44,42 +42,55 @@ def predict(model, dataloader, criterion, device):
 
 
 def run_train(
-    lr: float = 0.0001,
-    num_epochs: int = 100,
-    test: bool = False,
-    device: str = "cuda",
-    seed: int = 30,
+    config_file: str,
 ):
-    # Reproducibility and Logging
-    set_seeds(seed)
-    wb_logger = init_wandb("elemental_trial1")
-    wb_logger.config.update({"lr": lr, "num_epochs": num_epochs, "seed": seed})
+    """Run the trainer.
+
+    Args:
+        config_file: The path to the config file.
+    """
+    with hydra.initialize(version_base=None, config_path="../configs"):
+        config = hydra.compose(config_name=config_file)
+    # Reproducibility
+    set_seeds(config.seed)
+    print(config)
+
+    callbacks = hy_utils.instantiate(config.callbacks)
+    callbacks = callback.CallbackList(callbacks)
+
+    callbacks.update_config(
+        {"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed}
+    )
 
     # Dataset
     train_loader, val_loader, test_loader = None, None, None
 
     model = None
-    model.to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=lr)
+    model.to(config.device)
+    optim = torch.optim.Adam(model.parameters(), lr=config.lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=10, gamma=0.01)
     criterion = nn.CrossEntropyLoss(weight=None)
 
-    wb_logger.config.add({"scheduler:" scheduler.__class__.__name__,
-                        "criterion": criterion.__class__.__name__,
-                        "model": model.__class__.__name__,
-                        "device": device})
-    # TODO: check if watch is time consuming and if we should log only the best model (reference: https://docs.wandb.ai/ref/python/watch/)
-    wb_logger.watch(model, criterion, log="all")
+    callbacks.update_config(
+        {
+            "scheduler": scheduler.__class__.__name__,
+            "criterion": criterion.__class__.__name__,
+            "model": model.__class__.__name__,
+            "device": config.device,
+        }
+    )
+    # # TODO: check if watch is time consuming and if we should log only the best model (reference: https://docs.wandb.ai/ref/python/watch/)
+    # wb_logger.watch(model, criterion, log="all")
 
     if not test:
         min_val_loss = float("inf")
-        for epoch in range(num_epochs):
+        for epoch in range(config.num_epochs):
             print("Epoch: ", epoch)
 
             # Train
             model.train()
             train_loss = batch_loop(
-                "train", train_loader, model, criterion, optim, device
+                "train", train_loader, model, criterion, optim, config.device
             )
             print("\t train_loss:", round(train_loss.item(), 3))
 
@@ -87,7 +98,7 @@ def run_train(
             if epoch % 2 == 0:
                 model.eval()
                 val_loss = batch_loop(
-                    "val", val_loader, model, criterion, optim, device
+                    "val", val_loader, model, criterion, optim, config.device
                 )
                 print("\t val_loss:", round(val_loss.item(), 3))
 
@@ -99,7 +110,9 @@ def run_train(
 
     # Test
     if test:
-        assert os.path.exists("outputs/best-model.pth"), "best-model.pth not found"
+        assert os.path.exists(
+            "outputs/best-model.pth"
+        ), "best-model.pth not found"
 
         print("Testing...")
         model.load_state_dict(torch.load("best-model.pth"))
@@ -109,4 +122,4 @@ def run_train(
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(run_train)
