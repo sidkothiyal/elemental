@@ -3,6 +3,7 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
+import wandb
 
 
 def set_seeds(seed):
@@ -10,6 +11,13 @@ def set_seeds(seed):
     np.random.seed(seed)
     random.seed(seed)
 
+def init_wandb(exp_name="EXP", user_name="elemental_user"):
+    return wandb.init(
+        api_key="WANDB_API_KEY",
+        project="elemental",
+        entity=user_name,
+        name=exp_name,
+    )
 
 def batch_loop(phase, dataloader, model, criterion, optimizer, device):
     running_loss = 0.0
@@ -42,8 +50,10 @@ def run_train(
     device: str = "cuda",
     seed: int = 30,
 ):
-    # Reproducibility
+    # Reproducibility and Logging
     set_seeds(seed)
+    wb_logger = init_wandb("elemental_trial1")
+    wb_logger.config.update({"lr": lr, "num_epochs": num_epochs, "seed": seed})
 
     # Dataset
     train_loader, val_loader, test_loader = None, None, None
@@ -53,6 +63,13 @@ def run_train(
     optim = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=10, gamma=0.01)
     criterion = nn.CrossEntropyLoss(weight=None)
+
+    wb_logger.config.add({"scheduler:" scheduler.__class__.__name__,
+                        "criterion": criterion.__class__.__name__,
+                        "model": model.__class__.__name__,
+                        "device": device})
+    # TODO: check if watch is time consuming and if we should log only the best model
+    wb_logger.watch(model, criterion, log="all")
 
     if not test:
         min_val_loss = float("inf")
