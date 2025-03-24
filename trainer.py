@@ -68,7 +68,7 @@ def run_train(
                         "criterion": criterion.__class__.__name__,
                         "model": model.__class__.__name__,
                         "device": device})
-    # TODO: check if watch is time consuming and if we should log only the best model
+    # TODO: check if watch is time consuming and if we should log only the best model (reference: https://docs.wandb.ai/ref/python/watch/)
     wb_logger.watch(model, criterion, log="all")
 
     if not test:
