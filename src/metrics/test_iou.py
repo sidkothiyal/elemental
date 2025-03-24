@@ -1,3 +1,5 @@
+"""Test IoU metric."""
+# pylint: disable=redefined-outer-name
 import pytest
 import torch
 
@@ -6,15 +8,18 @@ from .iou import IoU
 
 @pytest.fixture
 def iou_metric():
+    """IoU metric fixture."""
     return IoU(num_classes=2)
 
 
 @pytest.fixture
 def iou_metric_with_logits():
+    """IoU metric with logits fixture."""
     return IoU(num_classes=2, use_logits=True)
 
 
 def test_iou_with_logits(iou_metric_with_logits):
+    """Test IoU metric with logits."""
     preds = torch.tensor(
         [[[0.1, 0.9], [0.8, 0.2]], [[0.2, 0.1], [0.3, 0.7]]]
     ).unsqueeze(
@@ -32,6 +37,7 @@ def test_iou_with_logits(iou_metric_with_logits):
 
 
 def test_iou(iou_metric):
+    """Test IoU metric."""
     preds = torch.tensor([[0, 1], [1, 0]]).unsqueeze(0)  # Shape (1, 2, 2)
     target = torch.tensor([[1, 0], [1, 0]]).unsqueeze(0)  # Shape (1, 2, 2)
 
@@ -45,6 +51,7 @@ def test_iou(iou_metric):
 
 
 def test_shape_and_type_check(iou_metric):
+    """Test shape and type check."""
     with pytest.raises(
         ValueError, match="Expected tensor to have 3 dimensions"
     ):
@@ -68,6 +75,7 @@ def test_shape_and_type_check(iou_metric):
 
 
 def test_iou_with_different_shape(iou_metric):
+    """Test IoU metric with different shape."""
     preds = torch.tensor([[0, 1, 0], [1, 1, 0], [0, 0, 0]]).unsqueeze(
         0
     )  # Shape (1, 3, 3)

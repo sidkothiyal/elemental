@@ -1,3 +1,5 @@
+"""IoU metric."""
+# pylint: disable=no-member
 from typing import Dict
 
 import torch
@@ -5,6 +7,8 @@ from torchmetrics import Metric
 
 
 class IoU(Metric):
+    """IoU metric for segmentation tasks."""
+
     def __init__(
         self,
         num_classes: int,
