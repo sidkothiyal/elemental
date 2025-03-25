@@ -92,6 +92,8 @@ class ConvBlock(nn.Module):
         self.kernel_sizes = kernel_sizes
         self.strides = strides
         self.paddings = paddings
+        self.groups = groups
+        self.dilations = dilations
         self.use_bn = use_bn
         self.use_relu = use_relu
 
@@ -110,6 +112,7 @@ class ConvBlock(nn.Module):
                 self.paddings,
             )
         ):
+            in_channels = self.in_channels if idx == 0 else self.channels[idx-1]
             group = groups[idx] if groups else 1
             dilation = dilations[idx] if dilations else 1
             self.conv_blocks.append(

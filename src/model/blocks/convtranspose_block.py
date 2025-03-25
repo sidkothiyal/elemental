@@ -12,7 +12,7 @@ class ConvTransposeBNReLU(nn.Module):
         kernel_size: int,
         stride: int,
         padding: int,
-        output_padding: int,
+        output_padding: int = 0,
         groups: int = 1,
         dilation: int = 1,
         bias: bool = False,
@@ -113,6 +113,7 @@ class ConvTransposeBlock(nn.Module):
                 self.output_paddings,
             )
         ):
+            in_channels = self.in_channels if idx == 0 else self.channels[idx-1]
             group = groups[idx] if groups else 1
             dilation = dilations[idx] if dilations else 1
             self.conv_transpose_blocks.append(
