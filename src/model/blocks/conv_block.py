@@ -1,10 +1,13 @@
 """Convolutional blocks for the model."""
 from typing import List
+from typing import Optional
 
-import torch.nn as nn
+from torch import nn
 
 
 class ConvBNReLU(nn.Module):
+    """Layer with a convolution, batch normalization, and ReLU activation."""
+
     def __init__(
         self,
         in_channels: int,
@@ -12,13 +15,13 @@ class ConvBNReLU(nn.Module):
         kernel_size: int,
         stride: int,
         padding: int,
-        groups: int = 1,
-        dilation: int = 1,
-        bias: bool = False,
-        use_bn: bool = True,
-        use_relu: bool = True,
+        groups: Optional[int] = 1,
+        dilation: Optional[int] = 1,
+        bias: Optional[bool] = False,
+        use_bn: Optional[bool] = True,
+        use_relu: Optional[bool] = True,
     ):
-        """Layer for a convolution, batch normalization, and ReLU activation.
+        """Layer with a convolution, batch normalization, and ReLU activation.
 
         Args:
             in_channels: Number of input channels.
@@ -51,6 +54,7 @@ class ConvBNReLU(nn.Module):
             self.relu = nn.ReLU()
 
     def forward(self, x):
+        """Forward pass."""
         x = self.conv(x)
         if self.use_bn:
             x = self.bn(x)
@@ -60,6 +64,8 @@ class ConvBNReLU(nn.Module):
 
 
 class ConvBlock(nn.Module):
+    """Block of ConvBNReLU layers."""
+
     def __init__(
         self,
         in_channels: int,
@@ -67,10 +73,10 @@ class ConvBlock(nn.Module):
         kernel_sizes: List[int],
         strides: List[int],
         paddings: List[int],
-        groups: List[int] = None,
-        dilations: List[int] = None,
-        use_bn: bool = True,
-        use_relu: bool = True,
+        groups: Optional[List[int]] = None,
+        dilations: Optional[List[int]] = None,
+        use_bn: Optional[bool] = True,
+        use_relu: Optional[bool] = True,
     ):
         """Block of ConvBNReLU layers.
 
@@ -112,7 +118,9 @@ class ConvBlock(nn.Module):
                 self.paddings,
             )
         ):
-            in_channels = self.in_channels if idx == 0 else self.channels[idx-1]
+            in_channels = (
+                self.in_channels if idx == 0 else self.channels[idx - 1]
+            )
             group = groups[idx] if groups else 1
             dilation = dilations[idx] if dilations else 1
             self.conv_blocks.append(
@@ -130,6 +138,7 @@ class ConvBlock(nn.Module):
             )
 
     def assert_same_lengths(self):
+        """Assert that all lists have the same length."""
         num_layers = len(self.channels)
         if (
             len(self.kernel_sizes) != num_layers
@@ -149,6 +158,7 @@ class ConvBlock(nn.Module):
             raise ValueError(error_msg)
 
     def forward(self, x):
+        """Forward pass."""
         for conv_block in self.conv_blocks:
             x = conv_block(x)
         return x

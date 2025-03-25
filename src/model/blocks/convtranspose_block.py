@@ -1,7 +1,8 @@
 """Convolutional transpose blocks for the model."""
 from typing import List
+from typing import Optional
 
-import torch.nn as nn
+from torch import nn
 
 
 class ConvTransposeBNReLU(nn.Module):
@@ -12,12 +13,12 @@ class ConvTransposeBNReLU(nn.Module):
         kernel_size: int,
         stride: int,
         padding: int,
-        output_padding: int = 0,
-        groups: int = 1,
-        dilation: int = 1,
-        bias: bool = False,
-        use_bn: bool = True,
-        use_relu: bool = True,
+        output_padding: Optional[int] = 0,
+        groups: Optional[int] = 1,
+        dilation: Optional[int] = 1,
+        bias: Optional[bool] = False,
+        use_bn: Optional[bool] = True,
+        use_relu: Optional[bool] = True,
     ):
         """Layer for a ConvTranspose2d, batch norm, and ReLU activation.
 
@@ -67,10 +68,10 @@ class ConvTransposeBlock(nn.Module):
         strides: List[int],
         paddings: List[int],
         output_paddings: List[int],
-        groups: List[int] = None,
-        dilations: List[int] = None,
-        use_bn: bool = True,
-        use_relu: bool = True,
+        groups: Optional[List[int]] = None,
+        dilations: Optional[List[int]] = None,
+        use_bn: Optional[bool] = True,
+        use_relu: Optional[bool] = True,
     ):
         """Block of ConvTransposeBNReLU layers.
 
@@ -113,7 +114,9 @@ class ConvTransposeBlock(nn.Module):
                 self.output_paddings,
             )
         ):
-            in_channels = self.in_channels if idx == 0 else self.channels[idx-1]
+            in_channels = (
+                self.in_channels if idx == 0 else self.channels[idx - 1]
+            )
             group = groups[idx] if groups else 1
             dilation = dilations[idx] if dilations else 1
             self.conv_transpose_blocks.append(

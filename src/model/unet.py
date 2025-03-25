@@ -1,7 +1,7 @@
+"""U-Net Architecture."""
 # Reference: https://paperswithcode.com/method/u-net
-
 import torch
-import torch.nn as nn
+from torch import nn
 
 from model import blocks
 
@@ -23,7 +23,8 @@ class UNet(nn.Module):
     """
 
     def __init__(self, in_channels, out_channels):
-        super(UNet, self).__init__()
+        """Initialize the U-Net model."""
+        super().__init__()
 
         self.encoder = nn.ModuleList(
             [
@@ -73,7 +74,9 @@ class UNet(nn.Module):
                 strides=[1, 1],
                 paddings=[1, 1],
             ),
-            nn.Conv2d(out_channels, out_channels, kernel_size=1, stride=1, padding=0),
+            nn.Conv2d(
+                out_channels, out_channels, kernel_size=1, stride=1, padding=0
+            ),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
@@ -111,6 +114,7 @@ class UNet(nn.Module):
             x = up[1](x)
 
         return self.output_conv(x)
+
 
 if __name__ == "__main__":
     model = UNet(in_channels=3, out_channels=5)

@@ -1,6 +1,5 @@
 """Wandb callback for Trainer"""
 import logging
-import os
 
 import wandb
 from callback import callback
@@ -25,8 +24,13 @@ class WandbCallback(callback.Callback):
             entity (str): The name of the entity.
         """
         logger.info(
-            "Initializing WandbCallback with "
-            f"project: {project}, entity: {entity}, exp_name: {exp_name}"
+            (
+                "Initializing WandbCallback with "
+                "project: %s, entity: %s, exp_name: %s"
+            ),
+            project,
+            entity,
+            exp_name,
         )
         self._wandb_logger = wandb.init(
             project=project,

@@ -1,10 +1,8 @@
 import os
-import random
 
 import fire
 import hydra
 import hydra.utils as hy_utils
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -48,8 +46,9 @@ def run_train(
         config = hydra.compose(config_name=config_file)
     # Reproducibility
     initializer.set_seeds(config.seed)
-    device = initializer.initialize_device(config.device)
     print(config)
+    device = initializer.initialize_device(config.device)
+    print(device)
 
     callbacks = hy_utils.instantiate(config.callbacks)
     callbacks = callback.CallbackList(callbacks)
@@ -75,7 +74,8 @@ def run_train(
             "device": config.device,
         }
     )
-    # # TODO: check if watch is time consuming and if we should log only the best model (reference: https://docs.wandb.ai/ref/python/watch/)
+    # # TODO: check if watch is time consuming and if we should log only the
+    # best model (reference: https://docs.wandb.ai/ref/python/watch/)
     # wb_logger.watch(model, criterion, log="all")
 
     if not test:

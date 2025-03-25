@@ -7,43 +7,33 @@ class Callback:
 
     def __init__(self):
         """Initialize the callback."""
-        pass
 
     def update_config(self, *args, **kwargs):
         """Update the config of the callback."""
-        pass
 
     def on_train_start(self):
         """Called when the training starts."""
-        pass
 
     def on_train_end(self):
         """Called when the training ends."""
-        pass
 
     def on_epoch_start(self):
         """Called when the epoch starts."""
-        pass
 
     def on_epoch_end(self):
         """Called when the epoch ends."""
-        pass
 
     def on_batch_start(self):
         """Called when the batch starts."""
-        pass
 
     def on_batch_end(self):
         """Called when the batch ends."""
-        pass
 
     def on_validation_start(self):
         """Called when the validation starts."""
-        pass
 
     def on_validation_end(self):
         """Called when the validation ends."""
-        pass
 
 
 class CallbackList:
