@@ -9,6 +9,8 @@ readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
   "black (>=25.1.0, <26.0.0)",
+  "hydra-core",
+  "fire (>=0.6.0, <1.0.0)",
   "matplotlib (>=3.10.0, <4.0.0)", # Unused
   "numpy (>=2.0.0, <3)",
   "onnx (>=1.17.0, <2)", # Unused

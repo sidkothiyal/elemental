@@ -30,3 +30,6 @@ __pycache__/
 
 # Package
 src/elemental.egg-info/
+
+# Wandb
+wandb/
