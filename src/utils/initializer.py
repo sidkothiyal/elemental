@@ -1,5 +1,4 @@
 """Utility functions for initializing the experiment."""
-
 import random
 
 import numpy as np
@@ -11,14 +10,13 @@ def initialize_device(device: str) -> torch.device:
     if device == "accelerated":
         if torch.cuda.is_available():
             return torch.device("cuda")
-        elif torch.backends.mps.is_available():
+        if torch.backends.mps.is_available():
             return torch.device("mps")
-        else:
-            raise ValueError(
-                "Device selected as accelerated but no GPU or MPS available"
-            )
-    else:
-        return torch.device(device)
+        raise ValueError(
+            "Device selected as accelerated but no GPU or MPS available"
+        )
+
+    return torch.device(device)
 
 
 def set_seeds(seed: int) -> None:
