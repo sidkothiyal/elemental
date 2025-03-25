@@ -9,12 +9,7 @@ import torch
 import torch.nn as nn
 
 from callback import callback
-
-
-def set_seeds(seed):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+from utils import initializer
 
 
 def batch_loop(phase, dataloader, model, criterion, optimizer, device):
@@ -52,7 +47,8 @@ def run_train(
     with hydra.initialize(version_base=None, config_path="../configs"):
         config = hydra.compose(config_name=config_file)
     # Reproducibility
-    set_seeds(config.seed)
+    initializer.set_seeds(config.seed)
+    device = initializer.initialize_device(config.device)
     print(config)
 
     callbacks = hy_utils.instantiate(config.callbacks)

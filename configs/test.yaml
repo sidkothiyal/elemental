@@ -1,4 +1,4 @@
-experiment_name: "elemental_trial"
+experiment_name: elemental_trial_${now:%Y-%m-%d}_${now:%H-%M-%S}
 
 lr: 0.0001
 num_epochs: 100
@@ -6,7 +6,7 @@ test: false
 
 seed: 30
 
-device: "cuda"
+device: "accelerated"
 
 callbacks:
   - _target_: callback.wandb_callback.WandbCallback
