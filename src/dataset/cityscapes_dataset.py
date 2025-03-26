@@ -1,6 +1,7 @@
 """Cityscapes dataset."""
+
 import pathlib
-import typing
+from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -12,9 +13,10 @@ class CityscapesDataset(data.Dataset):
 
     def __init__(
         self,
-        root_dir: typing.Union[str, pathlib.Path],
+        root_dir: Union[str, pathlib.Path],
         segmentation_enabled: bool = True,
         depth_enabled: bool = True,
+        segmentation_class_id_mapping: Optional[Dict[int, int]] = None,
     ):
         """Cityscapes dataset constructor.
 
@@ -22,10 +24,17 @@ class CityscapesDataset(data.Dataset):
             root_dir: Path to the root directory of the dataset.
             segmentation_enabled: Whether to load the segmentation masks.
             depth_enabled: Whether to load the depth maps.
+            class_id_mapping: Mapping of class ids.
         """
         self.root_dir = pathlib.Path(root_dir)
         self.segmentation_enabled = segmentation_enabled
         self.depth_enabled = depth_enabled
+        self.segmentation_class_id_mapping = segmentation_class_id_mapping
+        if (
+            self.segmentation_class_id_mapping is None
+            and self.segmentation_enabled
+        ):
+            self.segmentation_class_id_mapping = {-1: 30}
 
         self.image_dir = self.root_dir / "image"
         self.seg_mask_dir = self.root_dir / "label"
@@ -37,7 +46,7 @@ class CityscapesDataset(data.Dataset):
         """Get the length of the dataset."""
         return len(self.images)
 
-    def __getitem__(self, idx) -> typing.Dict[str, torch.Tensor]:
+    def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
         """Get an item from the dataset.
 
         Args:
@@ -48,10 +57,12 @@ class CityscapesDataset(data.Dataset):
 
         seg_mask_path = self.seg_mask_dir / file_name
         depth_path = self.depth_dir / file_name
-        print(seg_mask_path)
 
         image = np.load(image_path).transpose(2, 0, 1)
         seg_mask = np.load(seg_mask_path)
+        if self.segmentation_class_id_mapping is not None:
+            for old_id, new_id in self.segmentation_class_id_mapping.items():
+                seg_mask[seg_mask == old_id] = new_id
         depth = np.load(depth_path).transpose(2, 0, 1)
 
         item_data = {
@@ -77,8 +88,10 @@ if __name__ == "__main__":
     print("Length of dataset:", len(dataset))
 
     dataloader = data.DataLoader(dataset, batch_size=2, shuffle=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     for batch in dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
         for k, v in batch.items():
             print(k, v.shape)
         break

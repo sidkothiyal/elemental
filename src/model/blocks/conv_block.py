@@ -2,6 +2,7 @@
 from typing import List
 from typing import Optional
 
+import torch
 from torch import nn
 
 
@@ -162,3 +163,17 @@ class ConvBlock(nn.Module):
         for conv_block in self.conv_blocks:
             x = conv_block(x)
         return x
+
+
+if __name__ == "__main__":
+    model = ConvBlock(
+        in_channels=3,
+        channels=[64, 128, 256, 512, 1],
+        kernel_sizes=[3, 3, 3, 3, 3],
+        strides=[2, 2, 2, 1, 1],
+        paddings=[1, 1, 1, 1, 1],
+    )
+
+    x = torch.randn(1, 3, 128, 256)
+    y = model(x)
+    print(y.shape)

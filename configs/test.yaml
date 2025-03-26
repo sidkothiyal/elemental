@@ -3,8 +3,8 @@ experiment_name: elemental_trial_${now:%Y-%m-%d}_${now:%H-%M-%S}
 lr: 0.0001
 num_epochs: 100
 test: false
-
-seed: 30
+batch_size: 8
+seed: 42
 
 device: "accelerated"
 
@@ -13,3 +13,37 @@ callbacks:
     exp_name: ${experiment_name}
     project: "elemental"
     entity: "elemental-ai"
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.cityscapes_dataset.CityscapesDataset
+      root_dir: data/cityscapes/train
+      segmentation_enabled: true
+      depth_enabled: false
+    batch_size: ${batch_size}
+    shuffle: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.cityscapes_dataset.CityscapesDataset
+      root_dir: data/cityscapes/val
+      segmentation_enabled: true
+      depth_enabled: false
+    batch_size: ${batch_size}
+    shuffle: false
+  test: null
+
+model_generator:
+  _target_: model.unet.UNet
+  in_channels: 3
+  out_channels: 31
+
+model_discriminator:
+  _target_: model.blocks.ConvBlock
+  in_channels: 31
+  channels: [64, 128, 256, 512, 1]
+  kernel_sizes: [4, 4, 4, 4, 4]
+  strides: [2, 2, 2, 1, 1]
+  paddings: [1, 1, 1, 1, 1]
