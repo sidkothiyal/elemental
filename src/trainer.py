@@ -1,4 +1,5 @@
 """Trainer."""
+
 import os
 
 import fire
@@ -235,7 +236,7 @@ def run_train(
                 callbacks.on_epoch_start(epoch, config.num_epochs, "val")
                 val_generator_loss, val_discriminator_loss = batch_loop_gan(
                     "val",
-                    epoch,
+                    epoch + 1,
                     val_loader,
                     model_generator,
                     model_discriminator,
