@@ -1,5 +1,9 @@
 """Callback class for Trainer."""
+from typing import Dict
 from typing import List
+from typing import Union
+
+import torch
 
 
 class Callback:
@@ -11,81 +15,50 @@ class Callback:
     def update_config(self, *args, **kwargs):
         """Update the config of the callback."""
 
-    def on_train_start(self):
-        """Called when the training starts."""
+    def on_phase_start(self, phase: str):
+        """Called when the phase starts."""
 
-    def on_train_end(self):
-        """Called when the training ends."""
+    def on_phase_end(self, phase: str):
+        """Called when the phase ends."""
 
-    def on_epoch_start(self):
+    def on_epoch_start(self, epoch: int, total_epochs: int, phase: str):
         """Called when the epoch starts."""
 
-    def on_epoch_end(self):
+    def on_epoch_end(self, epoch: int, total_epochs: int, phase: str):
         """Called when the epoch ends."""
 
-    def on_batch_start(self):
+    def on_batch_start(self, step: int, phase: str):
         """Called when the batch starts."""
 
-    def on_batch_end(self):
+    def on_batch_end(
+        self,
+        step: int,
+        phase: str,
+        input_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        target_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        pred_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
+    ):
         """Called when the batch ends."""
 
-    def on_validation_start(self):
-        """Called when the validation starts."""
-
-    def on_validation_end(self):
-        """Called when the validation ends."""
+    def log_metrics(self, step: int, phase: str, metrics: Dict[str, float]):
+        """Log the metrics."""
 
 
 class CallbackList:
     """List of callbacks."""
 
-    # TODO: Make this cleaner instead of redefining all the methods
-
     def __init__(self, callbacks: List[Callback]):
         """Initialize the callback list."""
         self.callbacks = callbacks
 
-    def update_config(self, *args, **kwargs):
-        """Update the config of the callback list."""
-        for callback in self.callbacks:
-            callback.update_config(*args, **kwargs)
+    def __getattr__(self, attribute):
+        """Get the attribute of the callback list."""
 
-    def on_train_start(self):
-        """Called when the training starts."""
-        for callback in self.callbacks:
-            callback.on_train_start()
+        def callback_wrapper(*args, **kwargs):
+            for callback in self.callbacks:
+                if hasattr(callback, attribute):
+                    method = getattr(callback, attribute)
+                    if callable(method):
+                        method(*args, **kwargs)
 
-    def on_train_end(self):
-        """Called when the training ends."""
-        for callback in self.callbacks:
-            callback.on_train_end()
-
-    def on_epoch_start(self):
-        """Called when the epoch starts."""
-        for callback in self.callbacks:
-            callback.on_epoch_start()
-
-    def on_epoch_end(self):
-        """Called when the epoch ends."""
-        for callback in self.callbacks:
-            callback.on_epoch_end()
-
-    def on_batch_start(self):
-        """Called when the batch starts."""
-        for callback in self.callbacks:
-            callback.on_batch_start()
-
-    def on_batch_end(self):
-        """Called when the batch ends."""
-        for callback in self.callbacks:
-            callback.on_batch_end()
-
-    def on_validation_start(self):
-        """Called when the validation starts."""
-        for callback in self.callbacks:
-            callback.on_validation_start()
-
-    def on_validation_end(self):
-        """Called when the validation ends."""
-        for callback in self.callbacks:
-            callback.on_validation_end()
+        return callback_wrapper

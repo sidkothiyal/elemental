@@ -1,7 +1,8 @@
 """Cityscapes dataset."""
-
 import pathlib
-from typing import Dict, Optional, Union
+from typing import Dict
+from typing import Optional
+from typing import Union
 
 import numpy as np
 import torch
@@ -79,6 +80,8 @@ class CityscapesDataset(data.Dataset):
 
 
 if __name__ == "__main__":
+    from tqdm import tqdm
+
     dataset = CityscapesDataset(
         root_dir="data/cityscapes/train",
         segmentation_enabled=True,
@@ -90,8 +93,41 @@ if __name__ == "__main__":
     dataloader = data.DataLoader(dataset, batch_size=2, shuffle=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    for batch in dataloader:
+    min_class_id = 100
+    max_class_id = 0
+    for idx, batch in tqdm(enumerate(dataloader)):
         batch = {k: v.to(device) for k, v in batch.items()}
-        for k, v in batch.items():
-            print(k, v.shape)
-        break
+        if idx == 0:
+            for k, v in batch.items():
+                print(k, v.shape)
+
+        seg_mask = batch["seg_mask"]
+        min_class_id = min(min_class_id, seg_mask.min().item())
+        max_class_id = max(max_class_id, seg_mask.max().item())
+
+    print(min_class_id, max_class_id)
+    # from PIL import Image
+    # from tqdm import tqdm
+    # import os
+
+    # for idx in tqdm(range(len(dataset))):
+    #     item = dataset[idx]
+    #     output_dir = "data/cityscapes/output/"
+    #     os.makedirs(output_dir, exist_ok=True)
+    #     image = item["image"].cpu().numpy()
+    #     image = image.transpose(1, 2, 0)
+    #     image = image * 255.0
+    #     image = image.astype(np.uint8)
+    #     image = Image.fromarray(image)
+    #     image.save(output_dir + f"{idx}.png")
+
+    #     seg_mask = item["seg_mask"].cpu().numpy()
+    #     seg_mask = seg_mask.astype(np.uint8) * 8
+    #     seg_mask = Image.fromarray(seg_mask)
+    #     seg_mask.save(output_dir + f"{idx}_seg_mask.png")
+
+    #     depth = item["depth"].squeeze(0).cpu().numpy()
+    #     depth = depth * 255.0
+    #     depth = depth.astype(np.uint8)
+    #     depth = Image.fromarray(depth)
+    #     depth.save(output_dir + f"{idx}_depth.png")

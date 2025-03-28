@@ -15,6 +15,7 @@ from utils import initializer
 
 def batch_loop_gan(
     phase,
+    epoch,
     dataloader,
     model_generator,
     model_discriminator,
@@ -22,16 +23,27 @@ def batch_loop_gan(
     adversarial_criterion,
     optimizer_generator,
     optimizer_discriminator,
+    callbacks,
     device,
 ):
     """Batch loop for GAN training."""
     running_generator_loss = 0.0
     running_discriminator_loss = 0.0
 
-    for batch in tqdm.tqdm(dataloader):
+    total_batches = len(dataloader)
+    num_steps = total_batches * epoch
+
+    for batch_idx, batch in enumerate(tqdm.tqdm(dataloader)):
+        step = num_steps + batch_idx
+        callbacks.on_batch_start(step, phase)
+        input_data = {}
+        target_data = {}
+        pred_data = {}
+
         batch = {k: v.to(device) for k, v in batch.items()}
 
         # Train discriminator
+        input_data["image"] = batch["image"]
         pred_seg_mask = model_generator(batch["image"])
         pred_seg_mask = torch.softmax(pred_seg_mask, dim=1)
 
@@ -55,6 +67,9 @@ def batch_loop_gan(
         disc_real_loss = adversarial_criterion(
             discriminator_real, torch.ones_like(discriminator_real)
         )
+
+        pred_data["discriminator_fake"] = pred_seg_mask
+        target_data["discriminator_real"] = one_hot_encoded_seg_mask
 
         if phase == "train":
             optimizer_discriminator.zero_grad()
@@ -85,10 +100,23 @@ def batch_loop_gan(
             optimizer_generator.step()
 
         running_generator_loss += gen_loss.item()
+        callbacks.on_batch_end(
+            step,
+            phase,
+            input_data=input_data,
+            target_data=target_data,
+            pred_data=pred_data,
+        )
+
+    metrics = {
+        "generator_loss": running_generator_loss / total_batches,
+        "discriminator_loss": running_discriminator_loss / total_batches,
+    }
+    callbacks.log_metrics(num_steps + total_batches, phase, metrics)
 
     return (
-        running_generator_loss / len(dataloader),
-        running_discriminator_loss / len(dataloader),
+        running_generator_loss / total_batches,
+        running_discriminator_loss / total_batches,
     )
 
 
@@ -166,7 +194,9 @@ def run_train(
     if not test:
         min_val_generator_loss = float("inf")
         min_val_discriminator_loss = float("inf")
+        callbacks.on_phase_start("train")
         for epoch in range(config.num_epochs):
+            callbacks.on_epoch_start(epoch, config.num_epochs, "train")
             print("Epoch: ", epoch)
 
             model_generator.train()
@@ -175,6 +205,7 @@ def run_train(
             # Train
             train_generator_loss, train_discriminator_loss = batch_loop_gan(
                 "train",
+                epoch,
                 train_loader,
                 model_generator,
                 model_discriminator,
@@ -182,6 +213,7 @@ def run_train(
                 adversarial_criterion,
                 optim_generator,
                 optim_discriminator,
+                callbacks,
                 device,
             )
             print(
@@ -190,13 +222,20 @@ def run_train(
                 "\t train_discriminator_loss:",
                 round(train_discriminator_loss, 3),
             )
+            scheduler_generator.step()
+            scheduler_discriminator.step()
 
             # Validation
             if epoch % 2 == 0:
+                callbacks.on_phase_end("train")
+                callbacks.on_phase_start("val")
+
                 model_generator.eval()
                 model_discriminator.eval()
+                callbacks.on_epoch_start(epoch, config.num_epochs, "val")
                 val_generator_loss, val_discriminator_loss = batch_loop_gan(
                     "val",
+                    epoch,
                     val_loader,
                     model_generator,
                     model_discriminator,
@@ -204,8 +243,10 @@ def run_train(
                     adversarial_criterion,
                     optim_generator,
                     optim_discriminator,
+                    callbacks,
                     device,
                 )
+                callbacks.on_epoch_end(epoch, config.num_epochs, "val")
                 print(
                     "\t val_generator_loss:",
                     round(val_generator_loss, 3),
@@ -223,9 +264,7 @@ def run_train(
                         model_discriminator.state_dict(),
                         "best-discriminator.pth",
                     )
-
-                scheduler_generator.step()
-                scheduler_discriminator.step()
+                callbacks.on_phase_end("val")
 
     # Test
     if test:
@@ -242,6 +281,7 @@ def run_train(
         model_discriminator.eval()
         generator_loss, discriminator_loss = batch_loop_gan(
             "test",
+            0,
             test_loader,
             model_generator,
             model_discriminator,
@@ -249,6 +289,7 @@ def run_train(
             adversarial_criterion,
             optim_generator,
             optim_discriminator,
+            callbacks,
             device,
         )
         print(
