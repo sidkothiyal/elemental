@@ -32,9 +32,7 @@ class IoU(Metric):
             default=torch.zeros(num_classes),
             dist_reduce_fx="sum",
         )
-        self.add_state(
-            "union", default=torch.zeros(num_classes), dist_reduce_fx="sum"
-        )
+        self.add_state("union", default=torch.zeros(num_classes), dist_reduce_fx="sum")
 
     def reset(self):
         """Reset the metric."""
@@ -74,26 +72,19 @@ class IoU(Metric):
         """
         if tensor.ndim != 3:
             raise ValueError(
-                "Expected tensor to have 3 dimensions (N, H, W). "
-                f"Got {tensor.ndim}."
+                "Expected tensor to have 3 dimensions (N, H, W). " f"Got {tensor.ndim}."
             )
 
         if torch.is_floating_point(tensor):
-            raise ValueError(
-                "Expected tensor to be of integer type. "
-                "Got floating point type."
-            )
+            raise ValueError("Expected tensor to be of integer type. Got floating point type.")
 
         if torch.max(tensor) > self._num_classes - 1:
             raise ValueError(
-                "Expected tensor to have values in the range: "
-                "[0, num_classes - 1]. Got values in the range: "
-                f"[{torch.min(tensor)}, {torch.max(tensor)}]."
+                "Expected tensor to have values in the range: [0, num_classes - 1]. "
+                f"Got values in the range: [{torch.min(tensor)}, {torch.max(tensor)}]."
             )
 
-    def update(
-        self, preds: torch.Tensor, target: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+    def update(self, preds: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Update the metric.
 
         Args:
@@ -122,12 +113,8 @@ class IoU(Metric):
         union = torch.zeros(self._num_classes)
 
         for i in range(self._num_classes):
-            class_intersection = torch.sum(
-                torch.logical_and(preds == i, target == i)
-            ).float()
-            class_union = torch.sum(
-                torch.logical_or(preds == i, target == i)
-            ).float()
+            class_intersection = torch.sum(torch.logical_and(preds == i, target == i)).float()
+            class_union = torch.sum(torch.logical_or(preds == i, target == i)).float()
 
             intersection[i] += class_intersection
             union[i] += class_union

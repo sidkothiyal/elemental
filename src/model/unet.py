@@ -63,9 +63,7 @@ class UNet(nn.Module):
             ]
         )
 
-        self.output_conv = nn.Conv2d(
-            64, out_channels, kernel_size=1, stride=1, padding=0
-        )
+        self.output_conv = nn.Conv2d(64, out_channels, kernel_size=1, stride=1, padding=0)
 
     def _create_down_block(self, in_channels, out_channels):
         return nn.Sequential(
@@ -76,9 +74,7 @@ class UNet(nn.Module):
                 strides=[1, 1],
                 paddings=[1, 1],
             ),
-            nn.Conv2d(
-                out_channels, out_channels, kernel_size=1, stride=1, padding=0
-            ),
+            nn.Conv2d(out_channels, out_channels, kernel_size=1, stride=1, padding=0),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
@@ -101,6 +97,7 @@ class UNet(nn.Module):
         )
 
     def forward(self, x):
+        """Forward pass of the U-Net model."""
         skips = []
         for down in self.encoder:
             x = down[0](x)

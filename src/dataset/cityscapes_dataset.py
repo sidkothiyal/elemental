@@ -31,10 +31,7 @@ class CityscapesDataset(data.Dataset):
         self.segmentation_enabled = segmentation_enabled
         self.depth_enabled = depth_enabled
         self.segmentation_class_id_mapping = segmentation_class_id_mapping
-        if (
-            self.segmentation_class_id_mapping is None
-            and self.segmentation_enabled
-        ):
+        if self.segmentation_class_id_mapping is None and self.segmentation_enabled:
             self.segmentation_class_id_mapping = {-1: 30}
 
         self.image_dir = self.root_dir / "image"
@@ -93,41 +90,16 @@ if __name__ == "__main__":
     dataloader = data.DataLoader(dataset, batch_size=2, shuffle=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    min_class_id = 100
-    max_class_id = 0
-    for idx, batch in tqdm(enumerate(dataloader)):
+    MIN_CLASS_ID = float("inf")
+    MAX_CLASS_ID = float("-inf")
+    for batch_idx, batch in tqdm(enumerate(dataloader)):
         batch = {k: v.to(device) for k, v in batch.items()}
-        if idx == 0:
+        if batch_idx == 0:
             for k, v in batch.items():
                 print(k, v.shape)
 
-        seg_mask = batch["seg_mask"]
-        min_class_id = min(min_class_id, seg_mask.min().item())
-        max_class_id = max(max_class_id, seg_mask.max().item())
+        seg_mask_data = batch["seg_mask"]
+        MIN_CLASS_ID = min(MIN_CLASS_ID, seg_mask_data.min().item())
+        MAX_CLASS_ID = max(MAX_CLASS_ID, seg_mask_data.max().item())
 
-    print(min_class_id, max_class_id)
-    # from PIL import Image
-    # from tqdm import tqdm
-    # import os
-
-    # for idx in tqdm(range(len(dataset))):
-    #     item = dataset[idx]
-    #     output_dir = "data/cityscapes/output/"
-    #     os.makedirs(output_dir, exist_ok=True)
-    #     image = item["image"].cpu().numpy()
-    #     image = image.transpose(1, 2, 0)
-    #     image = image * 255.0
-    #     image = image.astype(np.uint8)
-    #     image = Image.fromarray(image)
-    #     image.save(output_dir + f"{idx}.png")
-
-    #     seg_mask = item["seg_mask"].cpu().numpy()
-    #     seg_mask = seg_mask.astype(np.uint8) * 8
-    #     seg_mask = Image.fromarray(seg_mask)
-    #     seg_mask.save(output_dir + f"{idx}_seg_mask.png")
-
-    #     depth = item["depth"].squeeze(0).cpu().numpy()
-    #     depth = depth * 255.0
-    #     depth = depth.astype(np.uint8)
-    #     depth = Image.fromarray(depth)
-    #     depth.save(output_dir + f"{idx}_depth.png")
+    print(MIN_CLASS_ID, MAX_CLASS_ID)

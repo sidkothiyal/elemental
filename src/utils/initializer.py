@@ -23,9 +23,7 @@ def initialize_device(device: str) -> torch.device:
             return torch.device("cuda")
         if torch.backends.mps.is_available():
             return torch.device("mps")
-        raise ValueError(
-            "Device selected as accelerated but no GPU or MPS available"
-        )
+        raise ValueError("Device selected as accelerated but no GPU or MPS available")
 
     return torch.device(device)
 

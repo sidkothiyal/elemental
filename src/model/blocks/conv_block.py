@@ -54,8 +54,8 @@ class ConvBNReLU(nn.Module):
         if self.use_relu:
             self.relu = nn.ReLU()
 
-    def forward(self, x):
-        """Forward pass."""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the ConvBNReLU."""
         x = self.conv(x)
         if self.use_bn:
             x = self.bn(x)
@@ -119,9 +119,7 @@ class ConvBlock(nn.Module):
                 self.paddings,
             )
         ):
-            in_channels = (
-                self.in_channels if idx == 0 else self.channels[idx - 1]
-            )
+            in_channels = self.in_channels if idx == 0 else self.channels[idx - 1]
             group = groups[idx] if groups else 1
             dilation = dilations[idx] if dilations else 1
             self.conv_blocks.append(
@@ -158,8 +156,8 @@ class ConvBlock(nn.Module):
             )
             raise ValueError(error_msg)
 
-    def forward(self, x):
-        """Forward pass."""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the ConvBlock."""
         for conv_block in self.conv_blocks:
             x = conv_block(x)
         return x
@@ -174,6 +172,6 @@ if __name__ == "__main__":
         paddings=[1, 1, 1, 1, 1],
     )
 
-    x = torch.randn(1, 3, 128, 256)
-    y = model(x)
-    print(y.shape)
+    input_data = torch.randn(1, 3, 128, 256)
+    output_data = model(input_data)
+    print(output_data.shape)

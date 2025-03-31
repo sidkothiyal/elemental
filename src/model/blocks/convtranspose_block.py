@@ -2,10 +2,13 @@
 from typing import List
 from typing import Optional
 
+import torch
 from torch import nn
 
 
 class ConvTransposeBNReLU(nn.Module):
+    """Layer for a ConvTranspose2d, batch norm, and ReLU activation."""
+
     def __init__(
         self,
         in_channels: int,
@@ -42,6 +45,10 @@ class ConvTransposeBNReLU(nn.Module):
             kernel_size,
             stride,
             padding,
+            output_padding,
+            groups,
+            dilation,
+            bias,
         )
         self.use_bn = use_bn
         if self.use_bn:
@@ -50,7 +57,15 @@ class ConvTransposeBNReLU(nn.Module):
         if self.use_relu:
             self.relu = nn.ReLU()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the ConvTransposeBNReLU.
+
+        Args:
+            x: Input tensor.
+
+        Returns:
+            Output tensor.
+        """
         x = self.conv_transpose(x)
         if self.use_bn:
             x = self.bn(x)
@@ -60,6 +75,8 @@ class ConvTransposeBNReLU(nn.Module):
 
 
 class ConvTransposeBlock(nn.Module):
+    """Block of ConvTransposeBNReLU layers."""
+
     def __init__(
         self,
         in_channels: int,
@@ -114,9 +131,7 @@ class ConvTransposeBlock(nn.Module):
                 self.output_paddings,
             )
         ):
-            in_channels = (
-                self.in_channels if idx == 0 else self.channels[idx - 1]
-            )
+            in_channels = self.in_channels if idx == 0 else self.channels[idx - 1]
             group = groups[idx] if groups else 1
             dilation = dilations[idx] if dilations else 1
             self.conv_transpose_blocks.append(
@@ -135,6 +150,7 @@ class ConvTransposeBlock(nn.Module):
             )
 
     def assert_same_lengths(self):
+        """Assert that all lists have the same length."""
         num_layers = len(self.channels)
         if (
             len(self.kernel_sizes) != num_layers
@@ -155,7 +171,8 @@ class ConvTransposeBlock(nn.Module):
             )
             raise ValueError(error_msg)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the ConvTransposeBlock."""
         for conv_transpose_block in self.conv_transpose_blocks:
             x = conv_transpose_block(x)
         return x

@@ -1,3 +1,4 @@
+"""Blocks for the model."""
 from model.blocks.conv_block import ConvBlock
 from model.blocks.conv_block import ConvBNReLU
 from model.blocks.convtranspose_block import ConvTransposeBlock

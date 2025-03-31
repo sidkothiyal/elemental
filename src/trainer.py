@@ -1,5 +1,4 @@
 """Trainer."""
-
 import os
 
 import fire
@@ -77,9 +76,7 @@ def batch_loop_gan(
             disc_real_loss.backward()
             optimizer_discriminator.step()
 
-        running_discriminator_loss += (
-            disc_real_loss.item() + disc_fake_loss.item()
-        )
+        running_discriminator_loss += disc_real_loss.item() + disc_fake_loss.item()
 
         pred_seg_mask = model_generator(batch["image"])
         pred_seg_mask = torch.softmax(pred_seg_mask, dim=1)
@@ -89,9 +86,7 @@ def batch_loop_gan(
             discriminator_fake, torch.ones_like(discriminator_fake)
         )
 
-        feature_matching_loss = feature_matching_criterion(
-            pred_seg_mask, batch["seg_mask"]
-        )
+        feature_matching_loss = feature_matching_criterion(pred_seg_mask, batch["seg_mask"])
 
         gen_loss = disc_assumed_real_loss + feature_matching_loss
 
@@ -141,14 +136,10 @@ def run_train(
     callbacks = hy_utils.instantiate(config.callbacks)
     callbacks = callback.CallbackList(callbacks)
 
-    callbacks.update_config(
-        {"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed}
-    )
+    callbacks.update_config({"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed})
 
     # Dataset
-    train_loader, val_loader, test_loader = initializer.initialize_dataset(
-        config.dataloader
-    )
+    train_loader, val_loader, test_loader = initializer.initialize_dataset(config.dataloader)
 
     model_generator = hy_utils.instantiate(config.model_generator)
     model_discriminator = hy_utils.instantiate(config.model_discriminator)
@@ -159,12 +150,8 @@ def run_train(
         model_generator.parameters(),
         lr=config.lr,
     )
-    optim_discriminator = torch.optim.Adam(
-        model_discriminator.parameters(), lr=config.lr
-    )
-    scheduler_generator = torch.optim.lr_scheduler.StepLR(
-        optim_generator, step_size=10, gamma=0.01
-    )
+    optim_discriminator = torch.optim.Adam(model_discriminator.parameters(), lr=config.lr)
+    scheduler_generator = torch.optim.lr_scheduler.StepLR(optim_generator, step_size=10, gamma=0.01)
     scheduler_discriminator = torch.optim.lr_scheduler.StepLR(
         optim_discriminator, step_size=10, gamma=0.01
     )
@@ -269,15 +256,11 @@ def run_train(
 
     # Test
     if test:
-        assert os.path.exists(
-            "outputs/best-model.pth"
-        ), "best-model.pth not found"
+        assert os.path.exists("outputs/best-model.pth"), "best-model.pth not found"
 
         print("Testing...")
         model_generator.load_state_dict(torch.load("best-model.pth"))
-        model_discriminator.load_state_dict(
-            torch.load("best-discriminator.pth")
-        )
+        model_discriminator.load_state_dict(torch.load("best-discriminator.pth"))
         model_generator.eval()
         model_discriminator.eval()
         generator_loss, discriminator_loss = batch_loop_gan(

@@ -39,10 +39,7 @@ class WandbCallback(callback.Callback):
             num_images_to_log: The number of images to log.
         """
         logger.info(
-            (
-                "Initializing WandbCallback with "
-                "project: %s, entity: %s, exp_name: %s"
-            ),
+            "Initializing WandbCallback with project: %s, entity: %s, exp_name: %s",
             project,
             entity,
             exp_name,
@@ -50,9 +47,7 @@ class WandbCallback(callback.Callback):
         self._logging_interval = logging_interval
         self._num_images_to_log = num_images_to_log
         if self._num_images_to_log != 1:
-            raise NotImplementedError(
-                "num_images_to_log is not 1, but %d", self._num_images_to_log
-            )
+            raise NotImplementedError(f"num_images_to_log is not 1, but {self._num_images_to_log}")
 
         self._class_colors = class_colors
         self._num_classes = num_classes
@@ -102,17 +97,15 @@ class WandbCallback(callback.Callback):
             image = np.transpose(image, (0, 2, 3, 1))
         image = image[0]
 
-        if image.ndim == 3 and image.shape[2] != 1 and image.shape[2] != 3:
+        if image.ndim == 3 and image.shape[2] != 1 and image.shape[2] != 3 and self._num_classes:
             image = np.argmax(image, axis=2)
             # Convert class index to class color
             colored_image = np.zeros((*image.shape, 3))
             for i in range(self._num_classes):
-                colored_image[image == i] = self._class_colors[i]
+                colored_image[image == i] = self._class_colors[i]  # type: ignore
             image = colored_image
 
-        self._wandb_logger.log(
-            {f"{phase}/{tag}": wandb.Image(image)}, step=step
-        )
+        self._wandb_logger.log({f"{phase}/{tag}": wandb.Image(image)}, step=step)
 
     def on_batch_end(
         self,
