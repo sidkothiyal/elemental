@@ -40,15 +40,15 @@ class ConvTransposeBNReLU(nn.Module):
         """
         super().__init__()
         self.conv_transpose = nn.ConvTranspose2d(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            output_padding,
-            groups,
-            dilation,
-            bias,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            output_padding=output_padding,
+            groups=groups,
+            dilation=dilation,
+            bias=bias,
         )
         self.use_bn = use_bn
         if self.use_bn:

@@ -1,11 +1,15 @@
 """Utility functions for initializing the experiment."""
 import random
+from typing import Any
+from typing import Dict
 from typing import Tuple
+from typing import Union
 
 import hydra.utils as hy_utils
 import numpy as np
 import torch
 from omegaconf import DictConfig
+from torch import nn
 from torch.utils.data import DataLoader
 
 
@@ -57,3 +61,18 @@ def initialize_dataset(
     dataloaders = hy_utils.instantiate(dataloader_config)
 
     return dataloaders["train"], dataloaders["val"], dataloaders["test"]
+
+
+def extract_class_names(config: Any) -> Union[str, Dict[str, Any]]:
+    """Extract the class names from the config.
+
+    Args:
+        config: The config to extract the class names from.
+
+    Returns:
+        The class names or a dictionary of class names.
+    """
+    if isinstance(config, (dict, nn.ModuleDict)):
+        return {k: extract_class_names(v) for k, v in config.items()}
+
+    return config.__class__.__name__
