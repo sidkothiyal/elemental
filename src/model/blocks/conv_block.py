@@ -1,4 +1,5 @@
 """Convolutional blocks for the model."""
+
 from typing import List
 from typing import Optional
 
@@ -76,6 +77,7 @@ class ConvBlock(nn.Module):
         paddings: List[int],
         groups: Optional[List[int]] = None,
         dilations: Optional[List[int]] = None,
+        bias: Optional[bool] = False,
         use_bn: Optional[bool] = True,
         use_relu: Optional[bool] = True,
     ):
@@ -131,6 +133,7 @@ class ConvBlock(nn.Module):
                     padding,
                     group,
                     dilation,
+                    bias,
                     use_bn,
                     use_relu,
                 )

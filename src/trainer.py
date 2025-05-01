@@ -25,7 +25,7 @@ def batch_loop_gan(
     optim: Union[dict, torch.optim.Optimizer],
     callbacks: callback.CallbackList,
     device: torch.device,
-):
+) -> Dict[str, float]:
     """Batch loop for GAN training."""
     running_loss: Dict[str, float] = collections.defaultdict(lambda: 0.0)
 
@@ -106,6 +106,65 @@ def batch_loop_gan(
     metrics = {
         "generator_loss": running_loss["generator"] / total_batches,
         "discriminator_loss": running_loss["discriminator"] / total_batches,
+    }
+    callbacks.log_metrics(num_steps + total_batches, phase, metrics)
+
+    for key in running_loss:
+        running_loss[key] /= total_batches
+
+    return running_loss
+
+
+def batch_loop(
+    phase: str,
+    epoch: int,
+    dataloader: torch.utils.data.DataLoader,
+    model: Union[nn.Module, nn.ModuleDict],
+    loss: Union[dict, nn.Module],
+    optim: Union[dict, torch.optim.Optimizer],
+    callbacks: callback.CallbackList,
+    device: torch.device,
+) -> Dict[str, float]:
+    """Batch loop for training."""
+    running_loss: Dict[str, float] = collections.defaultdict(lambda: 0.0)
+
+    total_batches = len(dataloader)
+    num_steps = total_batches * epoch
+
+    for batch_idx, batch in enumerate(tqdm.tqdm(dataloader)):
+        step = num_steps + batch_idx
+        callbacks.on_batch_start(step, phase)
+
+        input_data = {}
+        target_data = {}
+        pred_data = {}
+
+        batch = {k: v.to(device) for k, v in batch.items()}
+
+        pred = model(batch["input"])
+        loss_dict = loss(pred, batch["target"])
+
+        pred_data["pred"] = pred
+        target_data["target"] = batch["target"]
+
+        if phase == "train":
+            optim.zero_grad()
+            loss_dict["total"].backward()
+            optim.step()
+
+        for key in loss_dict:
+            running_loss[key] += loss_dict[key].item()
+
+        callbacks.on_batch_end(
+            step,
+            phase,
+            input_data=input_data,
+            target_data=target_data,
+            pred_data=pred_data,
+        )
+
+    metrics = {
+        "loss": running_loss["total"] / total_batches,
     }
     callbacks.log_metrics(num_steps + total_batches, phase, metrics)
 

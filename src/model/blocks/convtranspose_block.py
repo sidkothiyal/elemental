@@ -1,4 +1,5 @@
 """Convolutional transpose blocks for the model."""
+
 from typing import List
 from typing import Optional
 
@@ -87,6 +88,7 @@ class ConvTransposeBlock(nn.Module):
         output_paddings: List[int],
         groups: Optional[List[int]] = None,
         dilations: Optional[List[int]] = None,
+        bias: Optional[bool] = False,
         use_bn: Optional[bool] = True,
         use_relu: Optional[bool] = True,
     ):
@@ -101,7 +103,8 @@ class ConvTransposeBlock(nn.Module):
             output_paddings: List of output paddings.
             groups: List of groups.
             dilations: List of dilations.
-            use_bn: Whether to use batch normalization.
+            bias: Whether to use a bias in the transposed convolution.
+                use_bn: Whether to use batch normalization.
             use_relu: Whether to use a ReLU activation.
         """
         super().__init__()
@@ -144,6 +147,7 @@ class ConvTransposeBlock(nn.Module):
                     output_padding,
                     group,
                     dilation,
+                    bias,
                     use_bn,
                     use_relu,
                 )
