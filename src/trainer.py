@@ -142,18 +142,20 @@ def batch_loop(
         batch = {k: v.to(device) for k, v in batch.items()}
 
         pred = model(batch["input"])
-        loss_dict = loss(pred, batch["target"])
+        batch_loss = loss(pred, batch["target"])
 
-        pred_data["pred"] = pred
-        target_data["target"] = batch["target"]
+        # TODO: Add a post processor for input, target, pred to correctly format
+        # the data for logging and metrics
+        input_data["data"] = batch["input"]
+        pred_data["data"] = pred.argmax(dim=1)
+        target_data["data"] = batch["target"]
 
         if phase == "train":
             optim.zero_grad()
-            loss_dict["total"].backward()
+            batch_loss.backward()
             optim.step()
 
-        for key in loss_dict:
-            running_loss[key] += loss_dict[key].item()
+        running_loss["total"] += batch_loss.item()
 
         callbacks.on_batch_end(
             step,
@@ -191,6 +193,9 @@ def run_train(
     device = initializer.initialize_device(config.device)
     print("Device: ", device)
 
+    results_dir = os.path.join(config.results_dir, config.experiment_name)
+    os.makedirs(results_dir, exist_ok=True)
+
     callbacks = hy_utils.instantiate(config.callbacks)
     callbacks = callback.CallbackList(callbacks)
 
@@ -218,13 +223,14 @@ def run_train(
                 optim["discriminator"], step_size=10, gamma=0.01
             ),
         }
+        batch_loop_fn = batch_loop_gan
     else:
         optim = torch.optim.Adam(
             model.parameters(),
             lr=config.lr,
         )
         scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=10, gamma=0.01)
-
+        batch_loop_fn = batch_loop
     loss = hy_utils.instantiate(config.loss)
 
     callbacks.update_config(
@@ -249,7 +255,7 @@ def run_train(
             model.train()
 
             # Train
-            train_loss = batch_loop_gan(
+            train_loss = batch_loop_fn(
                 "train",
                 epoch,
                 train_loader,
@@ -274,7 +280,7 @@ def run_train(
 
                 model.eval()
                 callbacks.on_epoch_start(epoch, config.num_epochs, "val")
-                val_loss = batch_loop_gan(
+                val_loss = batch_loop_fn(
                     "val",
                     epoch + 1,
                     val_loader,
@@ -287,23 +293,37 @@ def run_train(
                 callbacks.on_epoch_end(epoch, config.num_epochs, "val")
                 print(val_loss)
 
-                if val_loss["generator"] < min_val_loss["generator"]:
-                    min_val_loss["generator"] = val_loss["generator"]
-                    torch.save(model["generator"].state_dict(), "best-model.pth")
+                if config.mode == "gan":
+                    if val_loss["generator"] < min_val_loss["generator"]:
+                        min_val_loss["generator"] = val_loss["generator"]
+                        torch.save(
+                            model["generator"].state_dict(),
+                            os.path.join(results_dir, "best-generator.pth"),
+                        )
 
-                if val_loss["discriminator"] < min_val_loss["discriminator"]:
-                    min_val_loss["discriminator"] = val_loss["discriminator"]
-                    torch.save(model["discriminator"].state_dict(), "best-discriminator.pth")
+                    if val_loss["discriminator"] < min_val_loss["discriminator"]:
+                        min_val_loss["discriminator"] = val_loss["discriminator"]
+                        torch.save(
+                            model["discriminator"].state_dict(),
+                            os.path.join(results_dir, "best-discriminator.pth"),
+                        )
+                else:
+                    if val_loss["loss"] < min_val_loss["loss"]:
+                        min_val_loss["loss"] = val_loss["loss"]
+                        torch.save(model.state_dict(), os.path.join(results_dir, "best-model.pth"))
+
                 callbacks.on_phase_end("val")
 
     # Test
     if test:
-        assert os.path.exists("outputs/best-model.pth"), "best-model.pth not found"
+        assert os.path.exists(
+            os.path.join(results_dir, "best-model.pth")
+        ), "best-model.pth not found"
 
         print("Testing...")
-        model.load_state_dict(torch.load("best-model.pth"))
+        model.load_state_dict(torch.load(os.path.join(results_dir, "best-model.pth")))
         model.eval()
-        test_loss = batch_loop_gan(
+        test_loss = batch_loop_fn(
             "test",
             0,
             test_loader,

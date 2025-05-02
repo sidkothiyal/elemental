@@ -1,0 +1,73 @@
+experiment_name: elemental_trial_imagenet_classification_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/classification/
+
+mode: "classification"
+
+lr: 0.0001
+num_epochs: 100
+test: false
+batch_size: 8
+seed: 42
+
+device: "accelerated"
+
+dataset_dir: data/tiny_imagenet
+classes:
+  _target_: dataset.imagenet_dataset.read_classes
+  dataset_dir: ${dataset_dir}
+num_classes:
+  _target_: builtins.len
+  _args_:
+    - ${classes}
+
+callbacks:
+  - _target_: callback.wandb_callback.WandbCallback
+    exp_name: ${experiment_name}
+    project: "elemental"
+    entity: "elemental-ai"
+    num_images_to_log: 1
+    logging_interval: 50
+    mode: ${mode}
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.imagenet_dataset.ImagenetDataset
+      root_dir: data/tiny_imagenet/train
+      split: train
+      classes: ${classes}
+      normalize: true
+    batch_size: ${batch_size}
+    shuffle: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.imagenet_dataset.ImagenetDataset
+      root_dir: data/tiny_imagenet/val
+      split: val
+      classes: ${classes}
+      normalize: true
+    batch_size: ${batch_size}
+    shuffle: false
+  test: null
+
+loss:
+  _target_: torch.nn.CrossEntropyLoss
+
+model:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: model.blocks.conv_block.ConvBlock
+      in_channels: 3
+      channels: [32, 64, 128, 256, 512]
+      kernel_sizes: [3, 3, 3, 3, 3]
+      strides: [2, 2, 2, 2, 2]
+      paddings: [1, 1, 1, 1, 1]
+    - _target_: model.common.Flatten
+    - _target_: model.blocks.linear_block.LinearBlock
+      dims: [2048, 256]
+      out_dim: ${num_classes}
+      bias: true
+      use_bn: true
+      use_relu: true
