@@ -64,7 +64,8 @@ model:
       kernel_sizes: [3, 3, 3, 3, 3]
       strides: [2, 2, 2, 2, 2]
       paddings: [1, 1, 1, 1, 1]
-    - _target_: model.common.Flatten
+    - _target_: torch.nn.Flatten
+      start_dim: 1
     - _target_: model.blocks.linear_block.LinearBlock
       dims: [2048, 256]
       out_dim: ${num_classes}

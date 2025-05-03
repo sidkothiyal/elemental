@@ -64,7 +64,7 @@ class CityscapesDataset(data.Dataset):
         depth = np.load(depth_path).transpose(2, 0, 1)
 
         item_data = {
-            "image": torch.from_numpy(image).float(),
+            "input": torch.from_numpy(image).float(),
         }
 
         if self.segmentation_enabled:
