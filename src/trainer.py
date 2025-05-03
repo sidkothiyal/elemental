@@ -4,7 +4,6 @@ Trainer module for DNN models.
 This module provides functionality for training different types of DNN models.
 It handles the training loop, validation, testing, and model checkpointing.
 """
-
 import collections
 import logging
 import os
@@ -425,7 +424,7 @@ def run_train(
                 optim,
                 callbacks,
                 device,
-                mode,
+                mode=mode,
             )
             logger.info("Train loss: %s", train_loss)
 
@@ -453,7 +452,7 @@ def run_train(
                     optim,
                     callbacks,
                     device,
-                    mode,
+                    mode=mode,
                 )
                 callbacks.on_epoch_end(epoch, config.num_epochs, "val")
                 logger.info("Validation loss: %s", val_loss)
@@ -517,7 +516,7 @@ def run_train(
             optim,
             callbacks,
             device,
-            mode,
+            mode=mode,
         )
         logger.info("Test results: %s", test_loss)
 

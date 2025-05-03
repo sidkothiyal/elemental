@@ -141,7 +141,7 @@ class WandbCallback(callback.Callback):
             wandb_image_kwargs["caption"] += f"Pred: {pred_label} "
         wandb_image = wandb.Image(image, **wandb_image_kwargs)
 
-        self._wandb_logger.log({f"{phase}/{tag}": wandb_image}, step=step)
+        self._wandb_logger.log({f"{phase}/{tag}": wandb_image, f"{phase}/step": step})
 
     def on_batch_end(
         self,
@@ -183,4 +183,5 @@ class WandbCallback(callback.Callback):
             metrics: The metrics to log.
         """
         metrics = {f"{phase}/{key}": value for key, value in metrics.items()}
-        self._wandb_logger.log(metrics, step=step)
+        metrics[f"{phase}/step"] = step
+        self._wandb_logger.log(metrics)
