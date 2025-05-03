@@ -4,6 +4,7 @@ Trainer module for DNN models.
 This module provides functionality for training different types of DNN models.
 It handles the training loop, validation, testing, and model checkpointing.
 """
+
 import collections
 import logging
 import os
@@ -38,6 +39,7 @@ def batch_loop_gan(
     optim: Dict[str, torch.optim.Optimizer],
     callbacks: callback.CallbackList,
     device: torch.device,
+    **kwargs,
 ) -> Dict[str, float]:
     """Batch loop for GAN training.
 
@@ -190,6 +192,7 @@ def batch_loop(
     optim: torch.optim.Optimizer,
     callbacks: callback.CallbackList,
     device: torch.device,
+    mode: str = "classification",
 ) -> Dict[str, float]:
     """Batch loop for standard DNN training.
 
@@ -239,7 +242,22 @@ def batch_loop(
         # the data for logging and metrics
         # Store data for callbacks
         input_data["data"] = batch["input"]
-        pred_data["data"] = pred.argmax(dim=1) if pred.dim() > 1 else pred
+        if mode == "classification":
+            pred_data["data"] = pred.argmax(dim=1) if pred.dim() > 1 else pred
+        elif mode == "autoencoder":
+            if pred.dim() == 4:
+                if pred.shape[1] == 1:
+                    # Single channel segmentation
+                    pred_data["data"] = pred.squeeze(1)
+                elif pred.shape[1] == 3:
+                    # RGB image
+                    pred_data["data"] = pred
+                else:
+                    # Multi-channel class-wise segmentation
+                    pred_data["data"] = pred.argmax(dim=1, keepdim=True)
+            else:
+                # Other cases
+                pred_data["data"] = pred
         target_data["data"] = batch["target"]
 
         # Accumulate loss
@@ -407,6 +425,7 @@ def run_train(
                 optim,
                 callbacks,
                 device,
+                mode,
             )
             logger.info("Train loss: %s", train_loss)
 
@@ -434,6 +453,7 @@ def run_train(
                     optim,
                     callbacks,
                     device,
+                    mode,
                 )
                 callbacks.on_epoch_end(epoch, config.num_epochs, "val")
                 logger.info("Validation loss: %s", val_loss)
@@ -497,6 +517,7 @@ def run_train(
             optim,
             callbacks,
             device,
+            mode,
         )
         logger.info("Test results: %s", test_loss)
 

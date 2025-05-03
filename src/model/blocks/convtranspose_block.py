@@ -1,5 +1,4 @@
 """Convolutional transpose blocks for the model."""
-
 from typing import List
 from typing import Optional
 
@@ -114,6 +113,8 @@ class ConvTransposeBlock(nn.Module):
         self.strides = strides
         self.paddings = paddings
         self.output_paddings = output_paddings
+        self.groups = groups
+        self.dilations = dilations
         self.use_bn = use_bn
         self.use_relu = use_relu
 

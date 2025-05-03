@@ -123,7 +123,7 @@ class WandbCallback(callback.Callback):
         target_label = self.filter_label(target_label)
         pred_label = self.filter_label(pred_label)
 
-        if image.ndim != 3:
+        if image.ndim != 3 and image.ndim != 2:
             return
 
         if image.ndim == 3 and image.shape[2] != 1 and image.shape[2] != 3 and self._num_classes:
