@@ -40,6 +40,9 @@ class Callback:
     ):
         """Called when the batch ends."""
 
+    def on_lr_update(self, epoch: int, lr: float, scheduler_type: str):
+        """Called when the learning rate is updated."""
+
     def log_metrics(self, step: int, phase: str, metrics: Dict[str, float]):
         """Log the metrics."""
 

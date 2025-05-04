@@ -48,6 +48,10 @@ loss:
   adversarial:
     _target_: torch.nn.BCEWithLogitsLoss
 
+lr_scheduler_params:
+  step_size: 10
+  gamma: 0.75
+
 model:
   _target_: torch.nn.ModuleDict
   modules:

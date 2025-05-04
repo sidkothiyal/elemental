@@ -49,6 +49,9 @@ class CityscapesDataset(data.Dataset):
 
     def _rename_output(self, item_data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Rename the output keys."""
+        if not self.rename_output_keys:
+            return item_data
+
         for old_key, new_key in self.rename_output_keys.items():
             item_data[new_key] = item_data.pop(old_key)
         return item_data
@@ -82,8 +85,7 @@ class CityscapesDataset(data.Dataset):
         if self.depth_enabled:
             item_data["depth"] = torch.from_numpy(depth).float()
 
-        if self.rename_output_keys:
-            item_data = self._rename_output(item_data)
+        item_data = self._rename_output(item_data)
 
         return item_data
 

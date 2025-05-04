@@ -87,10 +87,9 @@ class WandbCallback(callback.Callback):
         """
         if isinstance(label, torch.Tensor):
             return label[0]
-        elif isinstance(label, dict):
+        if isinstance(label, dict):
             return {k: self.filter_label(v) for k, v in label.items()}
-        else:
-            return label
+        return label
 
     def _log_image(
         self,
@@ -123,7 +122,7 @@ class WandbCallback(callback.Callback):
         target_label = self.filter_label(target_label)
         pred_label = self.filter_label(pred_label)
 
-        if image.ndim != 3 and image.ndim != 2:
+        if image.ndim not in [2, 3]:
             return
 
         if image.ndim == 3 and image.shape[2] != 1 and image.shape[2] != 3 and self._num_classes:
@@ -185,3 +184,13 @@ class WandbCallback(callback.Callback):
         metrics = {f"{phase}/{key}": value for key, value in metrics.items()}
         metrics[f"{phase}/step"] = step
         self._wandb_logger.log(metrics)
+
+    def on_lr_update(self, epoch: int, lr: float, scheduler_type: str):
+        """Log the learning rate.
+
+        Args:
+            epoch: The epoch of the learning rate.
+            lr: The learning rate.
+            scheduler_type: The type of the learning rate.
+        """
+        self._wandb_logger.log({"epoch": epoch, f"learning_rate/{scheduler_type}": lr})

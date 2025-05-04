@@ -1,6 +1,9 @@
+"""Imagenet dataset."""
 import pathlib
+from typing import Any
 from typing import Dict
 from typing import List
+from typing import Union
 
 import numpy as np
 import torch
@@ -8,7 +11,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-def read_classes(dataset_dir: str) -> List[str]:
+def read_classes(dataset_dir: Union[str, pathlib.Path]) -> List[str]:
     """Read the classes from the file."""
     dataset_dir = pathlib.Path(dataset_dir)
     classes = []
@@ -18,7 +21,15 @@ def read_classes(dataset_dir: str) -> List[str]:
 
 
 class ImagenetDataset(Dataset):
-    def __init__(self, root_dir: str, split: str, classes: List[str], normalize: bool = True):
+    """Imagenet dataset."""
+
+    def __init__(
+        self,
+        root_dir: Union[str, pathlib.Path],
+        split: str,
+        classes: List[str],
+        normalize: bool = True,
+    ):
         """Imagenet dataset constructor.
 
         Args:
@@ -33,7 +44,7 @@ class ImagenetDataset(Dataset):
         self.classes.sort()
         self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
 
-        self.sample_info = {}
+        self.sample_info: Dict[str, Dict[str, Any]] = {}
 
         getattr(self, f"_collect_{self.split}_data")()
 
@@ -61,7 +72,7 @@ class ImagenetDataset(Dataset):
 
     def _read_sample_mapping(self, file_path: str) -> Dict[str, Dict[str, str]]:
         """Read the sample mapping from the file."""
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             return {line.split("\t")[0]: {"class": line.split("\t")[1]} for line in f}
 
     def __len__(self):
@@ -84,14 +95,16 @@ class ImagenetDataset(Dataset):
 
 
 if __name__ == "__main__":
-    dataset_dir = pathlib.Path("C:/Users/sid_k/experiments/xyz/elemental/data/tiny_imagenet")
-    classes = read_classes(dataset_dir)
-    print(len(classes))
+    tiny_imagenet_dataset_dir = pathlib.Path("data/tiny_imagenet")
+    tiny_imagenet_classes = read_classes(tiny_imagenet_dataset_dir)
+    print(len(tiny_imagenet_classes))
 
-    train_dataset = ImagenetDataset(dataset_dir / "train", "train", classes)
+    train_dataset = ImagenetDataset(
+        tiny_imagenet_dataset_dir / "train", "train", tiny_imagenet_classes
+    )
     print(len(train_dataset))
     print(train_dataset[0])
 
-    val_dataset = ImagenetDataset(dataset_dir / "val", "val", classes)
+    val_dataset = ImagenetDataset(tiny_imagenet_dataset_dir / "val", "val", tiny_imagenet_classes)
     print(len(val_dataset))
     print(val_dataset[0])

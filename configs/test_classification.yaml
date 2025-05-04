@@ -3,10 +3,10 @@ results_dir: results/classification/
 
 mode: "classification"
 
-lr: 0.0001
+lr: 0.00025
 num_epochs: 100
 test: false
-batch_size: 8
+batch_size: 128
 seed: 42
 
 device: "accelerated"
@@ -55,19 +55,23 @@ dataloader:
 loss:
   _target_: torch.nn.CrossEntropyLoss
 
+lr_scheduler_params:
+  step_size: 2
+  gamma: 0.5
+
 model:
   _target_: torch.nn.Sequential
   _args_:
     - _target_: model.blocks.conv_block.ConvBlock
       in_channels: 3
-      channels: [32, 64, 128, 256, 512]
-      kernel_sizes: [3, 3, 3, 3, 3]
-      strides: [2, 2, 2, 2, 2]
-      paddings: [1, 1, 1, 1, 1]
+      channels: [32, 64, 128, 256, 512, 1024]
+      kernel_sizes: [3, 3, 3, 3, 3, 3]
+      strides: [2, 2, 2, 2, 2, 2]
+      paddings: [1, 1, 1, 1, 1, 1]
     - _target_: torch.nn.Flatten
       start_dim: 1
     - _target_: model.blocks.linear_block.LinearBlock
-      dims: [2048, 256]
+      dims: [1024]
       out_dim: ${num_classes}
       bias: true
       use_bn: true

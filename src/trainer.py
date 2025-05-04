@@ -7,6 +7,7 @@ It handles the training loop, validation, testing, and model checkpointing.
 import collections
 import logging
 import os
+import statistics
 from typing import Dict
 from typing import Union
 
@@ -38,7 +39,7 @@ def batch_loop_gan(
     optim: Dict[str, torch.optim.Optimizer],
     callbacks: callback.CallbackList,
     device: torch.device,
-    **kwargs,
+    mode: str,  # pylint: disable=unused-argument
 ) -> Dict[str, float]:
     """Batch loop for GAN training.
 
@@ -358,6 +359,22 @@ def run_train(
     model.to(device)
     logger.info("Model initialized: %s", type(model).__name__)
 
+    (
+        num_parameters,
+        num_trainable_parameters,
+        num_non_trainable_parameters,
+    ) = initializer.get_num_parameters(model)
+    logger.info("Number of parameters: %d", num_parameters)
+    logger.info("Number of trainable parameters: %d", num_trainable_parameters)
+    logger.info("Number of non-trainable parameters: %d", num_non_trainable_parameters)
+    callbacks.update_config(
+        {
+            "num_parameters": num_parameters,
+            "num_trainable_parameters": num_trainable_parameters,
+            "num_non_trainable_parameters": num_non_trainable_parameters,
+        }
+    )
+
     # Initialize optimizer, scheduler and loss function
     mode = config.mode
     if mode == "gan":
@@ -371,10 +388,14 @@ def run_train(
         }
         scheduler = {
             "generator": torch.optim.lr_scheduler.StepLR(
-                optim["generator"], step_size=10, gamma=0.01
+                optim["generator"],
+                step_size=config.lr_scheduler_params.step_size,
+                gamma=config.lr_scheduler_params.gamma,
             ),
             "discriminator": torch.optim.lr_scheduler.StepLR(
-                optim["discriminator"], step_size=10, gamma=0.01
+                optim["discriminator"],
+                step_size=config.lr_scheduler_params.step_size,
+                gamma=config.lr_scheduler_params.gamma,
             ),
         }
         batch_loop_fn = batch_loop_gan
@@ -384,7 +405,11 @@ def run_train(
             model.parameters(),
             lr=config.lr,
         )
-        scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=10, gamma=0.01)
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optim,
+            step_size=config.lr_scheduler_params.step_size,
+            gamma=config.lr_scheduler_params.gamma,
+        )
         batch_loop_fn = batch_loop
 
     # Initialize loss function
@@ -432,8 +457,12 @@ def run_train(
             if isinstance(scheduler, dict):
                 for key in scheduler:
                     scheduler[key].step()
+                    callbacks.on_lr_update(
+                        epoch, float(statistics.mean(scheduler[key].get_lr())), key
+                    )
             else:
                 scheduler.step()
+                callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
 
             # Validation phase (every 2 epochs by default)
             validation_interval = config.get("validation_interval", 2)
