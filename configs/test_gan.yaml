@@ -1,4 +1,7 @@
-experiment_name: elemental_trial_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: elemental_trial_cityscapes_gan_seg_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/gan/
+
+mode: "gan"
 
 lr: 0.0001
 num_epochs: 100
@@ -16,6 +19,7 @@ callbacks:
     num_images_to_log: 1
     logging_interval: 50
     num_classes: 31
+    mode: ${mode}
 
 dataloader:
   train:
@@ -38,15 +42,28 @@ dataloader:
     shuffle: false
   test: null
 
-model_generator:
-  _target_: model.unet.UNet
-  in_channels: 3
-  out_channels: 31
+loss:
+  feature_matching:
+    _target_: torch.nn.CrossEntropyLoss
+  adversarial:
+    _target_: torch.nn.BCEWithLogitsLoss
 
-model_discriminator:
-  _target_: model.blocks.ConvBlock
-  in_channels: 31
-  channels: [64, 128, 256, 512, 1]
-  kernel_sizes: [4, 4, 4, 4, 4]
-  strides: [2, 2, 2, 1, 1]
-  paddings: [1, 1, 1, 1, 1]
+lr_scheduler_params:
+  step_size: 10
+  gamma: 0.75
+
+model:
+  _target_: torch.nn.ModuleDict
+  modules:
+    generator:
+      _target_: model.unet.UNet
+      in_channels: 3
+      out_channels: 31
+
+    discriminator:
+      _target_: model.blocks.ConvBlock
+      in_channels: 31
+      channels: [64, 128, 256, 512, 1]
+      kernel_sizes: [4, 4, 4, 4, 4]
+      strides: [2, 2, 2, 1, 1]
+      paddings: [1, 1, 1, 1, 1]

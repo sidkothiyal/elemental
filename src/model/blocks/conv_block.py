@@ -38,14 +38,14 @@ class ConvBNReLU(nn.Module):
         """
         super().__init__()
         self.conv = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
         )
         self.use_bn = use_bn
         if self.use_bn:
@@ -76,6 +76,7 @@ class ConvBlock(nn.Module):
         paddings: List[int],
         groups: Optional[List[int]] = None,
         dilations: Optional[List[int]] = None,
+        bias: Optional[bool] = False,
         use_bn: Optional[bool] = True,
         use_relu: Optional[bool] = True,
     ):
@@ -131,6 +132,7 @@ class ConvBlock(nn.Module):
                     padding,
                     group,
                     dilation,
+                    bias,
                     use_bn,
                     use_relu,
                 )

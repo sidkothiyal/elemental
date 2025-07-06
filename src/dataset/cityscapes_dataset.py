@@ -18,6 +18,7 @@ class CityscapesDataset(data.Dataset):
         segmentation_enabled: bool = True,
         depth_enabled: bool = True,
         segmentation_class_id_mapping: Optional[Dict[int, int]] = None,
+        rename_output_keys: Optional[Dict[str, str]] = None,
     ):
         """Cityscapes dataset constructor.
 
@@ -34,6 +35,8 @@ class CityscapesDataset(data.Dataset):
         if self.segmentation_class_id_mapping is None and self.segmentation_enabled:
             self.segmentation_class_id_mapping = {-1: 30}
 
+        self.rename_output_keys = rename_output_keys
+
         self.image_dir = self.root_dir / "image"
         self.seg_mask_dir = self.root_dir / "label"
         self.depth_dir = self.root_dir / "depth"
@@ -43,6 +46,15 @@ class CityscapesDataset(data.Dataset):
     def __len__(self):
         """Get the length of the dataset."""
         return len(self.images)
+
+    def _rename_output(self, item_data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Rename the output keys."""
+        if not self.rename_output_keys:
+            return item_data
+
+        for old_key, new_key in self.rename_output_keys.items():
+            item_data[new_key] = item_data.pop(old_key)
+        return item_data
 
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
         """Get an item from the dataset.
@@ -64,7 +76,7 @@ class CityscapesDataset(data.Dataset):
         depth = np.load(depth_path).transpose(2, 0, 1)
 
         item_data = {
-            "image": torch.from_numpy(image).float(),
+            "input": torch.from_numpy(image).float(),
         }
 
         if self.segmentation_enabled:
@@ -72,6 +84,8 @@ class CityscapesDataset(data.Dataset):
 
         if self.depth_enabled:
             item_data["depth"] = torch.from_numpy(depth).float()
+
+        item_data = self._rename_output(item_data)
 
         return item_data
 

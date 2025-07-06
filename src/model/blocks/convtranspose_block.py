@@ -40,15 +40,15 @@ class ConvTransposeBNReLU(nn.Module):
         """
         super().__init__()
         self.conv_transpose = nn.ConvTranspose2d(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            output_padding,
-            groups,
-            dilation,
-            bias,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            output_padding=output_padding,
+            groups=groups,
+            dilation=dilation,
+            bias=bias,
         )
         self.use_bn = use_bn
         if self.use_bn:
@@ -87,6 +87,7 @@ class ConvTransposeBlock(nn.Module):
         output_paddings: List[int],
         groups: Optional[List[int]] = None,
         dilations: Optional[List[int]] = None,
+        bias: Optional[bool] = False,
         use_bn: Optional[bool] = True,
         use_relu: Optional[bool] = True,
     ):
@@ -101,7 +102,8 @@ class ConvTransposeBlock(nn.Module):
             output_paddings: List of output paddings.
             groups: List of groups.
             dilations: List of dilations.
-            use_bn: Whether to use batch normalization.
+            bias: Whether to use a bias in the transposed convolution.
+                use_bn: Whether to use batch normalization.
             use_relu: Whether to use a ReLU activation.
         """
         super().__init__()
@@ -111,6 +113,8 @@ class ConvTransposeBlock(nn.Module):
         self.strides = strides
         self.paddings = paddings
         self.output_paddings = output_paddings
+        self.groups = groups
+        self.dilations = dilations
         self.use_bn = use_bn
         self.use_relu = use_relu
 
@@ -144,6 +148,7 @@ class ConvTransposeBlock(nn.Module):
                     output_padding,
                     group,
                     dilation,
+                    bias,
                     use_bn,
                     use_relu,
                 )
