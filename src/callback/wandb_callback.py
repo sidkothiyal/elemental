@@ -125,7 +125,7 @@ class WandbCallback(callback.Callback):
         if image.ndim not in [2, 3]:
             return
 
-        if image.ndim == 3 and image.shape[2] != 1 and image.shape[2] != 3 and self._num_classes:
+        if image.ndim == 3 and image.shape[2] not in [1, 3] and self._num_classes:
             image = np.argmax(image, axis=2)
             # Convert class index to class color
             colored_image = np.zeros((*image.shape, 3))
@@ -185,7 +185,7 @@ class WandbCallback(callback.Callback):
         metrics[f"{phase}/step"] = step
         self._wandb_logger.log(metrics)
 
-    def on_lr_update(self, epoch: int, lr: float, scheduler_type: str):
+    def on_lr_update(self, epoch: int, lr: float, scheduler_type: str = ""):
         """Log the learning rate.
 
         Args:

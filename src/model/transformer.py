@@ -24,6 +24,7 @@ class FeedForward(nn.Module):
             ff_embed_dim: The dimension of the feedforward network.
             dropout: The dropout rate.
         """
+        super().__init__()
         self.ff = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, ff_embed_dim),

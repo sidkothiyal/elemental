@@ -1,4 +1,4 @@
-experiment_name: elemental_trial_cityscapes_gan_seg_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: gan_seg_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/gan/
 
 mode: "gan"

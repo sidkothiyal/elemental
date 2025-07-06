@@ -1,4 +1,4 @@
-experiment_name: elemental_trial_imagenet_classification_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: classification_imagenet_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/classification/
 
 mode: "classification"

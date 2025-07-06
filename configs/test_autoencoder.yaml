@@ -1,4 +1,4 @@
-experiment_name: elemental_trial_cityscapes_autoencoder_seg_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: autoencoder_seg_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
 mode: "autoencoder"
@@ -26,7 +26,7 @@ dataloader:
     dataset:
       _target_: dataset.cityscapes_dataset.CityscapesDataset
       root_dir: data/cityscapes/train
-      segmentation_enabled: true
+      segmentation_enabled: false
       depth_enabled: true
       rename_output_keys:
         depth: target
@@ -37,7 +37,7 @@ dataloader:
     dataset:
       _target_: dataset.cityscapes_dataset.CityscapesDataset
       root_dir: data/cityscapes/val
-      segmentation_enabled: true
+      segmentation_enabled: false
       depth_enabled: true
       rename_output_keys:
         depth: target

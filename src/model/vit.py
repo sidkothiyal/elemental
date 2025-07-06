@@ -11,6 +11,7 @@ fine-tuning time.
 
 (2) Switch LayerNorm to Learnable TanH.
 """
+from typing import Optional
 from typing import Tuple
 
 import einops
@@ -31,7 +32,7 @@ class ViT(nn.Module):
         embed_dim: int,  # D
         num_transformer_layers: int,
         attn_heads: int,
-        num_classes: int,
+        num_classes: Optional[int] = None,
         *args,
         **kwargs,
     ) -> None:
@@ -46,6 +47,7 @@ class ViT(nn.Module):
             num_classes: The number of classes.
         """
         super().__init__(*args, **kwargs)
+        self.num_classes = num_classes
 
         channels, height, width = image_size
         patch_height, patch_width = patch_size
@@ -68,12 +70,15 @@ class ViT(nn.Module):
             nn.LayerNorm(embed_dim),
         )
 
-        # prepend the class token
-        self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))  # (b, num_patches, D)
+        num_pos_embeddings = num_patches
+        if num_classes is not None:
+            # +1 for class token
+            num_pos_embeddings += 1
+            # prepend the class token
+            self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))  # (b, num_patches, D)
+
         # 1D sequence of token embeddings
-        self.pos_embeddings = nn.Parameter(
-            torch.randn(1, num_patches + 1, embed_dim)
-        )  # +1 for class token
+        self.pos_embeddings = nn.Parameter(torch.randn(1, num_pos_embeddings, embed_dim))
 
         # TODO: add dropout
 
@@ -86,37 +91,50 @@ class ViT(nn.Module):
             ff_embed_dim=embed_dim,
         )
 
-        # Classification Head: - MLP + hidden layer (pre-training)
-        #                      - Linear layer (fine-tuning)
-        self.classification_head = nn.Sequential(
-            nn.Linear(embed_dim, num_classes),
-            nn.LayerNorm(num_classes),
-            # TODO: learnable tanh
-            nn.Linear(num_classes, num_classes),
-        )
+        if num_classes is not None:
+            # Classification Head: - MLP + hidden layer (pre-training)
+            #                      - Linear layer (fine-tuning)
+            self.classification_head = nn.Sequential(
+                nn.Linear(embed_dim, num_classes),
+                nn.LayerNorm(num_classes),
+                # TODO: learnable tanh
+                nn.Linear(num_classes, num_classes),
+            )
 
-    def forward(self, x):
-        """Forward pass of the ViT."""
+    def forward(self, x, indices_to_keep: Optional[torch.Tensor] = None):
+        """Forward pass of the ViT.
+
+        Args:
+            x: The input image.
+            indices_to_keep: The indices to keep.
+        """
         # x: (B, C, H, W)
         # Patchify
         patched_x = self.to_patch_embedding(x)
-        # Add class token
-        cls_tokens = einops.repeat(self.cls_token, "1 1 d -> b 1 d", b=patched_x.shape[0])
-        patched_x = torch.cat((cls_tokens, patched_x), dim=1)
+
+        if self.num_classes is not None:
+            # Add class token
+            cls_tokens = einops.repeat(self.cls_token, "1 1 d -> b 1 d", b=patched_x.shape[0])
+            patched_x = torch.cat((cls_tokens, patched_x), dim=1)
         # Add positional embeddings
         patched_x += self.pos_embeddings
+
+        if indices_to_keep is not None:
+            patched_x = patched_x[:, indices_to_keep, ...]
         # Transformer
         x = self.transformer(patched_x)
-        # Take the class token
-        x = x[:, 0]
-        # Classification head
-        x = self.classification_head(x)
+
+        if self.num_classes is not None:
+            # Take the class token
+            x = x[:, 0]
+            # Classification head
+            x = self.classification_head(x)
         # Return logits
         return x
 
 
 if __name__ == "__main__":
-    vit = ViT(
+    classification_vit = ViT(
         image_size=(3, 224, 224),
         patch_size=(16, 16),
         embed_dim=768,
@@ -126,5 +144,17 @@ if __name__ == "__main__":
     )
 
     input_data = torch.randn(1, 3, 224, 224)
-    output_data = vit(input_data)
+    output_data = classification_vit(input_data)
+    print(output_data.shape)
+
+    encoding_vit = ViT(
+        image_size=(3, 224, 224),
+        patch_size=(16, 16),
+        embed_dim=768,
+        num_transformer_layers=2,
+        attn_heads=12,
+    )
+
+    input_data = torch.randn(1, 3, 224, 224)
+    output_data = encoding_vit(input_data)
     print(output_data.shape)

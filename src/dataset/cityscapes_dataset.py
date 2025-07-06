@@ -53,7 +53,7 @@ class CityscapesDataset(data.Dataset):
             return item_data
 
         for old_key, new_key in self.rename_output_keys.items():
-            item_data[new_key] = item_data.pop(old_key)
+            item_data[new_key] = item_data[old_key]
         return item_data
 
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:

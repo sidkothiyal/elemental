@@ -231,7 +231,12 @@ def batch_loop(
         # Forward pass with gradient calculation only during training
         with torch.set_grad_enabled(phase == "train"):
             pred = model(batch["input"])
-            batch_loss = loss(pred, batch["target"])
+
+            loss_args = {}
+            if hasattr(model, "loss_args"):
+                loss_args = model.loss_args
+                target_data.update(loss_args)
+            batch_loss = loss(pred, batch["target"], **loss_args)
 
             if phase == "train":
                 optim.zero_grad()
