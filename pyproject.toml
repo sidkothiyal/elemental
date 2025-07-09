@@ -9,9 +9,11 @@ readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
   "black (>=25.1.0, <26.0.0)",
+  "dill",
   "hydra-core",
   "einops",
   "fire (>=0.6.0, <1.0.0)",
+  "lz4",
   "matplotlib (>=3.10.0, <4.0.0)", # Unused
   "numpy (>=2.0.0, <3)",
   "onnx (>=1.17.0, <2)", # Unused
@@ -25,6 +27,7 @@ dependencies = [
   "torch",
   "torchmetrics (>=1.0.0, <2.0.0)",
   "torchvision", # Unused
+  "transformers",
   "tqdm (>=4.66.5, <5)", # Unused
   "wandb (>=0.19.7, <0.20.0)", # Unused
 ]

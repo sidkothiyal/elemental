@@ -4,6 +4,8 @@ Transformer
 TODO:
 (1) Learnable skip connections in the Transformer.
 """
+from typing import Optional
+
 import torch
 from torch import nn
 
@@ -81,13 +83,18 @@ class Transformer(nn.Module):
                 )
             )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        is_causal: Optional[bool] = False,
+    ) -> torch.Tensor:
         """Forward for Transformer."""
         for layer_norm, attn_layer, ff in self.layers:
             # Layer normalization to input of each block
             ln_x = layer_norm(x)
             # Multi-head self-attention (Q, K, V = ln_x)
-            attn_output, _ = attn_layer(ln_x, ln_x, ln_x)
+            attn_output, _ = attn_layer(ln_x, ln_x, ln_x, attn_mask=attn_mask, is_causal=is_causal)
             # Add skip connection
             attn_x = attn_output + x
             # Feed-forward network

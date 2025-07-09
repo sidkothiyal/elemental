@@ -16,7 +16,7 @@ callbacks:
     exp_name: ${experiment_name}
     project: "elemental"
     entity: "elemental-ai"
-    num_images_to_log: 1
+    num_samples_to_log: 1
     logging_interval: 50
     num_classes: 31
     mode: ${mode}
