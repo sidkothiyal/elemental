@@ -1,6 +1,5 @@
 """Convolutional blocks for the model."""
-from typing import List
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from torch import nn

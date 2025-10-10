@@ -8,8 +8,7 @@ import collections
 import logging
 import os
 import statistics
-from typing import Dict
-from typing import Union
+from typing import Dict, Union
 
 import fire
 import hydra
