@@ -1,7 +1,5 @@
 """Callback class for Trainer."""
-from typing import Dict
-from typing import List
-from typing import Union
+from typing import Dict, List, Union
 
 import torch
 

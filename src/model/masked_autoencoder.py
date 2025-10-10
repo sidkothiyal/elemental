@@ -2,17 +2,14 @@
 Masked Autoencoder
 Paper: https://arxiv.org/pdf/2111.06377
 """
-from typing import Any
-from typing import Dict
-from typing import Tuple
+from typing import Any, Dict, Tuple
 
 import einops
 import numpy as np
 import torch
 from torch import nn
 
-from model import transformer
-from model import vit
+from model import transformer, vit
 
 
 class MaskedAutoencoder(nn.Module):

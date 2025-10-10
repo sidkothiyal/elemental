@@ -1,10 +1,7 @@
 """Utility functions for initializing the experiment."""
 import logging
 import random
-from typing import Any
-from typing import Dict
-from typing import Tuple
-from typing import Union
+from typing import Any, Dict, Tuple, Union
 
 import hydra.utils as hy_utils
 import numpy as np

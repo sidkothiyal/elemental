@@ -11,8 +11,7 @@ fine-tuning time.
 
 (2) Switch LayerNorm to Learnable TanH.
 """
-from typing import Optional
-from typing import Tuple
+from typing import Optional, Tuple
 
 import einops
 import torch
