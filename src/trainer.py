@@ -8,7 +8,7 @@ import collections
 import logging
 import os
 import statistics
-from typing import Dict, Union, Optional
+from typing import Dict, Optional, Union
 
 import fire
 import hydra
@@ -255,6 +255,9 @@ def batch_loop(
         input_data["data"] = batch["input"]
         if mode == "classification":
             pred_data["data"] = pred.argmax(dim=1) if pred.dim() > 1 else pred
+        elif mode == "autoregressive":
+            pred_data["pred"] = pred
+            pred_data["generated"] = model.generate(batch["input"][:, :1], max_new_tokens=100)
         elif mode == "autoencoder":
             if pred.dim() == 4:
                 if pred.shape[1] == 1:
@@ -392,11 +395,11 @@ def run_train(
     if mode == "gan":
         # GAN specific setup
         optim = {
-            "generator": torch.optim.Adam(
+            "generator": torch.optim.AdamW(
                 model["generator"].parameters(),
                 lr=config.lr,
             ),
-            "discriminator": torch.optim.Adam(model["discriminator"].parameters(), lr=config.lr),
+            "discriminator": torch.optim.AdamW(model["discriminator"].parameters(), lr=config.lr),
         }
         scheduler = {
             "generator": torch.optim.lr_scheduler.StepLR(
@@ -413,7 +416,7 @@ def run_train(
         batch_loop_fn = batch_loop_gan
     else:
         # Standard model setup
-        optim = torch.optim.Adam(
+        optim = torch.optim.AdamW(
             model.parameters(),
             lr=config.lr,
         )

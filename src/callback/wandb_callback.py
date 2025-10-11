@@ -6,11 +6,15 @@ from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from transformers import AutoTokenizer
-
 import wandb
+from torch.nn import functional as F
+
 from callback import callback
+from data.tokenizer import Tokenizer
 from utils import torch_np_utils
+
+# from transformers import AutoTokenizer
+
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +79,11 @@ class WandbCallback(callback.Callback):
                     for i in range(self._num_classes)
                 }
         if log_text_data:
-            if tokenizer is None:
-                raise ValueError("tokenizer is required when log_text_data is True")
+            # if tokenizer is None:
+            #     raise ValueError("tokenizer is required when log_text_data is True")
             self._log_table = wandb.Table(columns=["step", "phase", "tag", "text"])
-            self._tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+            self._tokenizer = Tokenizer("data/tiny_shakespeare/")
+            # self._tokenizer = AutoTokenizer.from_pretrained(tokenizer)
         self._wandb_logger = wandb.init(
             project=project,
             entity=entity,
@@ -167,10 +172,11 @@ class WandbCallback(callback.Callback):
         """
         if isinstance(text, torch.Tensor):
             if text.ndim in [1, 2]:
-                text = self._tokenizer.decode(text[0, ...], skip_special_tokens=True)
+                text = self._tokenizer.decode(text[0, ...])
             elif text.ndim == 3:
+                text = F.softmax(text, dim=-1)
                 text = torch.argmax(text, dim=-1)
-                text = self._tokenizer.decode(text[0, ...], skip_special_tokens=True)
+                text = self._tokenizer.decode(text[0, ...])
             else:
                 raise ValueError(f"Text tensor has invalid dimensions: {text.ndim}")
         elif isinstance(text, dict):

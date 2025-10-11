@@ -1,10 +1,14 @@
 """Autoregressive language model."""
+from typing import Optional
+
 import torch
 import torch.nn as nn
-from transformers import AutoModel
+from torch.nn import functional as F
 from transformers import AutoTokenizer
 
 from model.transformer import Transformer
+
+# from transformers import AutoModel
 
 
 def create_causal_mask(seq_len: int):
@@ -23,7 +27,8 @@ class AutoregressiveLM(nn.Module):
         positional_embedding: nn.Module,
         embedding_dim: int = 768,
         max_length: int = 4096,
-        pretrained_tokenizer: str = "gpt2",
+        vocab_size: Optional[int] = None,
+        pretrained_tokenizer: Optional[str] = None,
     ):
         super().__init__()
 
@@ -34,21 +39,25 @@ class AutoregressiveLM(nn.Module):
         self.embedding_dim = embedding_dim
         self.max_length = max_length
 
-        self.tokenizer = AutoTokenizer.from_pretrained(pretrained_tokenizer)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.vocab_size = self.tokenizer.vocab_size
+        if vocab_size is None and pretrained_tokenizer is None:
+            raise ValueError("Either vocab_size or pretrained_tokenizer must be provided")
+
+        if not vocab_size and pretrained_tokenizer:
+            self.tokenizer = AutoTokenizer.from_pretrained(pretrained_tokenizer)
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            vocab_size = self.tokenizer.vocab_size
 
         if self.token_embedding is None:
-            gpt2_model = AutoModel.from_pretrained(pretrained_tokenizer)
-            self.token_embedding = nn.Embedding(
-                gpt2_model.wte.weight.shape[0], gpt2_model.wte.weight.shape[1]
-            )
-            self.token_embedding.weight.data = gpt2_model.wte.weight.data.clone()
-            self.positional_embedding = nn.Embedding(
-                gpt2_model.wpe.weight.shape[0], gpt2_model.wpe.weight.shape[1]
-            )
-            self.positional_embedding.weight.data = gpt2_model.wpe.weight.data.clone()
-            # self.token_embedding = nn.Embedding(self.tokenizer.vocab_size, embedding_dim)
+            # gpt2_model = AutoModel.from_pretrained(pretrained_tokenizer)
+            # self.token_embedding = nn.Embedding(
+            #     gpt2_model.wte.weight.shape[0], gpt2_model.wte.weight.shape[1]
+            # )
+            # self.token_embedding.weight.data = gpt2_model.wte.weight.data.clone()
+            # self.positional_embedding = nn.Embedding(
+            #     gpt2_model.wpe.weight.shape[0], gpt2_model.wpe.weight.shape[1]
+            # )
+            # self.positional_embedding.weight.data = gpt2_model.wpe.weight.data.clone()
+            self.token_embedding = nn.Embedding(vocab_size, embedding_dim)
 
         if self.positional_embedding is None:
             self.positional_embedding = nn.Embedding(max_length, embedding_dim)
@@ -58,8 +67,8 @@ class AutoregressiveLM(nn.Module):
             positions = torch.arange(max_length).unsqueeze(0).detach()
             self.register_buffer("positions", positions)
 
-        # self.ln_f = nn.LayerNorm(embedding_dim)
-        self.lm_head = nn.Linear(embedding_dim, self.vocab_size)
+        self.ln_f = nn.LayerNorm(embedding_dim)
+        self.lm_head = nn.Linear(embedding_dim, vocab_size)
 
         self._causal_mask = None
 
@@ -70,17 +79,18 @@ class AutoregressiveLM(nn.Module):
         self.encoder = self.encoder.to(device)
         self.token_embedding = self.token_embedding.to(device)
         self.positional_embedding = self.positional_embedding.to(device)
-        # self.ln_f = self.ln_f.to(device)
+        self.ln_f = self.ln_f.to(device)
         self.lm_head = self.lm_head.to(device)
         return self
 
     def forward(self, input_ids: torch.Tensor, training: bool = True):
         """Forward pass."""
+        device = input_ids.device
         seq_len = input_ids.size(1)
 
-        # # Create causal mask (cache it properly)
-        # if self._causal_mask is None or self._causal_mask.shape[0] != seq_len:
-        #     self._causal_mask = create_causal_mask(seq_len).to(device)
+        # Create causal mask (cache it properly)
+        if self._causal_mask is None or self._causal_mask.shape[0] != seq_len:
+            self._causal_mask = create_causal_mask(seq_len).to(device)
 
         # Token embeddings
         token_embeddings = self.token_embedding(input_ids)
@@ -92,10 +102,21 @@ class AutoregressiveLM(nn.Module):
             token_embeddings, attn_mask=self._causal_mask
         )  # , is_causal=True)
 
-        # output = self.ln_f(encoder_output)
-        logits = self.lm_head(encoder_output)
+        output = self.ln_f(encoder_output)
+        logits = self.lm_head(output)
 
         return logits
+
+    def generate(self, input_ids: torch.Tensor, max_new_tokens: int):
+        """Generate text."""
+        for _ in range(max_new_tokens):
+            input_ids = input_ids[:, -self.max_length :]
+            logits = self(input_ids, training=False)
+            logits = logits[:, -1, :]
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+        return input_ids
 
 
 if __name__ == "__main__":

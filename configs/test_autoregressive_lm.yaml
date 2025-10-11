@@ -1,9 +1,9 @@
 experiment_name: autoregressive_lm_wikitext_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoregressive_lm/
 
-mode: "classification"
+mode: "autoregressive"
 
-lr: 0.0005
+lr: 0.00025
 num_epochs: 10000
 test: false
 batch_size: 6

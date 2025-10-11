@@ -30,7 +30,9 @@ class ShiftedTeacherForcing(nn.Module):
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor):
         """Forward pass"""
-        pred = pred[:, : -self.shift]
-        target = target[:, self.shift :]
-        loss = self.loss_fn(pred.reshape(-1, pred.size(-1)), target.reshape(-1))
+        pred = torch.transpose(pred, 1, 2)
+        if self.shift > 0:
+            pred = pred[:, :, : -self.shift]
+            target = target[:, self.shift :]
+        loss = self.loss_fn(pred, target)
         return loss

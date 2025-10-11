@@ -1,9 +1,7 @@
 """WikiText paragraphs dataset."""
 import pathlib
 import random
-from typing import Dict
-from typing import Optional
-from typing import Union
+from typing import Dict, Optional, Union
 
 import torch
 from torch.utils import data
