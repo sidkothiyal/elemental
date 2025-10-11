@@ -12,6 +12,7 @@ models/
 *.pth
 
 # Logs / Temp files
+outputs/
 logs/
 *.tmp
 

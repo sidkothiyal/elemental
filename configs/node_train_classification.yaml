@@ -1,0 +1,171 @@
+# Example: Simple neural network training pipeline
+# This demonstrates basic variable creation, model definition, and training steps
+
+
+executor:
+  run_mode: train
+  external_outputs: {}
+
+nodes:
+  # Data preparation
+  - _target_: nodes.variable_node.VariableNode
+    name: Configuration
+    variable_name: config
+    value:
+      experiment_name: simple_training_${now:%Y-%m-%d}_${now:%H-%M-%S}
+      seed: 42
+      num_epochs: 100
+      batch_size: 64
+      learning_rate: 0.0001
+      device: cuda
+      results_dir: results/simple_training
+      lr_scheduler_params:
+        step_size: 30
+        gamma: 0.1
+    run_modes: [train, eval]
+
+  # TODO:Add Callbacks later
+  - _target_: nodes.variable_node.VariableNode
+    name: Dataloader
+    variable_name: dataloader
+    value:
+      _target_: torch.utils.data.DataLoader
+      dataset:
+        _target_: dataset.imagenet_dataset.ImagenetDataset
+        root_dir: data/tiny_imagenet/train
+        split: train
+        classes:
+          _target_: dataset.imagenet_dataset.read_classes
+          dataset_dir: data/tiny_imagenet
+        normalize: true
+      batch_size: node:config.batch_size
+      shuffle: true
+    run_modes: [train]
+
+  # Model definition
+  - _target_: nodes.torch_module_node.TorchModuleNode
+    name: Model
+    variable_name: model
+    module:
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: model.blocks.conv_block.ConvBlock
+          in_channels: 3
+          channels: [32, 64, 128, 256, 512, 1024]
+          kernel_sizes: [3, 3, 3, 3, 3, 3]
+          strides: [2, 2, 2, 2, 2, 2]
+          paddings: [1, 1, 1, 1, 1, 1]
+        - _target_: torch.nn.Flatten
+          start_dim: 1
+        - _target_: model.blocks.linear_block.LinearBlock
+          dims: [1024]
+          out_dim:
+            _target_: builtins.len
+            _args_:
+              - node:dataloader.dataset.classes
+          bias: true
+          use_bn: true
+          use_relu: true
+
+  # Loss computation
+  - _target_: nodes.variable_node.VariableNode
+    name: LossComputation
+    variable_name: loss_fn
+    value:
+      _target_: torch.nn.CrossEntropyLoss
+    run_modes: [train, eval]
+
+  # Optimizer
+  - _target_: nodes.variable_node.VariableNode
+    name: AdamOptimizer
+    variable_name: adam_optimizer
+    value:
+      _target_: torch.optim.Adam
+      params: node:model.parameters()  # Will be set by parameter collection node
+      lr: node:config.learning_rate
+    run_modes: [train]
+
+  # Scheduler
+  - _target_: nodes.variable_node.VariableNode
+    name: Scheduler
+    variable_name: scheduler
+    value:
+      _target_: torch.optim.lr_scheduler.StepLR
+      optimizer: node:adam_optimizer.value
+      step_size: node:config.lr_scheduler_params.step_size
+      gamma: node:config.lr_scheduler_params.gamma
+
+
+execution_graph:
+  - _target_: nodes.graph_node.GraphNode
+    name: TrainingGraph
+    statements:
+      # model = model.train()
+      - _target_: nodes.executor.ExecuteFunction
+        name: SetTrainMode
+        function: node:model.train
+        args: []
+        inputs: [node:model]
+        outputs: []
+      # model = model.to(config.device)
+      - _target_: nodes.executor.ExecuteFunction
+        name: MoveToDevice
+        function: node:model.to
+        args: [node:config.device]
+        inputs: [node:model, node:config]
+        outputs: []
+      # for batch_idx, batch in enumerate(next(dataloader)):
+      # Should only run uptil StopIteration
+      - _target_: nodes.graph_node.ForLoopNode
+        name: ForBatch
+        iterator: node:dataloader.value
+        outputs: [batch]
+        statements:
+          # batch = batch.to(config.device)
+          - _target_: nodes.executor.ExecuteFunction
+            name: ToDevice
+            function: data.utils.move_to_device
+            args: [node:batch, node:config.device]
+            inputs: [node:batch, node:config]
+            outputs: [batch_on_device]
+          # pred = model(batch)
+          - _target_: nodes.executor.ExecuteFunction
+            name: ForwardPass
+            function: node:model
+            args: [node:batch_on_device.input]
+            inputs: [node:model, node:batch]
+            outputs: [pred]
+          # loss = loss_fn(pred, batch.target)
+          - _target_: nodes.executor.ExecuteFunction
+            name: LossComputation
+            function: node:loss_fn
+            args: [node:pred, node:batch_on_device.target]
+            inputs: [node:pred, node:batch]
+            outputs: [loss]
+          # adam_optimizer.zero_grad()
+          - _target_: nodes.executor.ExecuteFunction
+            name: ZeroGrad
+            function: node:adam_optimizer.zero_grad
+            args: []
+            inputs: [node:adam_optimizer]
+            outputs: []
+          # loss.backward()
+          - _target_: nodes.executor.ExecuteFunction
+            name: BackwardPass
+            function: node:loss.backward
+            args: []
+            inputs: [loss]
+            outputs: []
+          - _target_: nodes.executor.ExecuteFunction
+            name: PrintLoss
+            function: builtins.print
+            args: [node:loss]
+            inputs: [node:loss]
+            outputs: []
+          # adam_optimizer.step()
+          - _target_: nodes.executor.ExecuteFunction
+            name: Step
+            function: node:adam_optimizer.step
+            args: []
+            inputs: [node:adam_optimizer]
+            outputs: []

@@ -53,6 +53,23 @@ combine_as_imports = true
 force_single_line = false
 line_length = 100
 
+[tool.pylint.MASTER]
+extension-pkg-allow-list = [
+    "numpy",
+    "torch",
+    "torchvision",
+    "wandb",
+    "onnx",
+    "onnxruntime",
+    "sklearn",
+]
+
+[tool.pylint.MESSAGES_CONTROL]
+disable = [
+    "import-error",
+    "c-extension-no-member",
+]
+
 [tool.yapf]
 blank_line_before_nested_class_or_def = true
 

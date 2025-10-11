@@ -1,0 +1,399 @@
+# Example: GAN training pipeline for segmentation
+# This demonstrates GAN training with generator and discriminator
+
+executor:
+  run_mode: train
+  external_outputs: {}
+
+nodes:
+  # Data preparation
+  - _target_: nodes.variable_node.VariableNode
+    name: Configuration
+    variable_name: config
+    value:
+      experiment_name: gan_seg_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}
+      seed: 42
+      num_epochs: 100
+      batch_size: 4
+      learning_rate: 0.0001
+      device: cuda
+      results_dir: results/gan
+      lr_scheduler_params:
+        step_size: 10
+        gamma: 0.75
+      mode: gan
+    run_modes: [train, eval]
+
+  # TODO: Add Callbacks later
+  - _target_: nodes.variable_node.VariableNode
+    name: Dataloader
+    variable_name: dataloader
+    value:
+      _target_: torch.utils.data.DataLoader
+      dataset:
+        _target_: dataset.cityscapes_dataset.CityscapesDataset
+        root_dir: data/cityscapes/train
+        segmentation_enabled: true
+        depth_enabled: false
+      batch_size: node:config.batch_size
+      shuffle: true
+    run_modes: [train]
+
+  # Model definition - ModuleDict with generator and discriminator
+  - _target_: nodes.torch_module_node.TorchModuleNode
+    name: Model
+    variable_name: model
+    module:
+      _target_: torch.nn.ModuleDict
+      modules:
+        generator:
+          _target_: model.unet.UNet
+          in_channels: 3
+          out_channels: 31
+        discriminator:
+          _target_: model.blocks.conv_block.ConvBlock
+          in_channels: 31
+          channels: [64, 128, 256, 512, 1]
+          kernel_sizes: [4, 4, 4, 4, 4]
+          strides: [2, 2, 2, 1, 1]
+          paddings: [1, 1, 1, 1, 1]
+
+  # Loss functions
+  - _target_: nodes.variable_node.VariableNode
+    name: FeatureMatchingLoss
+    variable_name: feature_matching_loss
+    value:
+      _target_: torch.nn.CrossEntropyLoss
+    run_modes: [train, eval]
+
+  - _target_: nodes.variable_node.VariableNode
+    name: AdversarialLoss
+    variable_name: adversarial_loss
+    value:
+      _target_: torch.nn.BCEWithLogitsLoss
+    run_modes: [train, eval]
+
+  # Generator Optimizer
+  - _target_: nodes.variable_node.VariableNode
+    name: GeneratorOptimizer
+    variable_name: generator_optimizer
+    value:
+      _target_: torch.optim.Adam
+      params: node:model.generator.parameters()
+      lr: node:config.learning_rate
+    run_modes: [train]
+
+  # Discriminator Optimizer
+  - _target_: nodes.variable_node.VariableNode
+    name: DiscriminatorOptimizer
+    variable_name: discriminator_optimizer
+    value:
+      _target_: torch.optim.Adam
+      params: node:model.discriminator.parameters()
+      lr: node:config.learning_rate
+    run_modes: [train]
+
+  # Generator Scheduler
+  - _target_: nodes.variable_node.VariableNode
+    name: GeneratorScheduler
+    variable_name: generator_scheduler
+    value:
+      _target_: torch.optim.lr_scheduler.StepLR
+      optimizer: node:generator_optimizer.value
+      step_size: node:config.lr_scheduler_params.step_size
+      gamma: node:config.lr_scheduler_params.gamma
+
+  # Discriminator Scheduler
+  - _target_: nodes.variable_node.VariableNode
+    name: DiscriminatorScheduler
+    variable_name: discriminator_scheduler
+    value:
+      _target_: torch.optim.lr_scheduler.StepLR
+      optimizer: node:discriminator_optimizer.value
+      step_size: node:config.lr_scheduler_params.step_size
+      gamma: node:config.lr_scheduler_params.gamma
+
+execution_graph:
+  - _target_: nodes.graph_node.GraphNode
+    name: GANTrainingGraph
+    statements:
+      # Set models to train mode
+      - _target_: nodes.executor.ExecuteFunction
+        name: SetGeneratorTrainMode
+        function: node:model.generator.train
+        args: []
+        inputs: [node:model]
+        outputs: []
+
+      - _target_: nodes.executor.ExecuteFunction
+        name: SetDiscriminatorTrainMode
+        function: node:model.discriminator.train
+        args: []
+        inputs: [node:model]
+        outputs: []
+
+      # Move models to device
+      - _target_: nodes.executor.ExecuteFunction
+        name: MoveModelsToDevice
+        function: node:model.to
+        args: [node:config.device]
+        inputs: [node:model, node:config]
+        outputs: []
+
+      # Training loop over batches
+      - _target_: nodes.graph_node.ForLoopNode
+        name: ForBatch
+        iterator: node:dataloader.value
+        outputs: [batch]
+        statements:
+          # Move batch to device
+          - _target_: nodes.executor.ExecuteFunction
+            name: ToDevice
+            function: data.utils.move_to_device
+            args: [node:batch, node:config.device]
+            inputs: [node:batch, node:config]
+            outputs: [batch_on_device]
+
+          # =====================================
+          # Train Discriminator on Fake Data
+          # =====================================
+
+          # Generate fake segmentation mask
+          - _target_: nodes.executor.ExecuteFunction
+            name: GenerateFakeMask
+            function: node:model.generator
+            args: [node:batch_on_device.input]
+            inputs: [node:model, node:batch_on_device]
+            outputs: [pred_seg_logits]
+
+          # Apply softmax to get probabilities
+          - _target_: nodes.executor.ExecuteFunction
+            name: SoftmaxPrediction
+            function: torch.nn.functional.softmax
+            args: [node:pred_seg_logits, 1]  # dim=1
+            inputs: [node:pred_seg_logits]
+            outputs: [pred_seg_mask]
+
+          # Discriminator prediction on fake data (detached)
+          - _target_: nodes.executor.ExecuteFunction
+            name: DetachFakeMask
+            function: node:pred_seg_mask.detach
+            args: []
+            inputs: [node:pred_seg_mask]
+            outputs: [pred_seg_mask_detached]
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscriminatorOnFake
+            function: node:model.discriminator
+            args: [node:pred_seg_mask_detached]
+            inputs: [node:model, node:pred_seg_mask_detached]
+            outputs: [discriminator_fake]
+
+          # Create fake labels (zeros)
+          - _target_: nodes.executor.ExecuteFunction
+            name: CreateFakeLabels
+            function: torch.zeros_like
+            args: [node:discriminator_fake]
+            inputs: [node:discriminator_fake]
+            outputs: [fake_labels]
+
+          # Compute discriminator loss on fake data
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscFakeLoss
+            function: node:adversarial_loss
+            args: [node:discriminator_fake, node:fake_labels]
+            inputs: [node:discriminator_fake, node:fake_labels, node:adversarial_loss]
+            outputs: [disc_fake_loss]
+
+          # Backward pass for discriminator (fake)
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscriminatorZeroGradFake
+            function: node:discriminator_optimizer.zero_grad
+            args: []
+            inputs: [node:discriminator_optimizer]
+            outputs: []
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscFakeLossBackward
+            function: node:disc_fake_loss.backward
+            args: []
+            inputs: [node:disc_fake_loss]
+            outputs: []
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscriminatorStepFake
+            function: node:discriminator_optimizer.step
+            args: []
+            inputs: [node:discriminator_optimizer]
+            outputs: []
+
+          # =====================================
+          # Train Discriminator on Real Data
+          # =====================================
+
+          # Prepare one-hot encoded real segmentation mask
+          - _target_: nodes.executor.ExecuteFunction
+            name: OneHotEncode
+            function: torch.nn.functional.one_hot
+            args: [node:batch_on_device.seg_mask, 31]  # num_classes=31
+            inputs: [node:batch_on_device]
+            outputs: [one_hot_real_mask]
+
+          # Permute dimensions (B, H, W, C) -> (B, C, H, W)
+          - _target_: nodes.executor.ExecuteFunction
+            name: PermuteDimensions
+            function: node:one_hot_real_mask.permute
+            args: [0, 3, 1, 2]
+            inputs: [node:one_hot_real_mask]
+            outputs: [one_hot_real_mask_permuted]
+
+          # Convert to float
+          - _target_: nodes.executor.ExecuteFunction
+            name: ConvertToFloat
+            function: node:one_hot_real_mask_permuted.float
+            args: []
+            inputs: [node:one_hot_real_mask_permuted]
+            outputs: [real_seg_mask]
+
+          # Discriminator prediction on real data
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscriminatorOnReal
+            function: node:model.discriminator
+            args: [node:real_seg_mask]
+            inputs: [node:model, node:real_seg_mask]
+            outputs: [discriminator_real]
+
+          # Create real labels (ones)
+          - _target_: nodes.executor.ExecuteFunction
+            name: CreateRealLabels
+            function: torch.ones_like
+            args: [node:discriminator_real]
+            inputs: [node:discriminator_real]
+            outputs: [real_labels]
+
+          # Compute discriminator loss on real data
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscRealLoss
+            function: node:adversarial_loss
+            args: [node:discriminator_real, node:real_labels]
+            inputs: [node:discriminator_real, node:real_labels, node:adversarial_loss]
+            outputs: [disc_real_loss]
+
+          # Backward pass for discriminator (real)
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscriminatorZeroGradReal
+            function: node:discriminator_optimizer.zero_grad
+            args: []
+            inputs: [node:discriminator_optimizer]
+            outputs: []
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscRealLossBackward
+            function: node:disc_real_loss.backward
+            args: []
+            inputs: [node:disc_real_loss]
+            outputs: []
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscriminatorStepReal
+            function: node:discriminator_optimizer.step
+            args: []
+            inputs: [node:discriminator_optimizer]
+            outputs: []
+
+          # =====================================
+          # Train Generator
+          # =====================================
+
+          # Generate masks again for generator training (fresh forward pass)
+          - _target_: nodes.executor.ExecuteFunction
+            name: GenerateMaskForGen
+            function: node:model.generator
+            args: [node:batch_on_device.input]
+            inputs: [node:model, node:batch_on_device]
+            outputs: [gen_pred_logits]
+
+          # Apply softmax
+          - _target_: nodes.executor.ExecuteFunction
+            name: SoftmaxGenPrediction
+            function: torch.nn.functional.softmax
+            args: [node:gen_pred_logits, 1]
+            inputs: [node:gen_pred_logits]
+            outputs: [gen_pred_mask]
+
+          # Discriminator prediction on generator output (no detach)
+          - _target_: nodes.executor.ExecuteFunction
+            name: DiscriminatorOnGenerated
+            function: node:model.discriminator
+            args: [node:gen_pred_mask]
+            inputs: [node:model, node:gen_pred_mask]
+            outputs: [discriminator_on_gen]
+
+          # Create labels for generator (wants discriminator to output 1/real)
+          - _target_: nodes.executor.ExecuteFunction
+            name: CreateGenLabels
+            function: torch.ones_like
+            args: [node:discriminator_on_gen]
+            inputs: [node:discriminator_on_gen]
+            outputs: [gen_labels]
+
+          # Adversarial loss (generator tries to fool discriminator)
+          - _target_: nodes.executor.ExecuteFunction
+            name: AdversarialGenLoss
+            function: node:adversarial_loss
+            args: [node:discriminator_on_gen, node:gen_labels]
+            inputs: [node:discriminator_on_gen, node:gen_labels, node:adversarial_loss]
+            outputs: [adversarial_gen_loss]
+
+          # Feature matching loss
+          - _target_: nodes.executor.ExecuteFunction
+            name: FeatureMatchingGenLoss
+            function: node:feature_matching_loss
+            args: [node:gen_pred_logits, node:batch_on_device.seg_mask]
+            inputs: [node:gen_pred_logits, node:batch_on_device, node:feature_matching_loss]
+            outputs: [feature_matching_gen_loss]
+
+          # Total generator loss
+          - _target_: nodes.executor.ExecuteFunction
+            name: TotalGenLoss
+            function: torch.add
+            args: [node:adversarial_gen_loss, node:feature_matching_gen_loss]
+            inputs: [node:adversarial_gen_loss, node:feature_matching_gen_loss]
+            outputs: [total_gen_loss]
+
+          # Backward pass for generator
+          - _target_: nodes.executor.ExecuteFunction
+            name: GeneratorZeroGrad
+            function: node:generator_optimizer.zero_grad
+            args: []
+            inputs: [node:generator_optimizer]
+            outputs: []
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: GenLossBackward
+            function: node:total_gen_loss.backward
+            args: []
+            inputs: [node:total_gen_loss]
+            outputs: []
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: GeneratorStep
+            function: node:generator_optimizer.step
+            args: []
+            inputs: [node:generator_optimizer]
+            outputs: []
+
+          # Print losses for monitoring
+          - _target_: nodes.executor.ExecuteFunction
+            name: PrintDiscLoss
+            function: builtins.print
+            args: [node:disc_fake_loss, node:disc_real_loss]
+            inputs: [node:disc_fake_loss, node:disc_real_loss]
+            outputs: []
+
+          - _target_: nodes.executor.ExecuteFunction
+            name: PrintGenLoss
+            function: builtins.print
+            args: [node:total_gen_loss]
+            inputs: [node:total_gen_loss]
+            outputs: []
