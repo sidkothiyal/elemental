@@ -8,7 +8,7 @@ import collections
 import logging
 import os
 import statistics
-from typing import Dict, Union
+from typing import Dict, Optional, Union
 
 import fire
 import hydra
@@ -39,6 +39,7 @@ def batch_loop_gan(
     callbacks: callback.CallbackList,
     device: torch.device,
     mode: str,  # pylint: disable=unused-argument
+    config: Optional[Union[Dict, object]] = None,  # pylint: disable=unused-argument
 ) -> Dict[str, float]:
     """Batch loop for GAN training.
 
@@ -192,6 +193,7 @@ def batch_loop(
     callbacks: callback.CallbackList,
     device: torch.device,
     mode: str = "classification",
+    config: Optional[Union[Dict, object]] = None,
 ) -> Dict[str, float]:
     """Batch loop for standard DNN training.
 
@@ -238,9 +240,14 @@ def batch_loop(
             batch_loss = loss(pred, batch["target"], **loss_args)
 
             if phase == "train":
-                optim.zero_grad()
+                # Gradient accumulation
+                grad_accum_steps = config.get("gradient_accumulation_steps", 1) if config else 1
+                batch_loss = batch_loss / grad_accum_steps
                 batch_loss.backward()
-                optim.step()
+
+                if (batch_idx + 1) % grad_accum_steps == 0:
+                    optim.step()
+                    optim.zero_grad()
 
         # TODO: Add a post processor for input, target, pred to correctly format
         # the data for logging and metrics
@@ -248,6 +255,9 @@ def batch_loop(
         input_data["data"] = batch["input"]
         if mode == "classification":
             pred_data["data"] = pred.argmax(dim=1) if pred.dim() > 1 else pred
+        elif mode == "autoregressive":
+            pred_data["pred"] = pred
+            pred_data["generated"] = model.generate(batch["input"][:, :1], max_new_tokens=100)
         elif mode == "autoencoder":
             if pred.dim() == 4:
                 if pred.shape[1] == 1:
@@ -264,11 +274,12 @@ def batch_loop(
                 pred_data["data"] = pred
         target_data["data"] = batch["target"]
 
-        # Accumulate loss
-        running_loss["total"] += batch_loss.item()
+        # Accumulate loss (avoid double .item() calls)
+        loss_value = batch_loss.clone().detach().item()
+        running_loss["total"] += loss_value
 
         # Update progress bar
-        progress_bar.set_postfix({"loss": f"{batch_loss.item():.4f}"})
+        progress_bar.set_postfix({"loss": f"{loss_value:.4f}"})
 
         # Callbacks at end of batch
         callbacks.on_batch_end(
@@ -384,11 +395,11 @@ def run_train(
     if mode == "gan":
         # GAN specific setup
         optim = {
-            "generator": torch.optim.Adam(
+            "generator": torch.optim.AdamW(
                 model["generator"].parameters(),
                 lr=config.lr,
             ),
-            "discriminator": torch.optim.Adam(model["discriminator"].parameters(), lr=config.lr),
+            "discriminator": torch.optim.AdamW(model["discriminator"].parameters(), lr=config.lr),
         }
         scheduler = {
             "generator": torch.optim.lr_scheduler.StepLR(
@@ -405,7 +416,7 @@ def run_train(
         batch_loop_fn = batch_loop_gan
     else:
         # Standard model setup
-        optim = torch.optim.Adam(
+        optim = torch.optim.AdamW(
             model.parameters(),
             lr=config.lr,
         )
@@ -454,6 +465,7 @@ def run_train(
                 callbacks,
                 device,
                 mode=mode,
+                config=config,
             )
             logger.info("Train loss: %s", train_loss)
 
@@ -486,6 +498,7 @@ def run_train(
                     callbacks,
                     device,
                     mode=mode,
+                    config=config,
                 )
                 callbacks.on_epoch_end(epoch, config.num_epochs, "val")
                 logger.info("Validation loss: %s", val_loss)

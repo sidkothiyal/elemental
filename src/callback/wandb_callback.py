@@ -1,16 +1,24 @@
 """Wandb callback for Trainer"""
 import logging
+import os
 import random
 from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
-
 import wandb
+from torch.nn import functional as F
+
 from callback import callback
+from data.tokenizer import Tokenizer
 from utils import torch_np_utils
 
+# from transformers import AutoTokenizer
+
+
 logger = logging.getLogger(__name__)
+
+os.environ["WANDB_SILENT"] = "True"
 
 
 class WandbCallback(callback.Callback):
@@ -22,10 +30,12 @@ class WandbCallback(callback.Callback):
         project: Optional[str] = "elemental",
         entity: Optional[str] = "elemental-ai",
         logging_interval: int = 100,
-        num_images_to_log: int = 1,
+        num_samples_to_log: int = 1,
         class_colors: Optional[Dict[int, Tuple[int, int, int]]] = None,
         num_classes: Optional[int] = None,
         mode: Optional[str] = None,
+        log_text_data: bool = False,
+        tokenizer: Optional[str] = None,
     ):
         """Initialize the callback.
 
@@ -34,10 +44,12 @@ class WandbCallback(callback.Callback):
             project: The name of the project.
             entity: The name of the entity.
             logging_interval: The logging interval.
-            num_images_to_log: The number of images to log.
+            num_samples_to_log: The number of images to log.
             class_colors: The colors for each class for segmentation images.
             num_classes: The number of classes for segmentation images.
             mode: The mode of training.
+            log_text_data: Whether to log text data.
+            tokenizer: The tokenizer to use for text logging.
         """
         logger.info(
             "Initializing WandbCallback with project: %s, entity: %s, exp_name: %s",
@@ -46,10 +58,13 @@ class WandbCallback(callback.Callback):
             exp_name,
         )
         self._logging_interval = logging_interval
-        self._num_images_to_log = num_images_to_log
+        self._num_samples_to_log = num_samples_to_log
         self._mode = mode
-        if self._num_images_to_log != 1:
-            raise NotImplementedError(f"num_images_to_log is not 1, but {self._num_images_to_log}")
+        self._log_text_data = log_text_data
+        if self._num_samples_to_log != 1:
+            raise NotImplementedError(
+                f"num_samples_to_log is not 1, but {self._num_samples_to_log}"
+            )
 
         self._class_colors = class_colors
         self._num_classes = num_classes
@@ -63,7 +78,12 @@ class WandbCallback(callback.Callback):
                     )
                     for i in range(self._num_classes)
                 }
-
+        if log_text_data:
+            # if tokenizer is None:
+            #     raise ValueError("tokenizer is required when log_text_data is True")
+            self._log_table = wandb.Table(columns=["step", "phase", "tag", "text"])
+            self._tokenizer = Tokenizer("data/tiny_shakespeare/")
+            # self._tokenizer = AutoTokenizer.from_pretrained(tokenizer)
         self._wandb_logger = wandb.init(
             project=project,
             entity=entity,
@@ -139,6 +159,37 @@ class WandbCallback(callback.Callback):
 
         self._wandb_logger.log({f"{phase}/{tag}": wandb_image, f"{phase}/step": step})
 
+    def _log_text(
+        self, step: int, phase: str, tag: str, text: Union[torch.Tensor, Dict[str, torch.Tensor]]
+    ):
+        """Log the text.
+
+        Args:
+            step: The step of the text.
+            phase: The phase of the text.
+            tag: The tag of the text.
+            text: The text to log.
+        """
+        if isinstance(text, torch.Tensor):
+            if text.ndim in [1, 2]:
+                text = self._tokenizer.decode(text[0, ...])
+            elif text.ndim == 3:
+                text = F.softmax(text, dim=-1)
+                text = torch.argmax(text, dim=-1)
+                text = self._tokenizer.decode(text[0, ...])
+            else:
+                raise ValueError(f"Text tensor has invalid dimensions: {text.ndim}")
+        elif isinstance(text, dict):
+            for key, text_value in text.items():
+                self._log_text(step, phase, f"{tag}/{key}", text_value)
+            return
+
+        print(f"Logging step: {step}, phase: {phase}, tag: {tag}, text: {text}")
+
+        # self._log_table.add_data(step, phase, tag, text)
+        # push_table = wandb.Table(data=self._log_table.data, columns=self._log_table.columns)
+        # wandb.log({f"{phase}/text": push_table})
+
     def on_batch_end(
         self,
         step: int,
@@ -156,8 +207,13 @@ class WandbCallback(callback.Callback):
             target_data: The target of the metrics.
             pred_data: The predicted of the metrics.
         """
+        # Only log at specified intervals to reduce GPU-CPU sync overhead
         if step % self._logging_interval == 0:
-            if self._mode == "classification":
+            if self._log_text_data:
+                self._log_text(step, phase, "input", input_data)
+                self._log_text(step, phase, "target", target_data)
+                self._log_text(step, phase, "pred", pred_data)
+            elif self._mode == "classification":
                 self._log_image(
                     step,
                     phase,

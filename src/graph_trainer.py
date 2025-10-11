@@ -7,8 +7,8 @@ by reading Hydra configuration files and executing training graphs with proper
 dependency resolution.
 """
 import logging
-from collections import defaultdict, deque
 import sys
+from collections import defaultdict, deque
 from typing import Any, Dict, List, Set
 
 import hydra
