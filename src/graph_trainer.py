@@ -8,6 +8,7 @@ dependency resolution.
 """
 import logging
 from collections import defaultdict, deque
+import sys
 from typing import Any, Dict, List, Set
 
 import hydra
@@ -273,7 +274,7 @@ class GraphTrainer:
         logger.info("Training completed successfully")
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="node_train_gan.yaml")
+@hydra.main(version_base=None, config_path="../configs")
 def main(cfg: DictConfig) -> None:
     """Main training function.
 
@@ -286,7 +287,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     logger.info("Starting graph-based ML training")
-    logger.info("Configuration:\n%s", OmegaConf.to_yaml(cfg))
+    logger.debug("Configuration:\n%s", OmegaConf.to_yaml(cfg))
 
     # Create and run trainer
     trainer = GraphTrainer(cfg)
@@ -294,4 +295,6 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 3 or "--config-name" not in sys.argv:
+        raise ValueError("Usage: python graph_trainer.py --config-name <config_name>")
     main()
