@@ -1,6 +1,4 @@
 """Linear blocks for the model."""
-from typing import List
-
 import torch
 from torch import nn
 
@@ -56,7 +54,7 @@ class LinearBlock(nn.Module):
 
     def __init__(
         self,
-        dims: List[int],
+        dims: list[int],
         out_dim: int,
         bias: bool = False,
         use_bn: bool = True,
@@ -65,7 +63,7 @@ class LinearBlock(nn.Module):
         """Linear block with batch normalization and ReLU activation.
 
         Args:
-            dims: List of dimensions.
+            dims: list of dimensions.
             out_dim: Number of output dimensions.
             bias: Whether to use a bias.
             use_bn: Whether to use batch normalization.

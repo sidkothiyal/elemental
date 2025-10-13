@@ -1,6 +1,6 @@
 # Base Node for the graph-based node system.
 from abc import ABC
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any
 
 
 class BaseNode(ABC):
@@ -9,13 +9,13 @@ class BaseNode(ABC):
     def __init__(
         self,
         name: str,
-        run_modes: Optional[Set[str]] = None,
+        run_modes: set[str] | None = None,
     ):
         """Initialize the node.
 
         Args:
             name: Unique name for the node
-            run_modes: Set of run modes where this node should execute
+            run_modes: set of run modes where this node should execute
         """
         self._name = name
         self._node_type = "base"
@@ -33,7 +33,7 @@ class BaseNode(ABC):
         return self._node_type
 
     @property
-    def run_modes(self) -> Set[str]:
+    def run_modes(self) -> set[str]:
         """Get supported run modes."""
         return self._run_modes.copy()
 
@@ -45,7 +45,7 @@ class BaseNode(ABC):
         """Initialize the node. Called once before first execution."""
         self._initialized = True
 
-    def _execute(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], Any]:
+    def _execute(self, inputs: dict[str, Any]) -> dict[str, Any] | Any:
         """Execute the node's core functionality.
 
         Args:
@@ -55,7 +55,7 @@ class BaseNode(ABC):
             Dictionary of outputs or single output value
         """
 
-    def __call__(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def __call__(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Execute the node.
 
         Args:

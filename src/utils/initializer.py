@@ -1,7 +1,7 @@
 """Utility functions for initializing the experiment."""
 import logging
 import random
-from typing import Any, Dict, Tuple, Union
+from typing import Any
 
 import hydra.utils as hy_utils
 import numpy as np
@@ -33,7 +33,7 @@ def initialize_device(device: str) -> torch.device:
 
 
 def set_seeds(seed: int) -> None:
-    """Set the seeds for the experiment.
+    """set the seeds for the experiment.
 
     Args:
         seed: The seed to set.
@@ -49,7 +49,7 @@ def set_seeds(seed: int) -> None:
 
 def initialize_dataset(
     dataloader_config: DictConfig,
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
+) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Initialize the dataset.
 
     Args:
@@ -63,7 +63,7 @@ def initialize_dataset(
     return dataloaders["train"], dataloaders["val"], dataloaders["test"]
 
 
-def extract_class_names(config: Any) -> Union[str, Dict[str, Any]]:
+def extract_class_names(config: Any) -> str | dict[str, Any]:
     """Extract the class names from the config.
 
     Args:
@@ -78,7 +78,7 @@ def extract_class_names(config: Any) -> Union[str, Dict[str, Any]]:
     return config.__class__.__name__
 
 
-def get_num_parameters(model: nn.Module) -> Tuple[int, int, int]:
+def get_num_parameters(model: nn.Module) -> tuple[int, int, int]:
     """Get the number of parameters in the model.
 
     Args:

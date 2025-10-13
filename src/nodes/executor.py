@@ -2,7 +2,7 @@
 
 import inspect
 from collections import defaultdict, deque
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable
 
 import hydra.utils as hydra_utils
 
@@ -27,17 +27,17 @@ class GraphExecutor:
             run_mode: Current run mode (e.g., 'train', 'eval', 'test')
         """
         self.run_mode = run_mode
-        self.available_outputs: Dict[str, Any] = {}
-        self.execution_history: List[str] = []
-        self._execution_order_cache: Dict[str, List[BaseNode]] = {}
+        self.available_outputs: dict[str, Any] = {}
+        self.execution_history: list[str] = []
+        self._execution_order_cache: dict[str, list[BaseNode]] = {}
 
         # Track nodes and variables
-        self.global_nodes: Dict[str, BaseNode] = {}  # Persistent nodes across epochs
-        self.global_variables: Dict[str, Any] = {}  # Persistent variables across epochs
-        self.epoch_variables: Dict[str, Any] = {}  # Variables cleared after each epoch
+        self.global_nodes: dict[str, BaseNode] = {}  # Persistent nodes across epochs
+        self.global_variables: dict[str, Any] = {}  # Persistent variables across epochs
+        self.epoch_variables: dict[str, Any] = {}  # Variables cleared after each epoch
 
     def set_run_mode(self, run_mode: str) -> None:
-        """Set the current run mode."""
+        """set the current run mode."""
         if self.run_mode != run_mode:
             self.run_mode = run_mode
             self._clear_execution_order_cache()
@@ -47,7 +47,7 @@ class GraphExecutor:
         self.available_outputs.clear()
         self.execution_history.clear()
 
-    def add_external_outputs(self, outputs: Dict[str, Any]) -> None:
+    def add_external_outputs(self, outputs: dict[str, Any]) -> None:
         """Add external outputs to available outputs.
 
         Args:
@@ -64,7 +64,7 @@ class GraphExecutor:
         self.global_nodes[node.name] = node
 
     def set_global_variable(self, name: str, value: Any) -> None:
-        """Set a global variable (persistent across epochs).
+        """set a global variable (persistent across epochs).
 
         Args:
             name: Variable name
@@ -74,7 +74,7 @@ class GraphExecutor:
         self.available_outputs[name] = value
 
     def set_epoch_variable(self, name: str, value: Any) -> None:
-        """Set an epoch variable (cleared after each epoch).
+        """set an epoch variable (cleared after each epoch).
 
         Args:
             name: Variable name
@@ -92,7 +92,7 @@ class GraphExecutor:
         # Clear epoch variables dict
         self.epoch_variables.clear()
 
-    def get_all_variables(self) -> Dict[str, Any]:
+    def get_all_variables(self) -> dict[str, Any]:
         """Get all variables (global + epoch).
 
         Returns:
@@ -107,11 +107,11 @@ class GraphExecutor:
         """Clear the execution order cache."""
         self._execution_order_cache.clear()
 
-    def _generate_cache_key(self, nodes: List[BaseNode]) -> str:
+    def _generate_cache_key(self, nodes: list[BaseNode]) -> str:
         """Generate a cache key for the given nodes and current run mode.
 
         Args:
-            nodes: List of nodes to generate key for
+            nodes: list of nodes to generate key for
 
         Returns:
             Cache key string
@@ -128,14 +128,14 @@ class GraphExecutor:
         nodes_key = "||".join(node_signatures)
         return f"{self.run_mode}#{nodes_key}"
 
-    def get_execution_order(self, nodes: List[BaseNode]) -> List[BaseNode]:
+    def get_execution_order(self, nodes: list[BaseNode]) -> list[BaseNode]:
         """Compute execution order based on node dependencies.
 
         Args:
-            nodes: List of nodes to order
+            nodes: list of nodes to order
 
         Returns:
-            List of nodes in execution order
+            list of nodes in execution order
 
         Raises:
             DependencyError: If circular dependencies are detected or dependencies can't be resolved
@@ -155,14 +155,14 @@ class GraphExecutor:
 
         return execution_order
 
-    def _compute_execution_order(self, nodes: List[BaseNode]) -> List[BaseNode]:
+    def _compute_execution_order(self, nodes: list[BaseNode]) -> list[BaseNode]:
         """Internal method to compute execution order without caching.
 
         Args:
-            nodes: List of nodes to order
+            nodes: list of nodes to order
 
         Returns:
-            List of nodes in execution order
+            list of nodes in execution order
 
         Raises:
             DependencyError: If circular dependencies are detected or dependencies can't be resolved
@@ -212,8 +212,8 @@ class GraphExecutor:
         return result
 
     def execute_node(
-        self, node: BaseNode, external_inputs: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, node: BaseNode, external_inputs: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Execute a single node.
 
         Args:
@@ -256,12 +256,12 @@ class GraphExecutor:
             raise ExecutionError(f"Failed to execute node '{node.name}': {str(e)}") from e
 
     def execute_nodes(
-        self, nodes: List[BaseNode], external_inputs: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Dict[str, Any]]:
+        self, nodes: list[BaseNode], external_inputs: dict[str, Any] | None = None
+    ) -> dict[str, dict[str, Any]]:
         """Execute a list of nodes in dependency order.
 
         Args:
-            nodes: List of nodes to execute
+            nodes: list of nodes to execute
             external_inputs: Additional inputs to provide
 
         Returns:
@@ -295,21 +295,21 @@ class GraphExecutor:
 
     def execute_loop(
         self,
-        nodes: List[BaseNode],
+        nodes: list[BaseNode],
         num_iterations: int,
-        external_inputs: Optional[Dict[str, Any]] = None,
+        external_inputs: dict[str, Any] | None = None,
         reset_between_iterations: bool = False,
-    ) -> List[Dict[str, Dict[str, Any]]]:
+    ) -> list[dict[str, dict[str, Any]]]:
         """Execute nodes multiple times in a loop.
 
         Args:
-            nodes: List of nodes to execute
+            nodes: list of nodes to execute
             num_iterations: Number of iterations to run
             external_inputs: Additional inputs to provide
             reset_between_iterations: Whether to reset node states between iterations
 
         Returns:
-            List of results for each iteration
+            list of results for each iteration
         """
         all_iterations = []
 
@@ -324,11 +324,11 @@ class GraphExecutor:
 
         return all_iterations
 
-    def get_available_outputs(self) -> Dict[str, Any]:
+    def get_available_outputs(self) -> dict[str, Any]:
         """Get copy of currently available outputs."""
         return self.available_outputs
 
-    def get_execution_history(self) -> List[str]:
+    def get_execution_history(self) -> list[str]:
         """Get list of executed node names in order."""
         return self.execution_history
 
@@ -350,14 +350,14 @@ class GraphExecutor:
         except ValueError:
             return False
 
-    def get_missing_inputs(self, node: BaseNode) -> Set[str]:
+    def get_missing_inputs(self, node: BaseNode) -> set[str]:
         """Get set of missing required inputs for a node.
 
         Args:
             node: Node to check
 
         Returns:
-            Set of missing input keys
+            set of missing input keys
         """
         required_inputs = node.get_required_inputs()
         return required_inputs - set(self.available_outputs.keys())
@@ -370,7 +370,7 @@ class GraphExecutor:
         """
         self._clear_execution_order_cache()
 
-    def get_cache_stats(self) -> Dict[str, int]:
+    def get_cache_stats(self) -> dict[str, int]:
         """Get cache statistics for debugging/monitoring.
 
         Returns:
@@ -381,7 +381,7 @@ class GraphExecutor:
             "total_cached_orders": len(self._execution_order_cache),
         }
 
-    def reset_all_nodes(self, nodes: List[BaseNode]) -> None:
+    def reset_all_nodes(self, nodes: list[BaseNode]) -> None:
         """Reset all nodes to their initial state."""
         for node in nodes:
             node.reset()
@@ -395,21 +395,21 @@ class ExecuteFunction:
     def __init__(
         self,
         name: str,
-        function: Union[Callable, str],
-        inputs: List[str],
-        outputs: List[str],
-        args: Optional[List[Any]] = None,
-        named_args: Optional[Dict[str, Any]] = None,
-        input_mapping: Optional[Dict[str, str]] = None,
-        output_mapping: Optional[Dict[str, str]] = None,
+        function: Callable | str,
+        inputs: list[str],
+        outputs: list[str],
+        args: list[Any] | None = None,
+        named_args: dict[str, Any] | None = None,
+        input_mapping: dict[str, str] | None = None,
+        output_mapping: dict[str, str] | None = None,
     ):
         """Initialize the execute function.
 
         Args:
             name: Name for this execution
             function: Function to execute or string path to function (e.g., "model.train")
-            inputs: List of input variable names to resolve
-            outputs: List of output variable names to create
+            inputs: list of input variable names to resolve
+            outputs: list of output variable names to create
             args: Positional arguments to pass to function
             named_args: Named arguments to pass to function
             input_mapping: Optional mapping from input names to function arguments
@@ -424,7 +424,7 @@ class ExecuteFunction:
         self.input_mapping = input_mapping or {}
         self.output_mapping = output_mapping or {}
 
-    def resolve_function(self, available_vars: Dict[str, Any]) -> Callable:
+    def resolve_function(self, available_vars: dict[str, Any]) -> Callable:
         """Resolve function from string path or return callable directly.
 
         Args:
@@ -449,7 +449,7 @@ class ExecuteFunction:
     def _resolve_reference(
         self,
         reference: Any,
-        available_vars: Dict[str, Any],
+        available_vars: dict[str, Any],
         hydra_fallback: bool = False,
         strict: bool = False,
     ) -> Any:
@@ -494,7 +494,7 @@ class ExecuteFunction:
         # Return the reference as-is for non-string values or unresolved strings
         return reference
 
-    def resolve_inputs(self, available_vars: Dict[str, Any]) -> Dict[str, Any]:
+    def resolve_inputs(self, available_vars: dict[str, Any]) -> dict[str, Any]:
         """Resolve input variables from available variables.
 
         Args:
@@ -513,14 +513,14 @@ class ExecuteFunction:
             )
         return resolved
 
-    def resolve_args(self, available_vars: Dict[str, Any]) -> List[Any]:
+    def resolve_args(self, available_vars: dict[str, Any]) -> list[Any]:
         """Resolve positional arguments.
 
         Args:
             available_vars: Dictionary of available variables
 
         Returns:
-            List of resolved positional arguments
+            list of resolved positional arguments
         """
         resolved_args = []
         for arg in self.args:
@@ -533,7 +533,7 @@ class ExecuteFunction:
             resolved_args.append(resolved_arg)
         return resolved_args
 
-    def resolve_named_args(self, available_vars: Dict[str, Any]) -> Dict[str, Any]:
+    def resolve_named_args(self, available_vars: dict[str, Any]) -> dict[str, Any]:
         """Resolve named arguments.
 
         Args:
@@ -553,7 +553,7 @@ class ExecuteFunction:
         return resolved_kwargs
 
     @staticmethod
-    def _infer_input_mapping(callable_obj: Callable, inputs: Dict[str, Any]) -> Dict[str, str]:
+    def _infer_input_mapping(callable_obj: Callable, inputs: dict[str, Any]) -> dict[str, str]:
         """Infer input mapping from callable signature.
 
         Args:
@@ -595,8 +595,8 @@ class ExecuteFunction:
 
     @staticmethod
     def _apply_input_mapping(
-        inputs: Dict[str, Any], input_mapping: Dict[str, str]
-    ) -> Dict[str, Any]:
+        inputs: dict[str, Any], input_mapping: dict[str, str]
+    ) -> dict[str, Any]:
         """Apply input mapping to convert node inputs to callable arguments.
 
         Args:
@@ -619,8 +619,8 @@ class ExecuteFunction:
 
     @staticmethod
     def _apply_output_mapping(
-        result: Any, output_mapping: Optional[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
+        result: Any, output_mapping: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         """Apply output mapping to convert callable result to node outputs.
 
         Args:
@@ -658,7 +658,7 @@ class ExecuteFunction:
             return {output_key: result}
         return {"output": result}
 
-    def execute(self, available_vars: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, available_vars: dict[str, Any]) -> dict[str, Any]:
         """Execute the function and return outputs.
 
         Args:

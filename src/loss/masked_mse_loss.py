@@ -1,6 +1,5 @@
 """Masked MSE Loss"""
 import logging
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -36,8 +35,8 @@ class MaskedMSELoss(nn.Module):
         self,
         pred: torch.Tensor,
         target: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        neg_mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
+        neg_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass
 

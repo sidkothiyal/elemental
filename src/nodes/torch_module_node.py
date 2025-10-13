@@ -1,6 +1,6 @@
 # Torch Module Node for the graph-based node system.
 
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable
 
 from torch import nn
 
@@ -15,7 +15,7 @@ class TorchModuleNode(BaseNode, nn.Module):
         name: str,
         module: nn.Module,
         variable_name: str,
-        run_modes: Optional[Set[str]] = None,
+        run_modes: set[str] | None = None,
     ):
         """Initialize the TorchModuleNode.
 
@@ -23,7 +23,7 @@ class TorchModuleNode(BaseNode, nn.Module):
             name: Unique name for the node
             module: torch.nn.Module instance to wrap
             variable_name: Name of the variable to create for this module
-            run_modes: Set of run modes where this node should execute
+            run_modes: set of run modes where this node should execute
         """
         # Initialize BaseNode first
         BaseNode.__init__(
@@ -58,13 +58,13 @@ class TorchModuleNode(BaseNode, nn.Module):
         return self._module.forward(*args, **kwargs)
 
     def train(self, mode: bool = True):
-        """Set training mode for both this node and wrapped module."""
+        """set training mode for both this node and wrapped module."""
         super().train(mode)
         self._module.train(mode)
         return self
 
     def eval(self):
-        """Set evaluation mode for both this node and wrapped module."""
+        """set evaluation mode for both this node and wrapped module."""
         super().eval()
         self._module.eval()
         return self
@@ -100,7 +100,7 @@ class TorchModuleNode(BaseNode, nn.Module):
         return self._module.modules()
 
     def named_modules(
-        self, memo: Optional[Dict[str, Any]] = None, prefix: str = "", remove_duplicate: bool = True
+        self, memo: dict[str, Any] | None = None, prefix: str = "", remove_duplicate: bool = True
     ):
         """Return named modules of the wrapped module."""
         return self._module.named_modules(memo, prefix, remove_duplicate)
@@ -157,8 +157,8 @@ class TorchModuleNode(BaseNode, nn.Module):
             param.requires_grad_(True)
 
     def __setattr__(self, name, value):
-        """Set attribute, delegating to wrapped module for module-specific attributes."""
-        # List of attributes that should be set on this object, not the wrapped module
+        """set attribute, delegating to wrapped module for module-specific attributes."""
+        # list of attributes that should be set on this object, not the wrapped module
         node_attrs = {
             "_name",
             "_node_type",

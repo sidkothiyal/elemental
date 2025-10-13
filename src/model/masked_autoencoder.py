@@ -2,7 +2,7 @@
 Masked Autoencoder
 Paper: https://arxiv.org/pdf/2111.06377
 """
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import einops
 import numpy as np
@@ -16,8 +16,8 @@ class MaskedAutoencoder(nn.Module):
     def __init__(
         self,
         dropout_percentage: float,
-        image_size: Tuple[int, int, int],
-        patch_size: Tuple[int, int],
+        image_size: tuple[int, int, int],
+        patch_size: tuple[int, int],
         embed_dim: int,
         # VIT parameters
         encoder_num_transformer_layers: int,
@@ -85,7 +85,7 @@ class MaskedAutoencoder(nn.Module):
         )
 
     @property
-    def loss_args(self) -> Dict[str, Any]:
+    def loss_args(self) -> dict[str, Any]:
         """Loss arguments"""
         return {"neg_mask": self.neg_image_mask}
 

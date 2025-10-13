@@ -4,7 +4,6 @@ Transformer
 TODO:
 (1) Learnable skip connections in the Transformer.
 """
-from typing import Optional
 
 import torch
 from torch import nn
@@ -86,8 +85,8 @@ class Transformer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-        is_causal: Optional[bool] = False,
+        attn_mask: torch.Tensor | None = None,
+        is_causal: bool | None = False,
     ) -> torch.Tensor:
         """Forward for Transformer."""
         for layer_norm, attn_layer, ff in self.layers:

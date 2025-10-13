@@ -117,7 +117,7 @@ execution_graph:
   - _target_: nodes.graph_node.GraphNode
     name: GANTrainingGraph
     statements:
-      # Set models to train mode
+      # set models to train mode
       - _target_: nodes.executor.ExecuteFunction
         name: SetGeneratorTrainMode
         function: node:model.generator.train

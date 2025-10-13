@@ -8,7 +8,6 @@ import collections
 import logging
 import os
 import statistics
-from typing import Dict, Optional, Union
 
 import fire
 import hydra
@@ -34,13 +33,13 @@ def batch_loop_gan(
     epoch: int,
     dataloader: DataLoader,
     model: nn.ModuleDict,
-    loss: Dict[str, nn.Module],
-    optim: Dict[str, torch.optim.Optimizer],
+    loss: dict[str, nn.Module],
+    optim: dict[str, torch.optim.Optimizer],
     callbacks: callback.CallbackList,
     device: torch.device,
     mode: str,  # pylint: disable=unused-argument
-    config: Optional[Union[Dict, object]] = None,  # pylint: disable=unused-argument
-) -> Dict[str, float]:
+    config: dict | object | None = None,  # pylint: disable=unused-argument
+) -> dict[str, float]:
     """Batch loop for GAN training.
 
     Args:
@@ -50,13 +49,13 @@ def batch_loop_gan(
         model: Dictionary containing 'generator' and 'discriminator' models
         loss: Dictionary containing loss functions
         optim: Dictionary containing optimizers for generator and discriminator
-        callbacks: List of callbacks for monitoring and logging
+        callbacks: list of callbacks for monitoring and logging
         device: Torch device to run computations on
 
     Returns:
         Dictionary of average losses for the epoch
     """
-    running_loss: Dict[str, float] = collections.defaultdict(float)
+    running_loss: dict[str, float] = collections.defaultdict(float)
     total_batches = len(dataloader)
     num_steps = total_batches * epoch
 
@@ -193,8 +192,8 @@ def batch_loop(
     callbacks: callback.CallbackList,
     device: torch.device,
     mode: str = "classification",
-    config: Optional[Union[Dict, object]] = None,
-) -> Dict[str, float]:
+    config: dict | object | None = None,
+) -> dict[str, float]:
     """Batch loop for standard DNN training.
 
     Args:
@@ -204,13 +203,13 @@ def batch_loop(
         model: Neural network model
         loss: Loss function
         optim: Optimizer
-        callbacks: List of callbacks for monitoring and logging
+        callbacks: list of callbacks for monitoring and logging
         device: Torch device to run computations on
 
     Returns:
         Dictionary of average losses for the epoch
     """
-    running_loss: Dict[str, float] = collections.defaultdict(float)
+    running_loss: dict[str, float] = collections.defaultdict(float)
     total_batches = len(dataloader)
     num_steps = total_batches * epoch
 
@@ -304,7 +303,7 @@ def batch_loop(
 
 
 def save_checkpoint(
-    model: Union[nn.Module, nn.ModuleDict],
+    model: nn.Module | nn.ModuleDict,
     results_dir: str,
     name: str,
     mode: str,
@@ -347,7 +346,7 @@ def run_train(
     with hydra.initialize(version_base=None, config_path="../configs"):
         config = hydra.compose(config_name=config_file)
 
-    # Set up environment: set seeds, initialize device, create results directory
+    # set up environment: set seeds, initialize device, create results directory
     initializer.set_seeds(config.seed)
     logger.info("Configuration: %s", config)
 
@@ -445,7 +444,7 @@ def run_train(
 
     # Training loop
     if not test:
-        min_val_loss: Dict[str, float] = collections.defaultdict(lambda: float("inf"))
+        min_val_loss: dict[str, float] = collections.defaultdict(lambda: float("inf"))
         callbacks.on_phase_start("train")
 
         for epoch in range(config.num_epochs):
@@ -549,7 +548,7 @@ def run_train(
 
             model.load_state_dict(torch.load(model_path))
 
-        # Set model to evaluation mode
+        # set model to evaluation mode
         model.eval()
 
         # Run test

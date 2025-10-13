@@ -9,7 +9,7 @@ dependency resolution.
 import logging
 import sys
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Set
+from typing import Any
 
 import hydra
 from hydra.utils import instantiate
@@ -26,17 +26,17 @@ class DependencyResolver:
     """Resolves dependencies between nodes for proper initialization order."""
 
     def __init__(self):
-        self.resolved_nodes: Dict[str, BaseNode] = {}
-        self.resolved_variables: Dict[str, Any] = {}
+        self.resolved_nodes: dict[str, BaseNode] = {}
+        self.resolved_variables: dict[str, Any] = {}
 
-    def extract_dependencies(self, config: Dict[str, Any]) -> Set[str]:
+    def extract_dependencies(self, config: dict[str, Any]) -> set[str]:
         """Extract dependency node names from a configuration.
 
         Args:
             config: Node configuration dictionary
 
         Returns:
-            Set of dependency node names
+            set of dependency node names
         """
         dependencies = set()
 
@@ -58,20 +58,20 @@ class DependencyResolver:
         find_deps_recursive(config)
         return dependencies
 
-    def topological_sort(self, node_configs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def topological_sort(self, node_configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Sort node configurations in dependency order using topological sort.
 
         Args:
-            node_configs: List of node configuration dictionaries
+            node_configs: list of node configuration dictionaries
 
         Returns:
-            List of node configurations in dependency order
+            list of node configurations in dependency order
         """
         # Build dependency graph
         node_by_name = {
             config.get("name", f"node_{i}"): config for i, config in enumerate(node_configs)
         }
-        dependencies: Dict[str, Set[str]] = defaultdict(set)  # node_name -> set of dependencies
+        dependencies: dict[str, set[str]] = defaultdict(set)  # node_name -> set of dependencies
 
         for config in node_configs:
             node_name = config.get("name", f"node_{len(dependencies)}")
@@ -107,7 +107,7 @@ class DependencyResolver:
 
         return result
 
-    def resolve_references(self, config: Dict[str, Any]) -> Dict[str, Any]:
+    def resolve_references(self, config: dict[str, Any]) -> dict[str, Any]:
         """Resolve node references in configuration.
 
         Args:
@@ -158,8 +158,8 @@ class GraphTrainer:
         self.config = config
         self.executor = GraphExecutor(run_mode=config.executor.get("run_mode", "train"))
         self.dependency_resolver = DependencyResolver()
-        self.global_nodes: List[BaseNode] = []
-        self.execution_graph_nodes: List[Any] = []
+        self.global_nodes: list[BaseNode] = []
+        self.execution_graph_nodes: list[Any] = []
 
     def initialize_nodes(self) -> None:
         """Initialize all nodes with dependency resolution."""
@@ -200,11 +200,11 @@ class GraphTrainer:
                 )
                 raise
 
-    def create_execution_functions(self) -> List[ExecuteFunction]:
+    def create_execution_functions(self) -> list[ExecuteFunction]:
         """Create execution functions from the execution_graph configuration.
 
         Returns:
-            List of ExecuteFunction instances
+            list of ExecuteFunction instances
         """
         if "execution_graph" not in self.config:
             return []
@@ -213,7 +213,7 @@ class GraphTrainer:
 
         return execution_functions
 
-    def execute_epoch(self, epoch: int) -> Dict[str, Any]:
+    def execute_epoch(self, epoch: int) -> dict[str, Any]:
         """Execute one training epoch.
 
         Args:
@@ -281,7 +281,7 @@ def main(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration
     """
-    # Set up logging
+    # set up logging
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )

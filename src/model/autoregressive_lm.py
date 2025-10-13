@@ -1,5 +1,4 @@
 """Autoregressive language model."""
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -27,8 +26,8 @@ class AutoregressiveLM(nn.Module):
         positional_embedding: nn.Module,
         embedding_dim: int = 768,
         max_length: int = 4096,
-        vocab_size: Optional[int] = None,
-        pretrained_tokenizer: Optional[str] = None,
+        vocab_size: int | None = None,
+        pretrained_tokenizer: str | None = None,
     ):
         super().__init__()
 

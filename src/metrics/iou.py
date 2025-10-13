@@ -1,7 +1,5 @@
 """IoU metric."""
 # pylint: disable=no-member
-from typing import Dict
-
 import torch
 from torchmetrics import Metric
 
@@ -41,7 +39,7 @@ class IoU(Metric):
 
     def aggregate_results(
         self, intersection: torch.Tensor, union: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Aggregate the results.
 
         Args:
@@ -49,7 +47,7 @@ class IoU(Metric):
             union: Union of shape (num_classes,).
 
         Returns:
-            Dict with the following keys:
+            dict with the following keys:
                 - "iou": Mean IoU.
                 - "class_wise_iou": Class-wise IoU.
         """
@@ -84,7 +82,7 @@ class IoU(Metric):
                 f"Got values in the range: [{torch.min(tensor)}, {torch.max(tensor)}]."
             )
 
-    def update(self, preds: torch.Tensor, target: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def update(self, preds: torch.Tensor, target: torch.Tensor) -> dict[str, torch.Tensor]:
         """Update the metric.
 
         Args:
@@ -92,7 +90,7 @@ class IoU(Metric):
             target: Targets of shape (N, H, W).
 
         Returns:
-            Dict with the following keys:
+            dict with the following keys:
                 - "iou": Mean IoU.
                 - "class_wise_iou": Class-wise IoU.
         """
@@ -124,11 +122,11 @@ class IoU(Metric):
 
         return self.aggregate_results(intersection, union)
 
-    def compute(self) -> Dict[str, torch.Tensor]:
+    def compute(self) -> dict[str, torch.Tensor]:
         """Compute the IoU metric.
 
         Returns:
-            Dict with the following keys:
+            dict with the following keys:
                 - "iou": Mean IoU.
                 - "class_wise_iou": Class-wise IoU.
         """

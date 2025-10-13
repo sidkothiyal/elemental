@@ -1,5 +1,4 @@
 """Convolutional transpose blocks for the model."""
-from typing import List, Optional
 
 import torch
 from torch import nn
@@ -15,12 +14,12 @@ class ConvTransposeBNReLU(nn.Module):
         kernel_size: int,
         stride: int,
         padding: int,
-        output_padding: Optional[int] = 0,
-        groups: Optional[int] = 1,
-        dilation: Optional[int] = 1,
-        bias: Optional[bool] = False,
-        use_bn: Optional[bool] = True,
-        use_relu: Optional[bool] = True,
+        output_padding: int | None = 0,
+        groups: int | None = 1,
+        dilation: int | None = 1,
+        bias: bool | None = False,
+        use_bn: bool | None = True,
+        use_relu: bool | None = True,
     ):
         """Layer for a ConvTranspose2d, batch norm, and ReLU activation.
 
@@ -79,28 +78,28 @@ class ConvTransposeBlock(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        channels: List[int],
-        kernel_sizes: List[int],
-        strides: List[int],
-        paddings: List[int],
-        output_paddings: List[int],
-        groups: Optional[List[int]] = None,
-        dilations: Optional[List[int]] = None,
-        bias: Optional[bool] = False,
-        use_bn: Optional[bool] = True,
-        use_relu: Optional[bool] = True,
+        channels: list[int],
+        kernel_sizes: list[int],
+        strides: list[int],
+        paddings: list[int],
+        output_paddings: list[int],
+        groups: list[int] | None = None,
+        dilations: list[int] | None = None,
+        bias: bool | None = False,
+        use_bn: bool | None = True,
+        use_relu: bool | None = True,
     ):
         """Block of ConvTransposeBNReLU layers.
 
         Args:
             in_channels: Number of input channels.
-            channels: List of output channels.
-            kernel_sizes: List of kernel sizes.
-            strides: List of strides.
-            paddings: List of paddings.
-            output_paddings: List of output paddings.
-            groups: List of groups.
-            dilations: List of dilations.
+            channels: list of output channels.
+            kernel_sizes: list of kernel sizes.
+            strides: list of strides.
+            paddings: list of paddings.
+            output_paddings: list of output paddings.
+            groups: list of groups.
+            dilations: list of dilations.
             bias: Whether to use a bias in the transposed convolution.
                 use_bn: Whether to use batch normalization.
             use_relu: Whether to use a ReLU activation.

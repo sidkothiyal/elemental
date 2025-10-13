@@ -11,7 +11,6 @@ fine-tuning time.
 
 (2) Switch LayerNorm to Learnable TanH.
 """
-from typing import Optional, Tuple
 
 import einops
 import torch
@@ -26,12 +25,12 @@ class ViT(nn.Module):
 
     def __init__(
         self,
-        image_size: Tuple[int, int, int],
-        patch_size: Tuple[int, int],
+        image_size: tuple[int, int, int],
+        patch_size: tuple[int, int],
         embed_dim: int,  # D
         num_transformer_layers: int,
         attn_heads: int,
-        num_classes: Optional[int] = None,
+        num_classes: int | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -100,7 +99,7 @@ class ViT(nn.Module):
                 nn.Linear(num_classes, num_classes),
             )
 
-    def forward(self, x, indices_to_keep: Optional[torch.Tensor] = None):
+    def forward(self, x, indices_to_keep: torch.Tensor | None = None):
         """Forward pass of the ViT.
 
         Args:
