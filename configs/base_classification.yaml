@@ -9,7 +9,7 @@ test: false
 batch_size: 128
 seed: 42
 
-device: "accelerated"
+device: "gpu"
 
 dataset_dir: data/tiny_imagenet
 classes:

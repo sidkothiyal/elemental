@@ -9,7 +9,7 @@ test: false
 batch_size: 8
 seed: 42
 
-device: "accelerated"
+device: "gpu"
 
 callbacks:
   - _target_: callback.wandb_callback.WandbCallback

@@ -12,7 +12,7 @@ seed: 42
 validation_interval: 1000
 checkpoint_interval: 1000
 
-device: "accelerated"
+device: "gpu"
 
 max_length: 1024
 pretrained_tokenizer: "gpt2"
