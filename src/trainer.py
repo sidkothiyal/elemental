@@ -4,6 +4,7 @@ Trainer module for DNN models.
 This module provides functionality for training different types of DNN models.
 It handles the training loop, validation, testing, and model checkpointing.
 """
+
 import collections
 import logging
 import os
@@ -346,7 +347,7 @@ def run_train(
     with hydra.initialize(version_base=None, config_path="../configs"):
         config = hydra.compose(config_name=config_file)
 
-    # set up environment: set seeds, initialize device, create results directory
+    # Set up environment: set seeds, initialize device, create results directory
     initializer.set_seeds(config.seed)
     logger.info("Configuration: %s", config)
 
