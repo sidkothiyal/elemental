@@ -3,11 +3,15 @@ results_dir: results/autoencoder/
 
 mode: "autoencoder"
 
-lr: 0.00025
-num_epochs: 100
+lr: 0.0003
+num_epochs: 200
 test: false
 batch_size: 4
 seed: 42
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
 
 device: "accelerated"
 
@@ -42,9 +46,9 @@ dataloader:
 loss:
   _target_: torch.nn.MSELoss
 
-lr_scheduler_params:
-  step_size: 10
-  gamma: 0.75
+# lr_scheduler_params:
+#   step_size: 10
+#   gamma: 0.75
 
 model:
   _target_: model.unet.UNet

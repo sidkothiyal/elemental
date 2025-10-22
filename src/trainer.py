@@ -409,38 +409,37 @@ def run_train(
 
     # Initialize optimizer, scheduler and loss function
     mode = config.mode
+    optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
+    scheduler_class = getattr(torch.optim.lr_scheduler, config.get("lr_scheduler", "CosineAnnealingLR"))
     if mode == "gan":
         # GAN specific setup
         optim = {
-            "generator": torch.optim.AdamW(
+            "generator": optimizer_class(
                 model["generator"].parameters(),
                 lr=config.lr,
             ),
-            "discriminator": torch.optim.AdamW(model["discriminator"].parameters(), lr=config.lr),
+            "discriminator": optimizer_class(model["discriminator"].parameters(), lr=config.lr),
         }
         scheduler = {
-            "generator": torch.optim.lr_scheduler.StepLR(
+            "generator": scheduler_class(
                 optim["generator"],
-                step_size=config.lr_scheduler_params.step_size,
-                gamma=config.lr_scheduler_params.gamma,
+                T_max=config.num_epochs,
             ),
-            "discriminator": torch.optim.lr_scheduler.StepLR(
+            "discriminator": scheduler_class(
                 optim["discriminator"],
-                step_size=config.lr_scheduler_params.step_size,
-                gamma=config.lr_scheduler_params.gamma,
+                T_max=config.num_epochs,
             ),
         }
         batch_loop_fn = batch_loop_gan
     else:
         # Standard model setup
-        optim = torch.optim.AdamW(
+        optim = optimizer_class(
             model.parameters(),
             lr=config.lr,
         )
-        scheduler = torch.optim.lr_scheduler.StepLR(
+        scheduler = scheduler_class(
             optim,
-            step_size=config.lr_scheduler_params.step_size,
-            gamma=config.lr_scheduler_params.gamma,
+            T_max=config.num_epochs,
         )
         batch_loop_fn = batch_loop
 
