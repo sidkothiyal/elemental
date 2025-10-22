@@ -367,10 +367,7 @@ def run_train(
 
     # Initialize device
     device = initializer.initialize_device(config.device)
-    dtype = config.get("dtype", torch.bfloat16)
-    if not isinstance(dtype, torch.dtype):
-        dtype = hy_utils.instantiate(dtype)
-    logger.info("Using device: %s", device)
+    dtype = initializer.initialize_dtype(config.get("dtype"))
 
     # Create results directory
     results_dir = os.path.join(config.results_dir, config.experiment_name)
@@ -410,7 +407,9 @@ def run_train(
     # Initialize optimizer, scheduler and loss function
     mode = config.mode
     optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
-    scheduler_class = getattr(torch.optim.lr_scheduler, config.get("lr_scheduler", "CosineAnnealingLR"))
+    scheduler_class = getattr(
+        torch.optim.lr_scheduler, config.get("lr_scheduler", "CosineAnnealingLR")
+    )
     if mode == "gan":
         # GAN specific setup
         optim = {

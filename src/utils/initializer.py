@@ -1,4 +1,5 @@
 """Utility functions for initializing the experiment."""
+
 import logging
 import random
 from typing import Any
@@ -29,7 +30,27 @@ def initialize_device(device: str) -> torch.device:
             return torch.device("mps")
         raise ValueError("Device selected as gpu but no GPU or MPS available")
 
+    logger.info("Using device: %s", device)
     return torch.device(device)
+
+
+def initialize_dtype(dtype: str | None = None) -> torch.dtype:
+    """Initialize the dtype.
+
+    Args:
+        dtype: The dtype to initialize.
+    """
+    dtype = dtype or torch.bfloat16
+    if not isinstance(dtype, torch.dtype):
+        dtype = hy_utils.instantiate(dtype)
+
+    if dtype is torch.bfloat16:
+        if not torch.cuda.is_bf16_supported():
+            logger.warning("BFloat16 is not supported on this device. Using float32 instead.")
+            dtype = torch.float32
+
+    logger.info("Using dtype: %s", dtype)
+    return dtype
 
 
 def set_seeds(seed: int) -> None:
@@ -38,6 +59,7 @@ def set_seeds(seed: int) -> None:
     Args:
         seed: The seed to set.
     """
+    logger.info("Setting seeds to: %s", seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
