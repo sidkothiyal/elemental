@@ -38,7 +38,8 @@ def batch_loop_gan(
     optim: dict[str, torch.optim.Optimizer],
     callbacks: callback.CallbackList,
     device: torch.device,
-    mode: str,  # pylint: disable=unused-argument
+    dtype: torch.dtype = torch.bfloat16,
+    mode: str = "gan",  # pylint: disable=unused-argument
     config: dict | object | None = None,  # pylint: disable=unused-argument
 ) -> dict[str, float]:
     """Batch loop for GAN training.
@@ -81,12 +82,15 @@ def batch_loop_gan(
         input_data["input"] = batch["input"]
 
         # Generate fake segmentation mask
-        with torch.set_grad_enabled(phase == "train"):
-            pred_seg_mask = model["generator"](batch["input"])
-            pred_seg_mask = torch.softmax(pred_seg_mask, dim=1)
+        with (
+            torch.set_grad_enabled(phase == "train"),
+            torch.autocast(device_type=device.type, dtype=dtype),
+        ):
+            pred_target = model["generator"](batch["input"])
+            # pred_target = torch.softmax(pred_target, dim=1)
 
             # Discriminator prediction on fake data
-            discriminator_fake = model["discriminator"](pred_seg_mask.detach())
+            discriminator_fake = model["discriminator"](pred_target.detach())
             disc_fake_loss = loss["adversarial"](
                 discriminator_fake, torch.zeros_like(discriminator_fake)
             )
@@ -100,15 +104,18 @@ def batch_loop_gan(
         # Train discriminator on real data
         # ---------------------------------------
         # Prepare one-hot encoded segmentation mask
-        real_seg_mask = batch["seg_mask"]  # Shape -> (B, H, W)
-        num_classes = model["generator"].out_channels
-        # Shape post one-hot encoding -> (B, H, W, C)
-        one_hot_encoded_seg_mask = F.one_hot(real_seg_mask, num_classes=num_classes)
-        one_hot_encoded_seg_mask = one_hot_encoded_seg_mask.permute(0, 3, 1, 2).float().to(device)
+        real_target = batch["target"]  # Shape -> (B, H, W)
+        # num_classes = model["generator"].out_channels
+        # # Shape post one-hot encoding -> (B, H, W, C)
+        # real_target = F.one_hot(real_target, num_classes=num_classes)
+        # real_target = real_target.permute(0, 3, 1, 2).float().to(device)
 
-        with torch.set_grad_enabled(phase == "train"):
+        with (
+            torch.set_grad_enabled(phase == "train"),
+            torch.autocast(device_type=device.type, dtype=dtype),
+        ):
             # Discriminator prediction on real data
-            discriminator_real = model["discriminator"](one_hot_encoded_seg_mask)
+            discriminator_real = model["discriminator"](real_target)
             disc_real_loss = loss["adversarial"](
                 discriminator_real, torch.ones_like(discriminator_real)
             )
@@ -119,8 +126,8 @@ def batch_loop_gan(
                 optim["discriminator"].step()
 
         # Store for callbacks
-        pred_data["discriminator_fake"] = pred_seg_mask
-        target_data["discriminator_real"] = one_hot_encoded_seg_mask
+        pred_data["discriminator_fake"] = pred_target
+        target_data["discriminator_real"] = real_target
 
         # Calculate total discriminator loss
         disc_total_loss = disc_real_loss.item() + disc_fake_loss.item()
@@ -129,13 +136,16 @@ def batch_loop_gan(
         # ---------------------------------------
         # Train generator
         # ---------------------------------------
-        with torch.set_grad_enabled(phase == "train"):
+        with (
+            torch.set_grad_enabled(phase == "train"),
+            torch.autocast(device_type=device.type, dtype=dtype),
+        ):
             # Generate masks again for generator training
-            pred_seg_mask = model["generator"](batch["input"])
-            pred_seg_mask = torch.softmax(pred_seg_mask, dim=1)
+            pred_target = model["generator"](batch["input"])
+            # pred_target = torch.softmax(pred_target, dim=1)
 
             # Discriminator prediction on generator output
-            discriminator_fake = model["discriminator"](pred_seg_mask)
+            discriminator_fake = model["discriminator"](pred_target)
 
             # Generator tries to fool discriminator (fake should be classified as real)
             disc_assumed_real_loss = loss["adversarial"](
@@ -143,7 +153,7 @@ def batch_loop_gan(
             )
 
             # Additional feature matching loss
-            feature_matching_loss = loss["feature_matching"](pred_seg_mask, batch["seg_mask"])
+            feature_matching_loss = loss["feature_matching"](pred_target, batch["target"])
 
             # Total generator loss
             gen_loss = disc_assumed_real_loss + feature_matching_loss
@@ -192,6 +202,7 @@ def batch_loop(
     optim: torch.optim.Optimizer,
     callbacks: callback.CallbackList,
     device: torch.device,
+    dtype: torch.dtype = torch.bfloat16,
     mode: str = "classification",
     config: dict | object | None = None,
 ) -> dict[str, float]:
@@ -230,7 +241,10 @@ def batch_loop(
         batch = {k: v.to(device) for k, v in batch.items()}
 
         # Forward pass with gradient calculation only during training
-        with torch.set_grad_enabled(phase == "train"):
+        with (
+            torch.set_grad_enabled(phase == "train"),
+            torch.autocast(device_type=device.type, dtype=dtype),
+        ):
             pred = model(batch["input"])
 
             loss_args = {}
@@ -353,6 +367,9 @@ def run_train(
 
     # Initialize device
     device = initializer.initialize_device(config.device)
+    dtype = config.get("dtype", torch.bfloat16)
+    if not isinstance(dtype, torch.dtype):
+        dtype = hy_utils.instantiate(dtype)
     logger.info("Using device: %s", device)
 
     # Create results directory
@@ -464,6 +481,7 @@ def run_train(
                 optim,
                 callbacks,
                 device,
+                dtype=dtype,
                 mode=mode,
                 config=config,
             )
@@ -497,6 +515,7 @@ def run_train(
                     optim,
                     callbacks,
                     device,
+                    dtype=dtype,
                     mode=mode,
                     config=config,
                 )
@@ -562,6 +581,7 @@ def run_train(
             optim,
             callbacks,
             device,
+            dtype=dtype,
             mode=mode,
         )
         logger.info("Test results: %s", test_loss)

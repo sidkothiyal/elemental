@@ -1,0 +1,79 @@
+experiment_name: compression_autoencoder_gan_unet_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/gan/
+
+mode: "gan"
+
+lr: 0.00025
+num_epochs: 100
+validation_interval: 10
+test: false
+batch_size: 2
+seed: 42
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.float16
+
+device: "accelerated"
+
+callbacks:
+  - _target_: callback.wandb_callback.WandbCallback
+    exp_name: ${experiment_name}
+    project: "elemental"
+    entity: "elemental-ai"
+    num_samples_to_log: 1
+    logging_interval: 50
+    mode: ${mode}
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.div2k_dataset.DIV2KDataset
+      root_dir: data/div2k/train
+      target_shape: [640, 1024]
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.div2k_dataset.DIV2KDataset
+      root_dir: data/div2k/val
+      target_shape: [640, 1024]
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+  test: null
+
+loss:
+  feature_matching:
+    _target_: pytorch_msssim.MS_SSIM
+  adversarial:
+    _target_: torch.nn.BCEWithLogitsLoss
+
+lr_scheduler_params:
+  step_size: 10
+  gamma: 0.75
+
+model:
+  _target_: torch.nn.ModuleDict
+  modules:
+    generator:
+      _target_: model.unet.UNet
+      in_channels: 3
+      out_channels: 3
+      channels: [4, 8, 16, 32, 64]
+      skip_first_connection: true
+
+    discriminator:
+      _target_: model.blocks.ConvBlock
+      in_channels: 3
+      channels: [64, 128, 256, 512, 1]
+      kernel_sizes: [4, 4, 4, 4, 4]
+      strides: [2, 2, 2, 1, 1]
+      paddings: [1, 1, 1, 1, 1]

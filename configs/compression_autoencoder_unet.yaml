@@ -33,7 +33,7 @@ dataloader:
     _target_: torch.utils.data.DataLoader
     dataset:
       _target_: dataset.div2k_dataset.DIV2KDataset
-      root_dir: data/div2k/valid
+      root_dir: data/div2k/val
       target_shape: [640, 1024]
     batch_size: ${batch_size}
     shuffle: false

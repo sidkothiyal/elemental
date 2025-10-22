@@ -14,6 +14,7 @@ dependencies = [
   "kaggle",
   "einops",
   "fire (>=0.6.0, <1.0.0)",
+  "hydra-core",
   "lz4",
   "matplotlib (>=3.10.0, <4.0.0)", # Unused
   "numpy (>=2.0.0, <3)",
@@ -24,6 +25,8 @@ dependencies = [
   "pre-commit",
   "pyyaml (>=6.0.2, <7.0.0)",
   "pytest",
+  "pytorch-msssim",
+  "pyyaml (>=6.0.2, <7.0.0)", # Unused
   "scikit-learn (>=1.6.1, <2.0.0)", # Unused
   "torch",
   "torchmetrics (>=1.0.0, <2.0.0)",

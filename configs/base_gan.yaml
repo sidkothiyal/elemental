@@ -29,6 +29,8 @@ dataloader:
       root_dir: data/cityscapes/train
       segmentation_enabled: true
       depth_enabled: false
+      rename_output_keys:
+        seg_mask: target
     batch_size: ${batch_size}
     shuffle: true
   val:
@@ -38,6 +40,8 @@ dataloader:
       root_dir: data/cityscapes/val
       segmentation_enabled: true
       depth_enabled: false
+      rename_output_keys:
+        seg_mask: target
     batch_size: ${batch_size}
     shuffle: false
   test: null
