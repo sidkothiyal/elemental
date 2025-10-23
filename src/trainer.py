@@ -410,6 +410,7 @@ def run_train(
     scheduler_class = getattr(
         torch.optim.lr_scheduler, config.get("lr_scheduler", "CosineAnnealingLR")
     )
+    scheduler_params = config.get("lr_scheduler_params", {})
     if mode == "gan":
         # GAN specific setup
         optim = {
@@ -422,11 +423,11 @@ def run_train(
         scheduler = {
             "generator": scheduler_class(
                 optim["generator"],
-                T_max=config.num_epochs,
+                **scheduler_params,
             ),
             "discriminator": scheduler_class(
                 optim["discriminator"],
-                T_max=config.num_epochs,
+                **scheduler_params,
             ),
         }
         batch_loop_fn = batch_loop_gan
@@ -438,7 +439,7 @@ def run_train(
         )
         scheduler = scheduler_class(
             optim,
-            T_max=config.num_epochs,
+            **scheduler_params,
         )
         batch_loop_fn = batch_loop
 

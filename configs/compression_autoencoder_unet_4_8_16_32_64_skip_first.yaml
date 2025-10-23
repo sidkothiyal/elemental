@@ -1,4 +1,4 @@
-experiment_name: compression_autoencoder_unet_4_8_16_32_64_skip_first_mse_loss_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: compression_autoencoder_unet_4_8_16_32_64_skip_first_l1_loss_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
 mode: "autoencoder"
@@ -53,7 +53,7 @@ dataloader:
   test: null
 
 loss:
-  _target_: torch.nn.MSELoss
+  _target_: torch.nn.L1Loss
 
 optimizer: "AdamW"
 
