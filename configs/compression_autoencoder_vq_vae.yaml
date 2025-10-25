@@ -1,0 +1,82 @@
+experiment_name: compression_autoencoder_vq_vae_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+lr: 0.0003
+num_epochs: 200
+validation_interval: 25
+test: false
+batch_size: 4
+seed: 42
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+device: "accelerated"
+
+callbacks:
+  - _target_: callback.wandb_callback.WandbCallback
+    exp_name: ${experiment_name}
+    project: "elemental"
+    entity: "elemental-ai"
+    num_samples_to_log: 1
+    logging_interval: 100
+    mode: ${mode}
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.div2k_dataset.DIV2KDataset
+      root_dir: data/div2k/train
+      target_shape: [640, 1024]
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.div2k_dataset.DIV2KDataset
+      root_dir: data/div2k/val
+      target_shape: [640, 1024]
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  test: null
+
+loss:
+  _target_: torch.nn.MSELoss
+
+optimizer: "AdamW"
+
+lr_scheduler: "CosineAnnealingLR"
+lr_scheduler_params:
+  T_max: ${num_epochs}
+
+model:
+  _target_: model.vq_vae.VQVAE
+  encoder:
+    _target_: model.blocks.conv_block.ConvBlock
+    in_channels: 3
+    channels: [64, 128, 256, 512]
+    kernel_sizes: [3, 3, 3, 3]
+    strides: [2, 2, 2, 2]
+    paddings: [1, 1, 1, 1]
+  decoder:
+    _target_: model.blocks.convtranspose_block.ConvTransposeBlock
+    in_channels: 512
+    channels: [256, 128, 64, 3]
+    kernel_sizes: [4, 4, 4, 4]
+    strides: [2, 2, 2, 2]
+    paddings: [1, 1, 1, 1]
+    output_paddings: [0, 0, 0, 0]
+  codebook_size: 128
+  codebook_dim: 512

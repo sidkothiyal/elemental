@@ -252,6 +252,10 @@ def batch_loop(
                 loss_args = model.loss_args
                 target_data.update(loss_args)
             batch_loss = loss(pred, batch["target"], **loss_args)
+            if hasattr(model, "losses"):
+                for key, value in model.losses.items():
+                    running_loss[key] += value.clone().detach().item()
+                    batch_loss += value
 
             if phase == "train":
                 # Gradient accumulation
@@ -306,7 +310,8 @@ def batch_loop(
 
     # Calculate average metrics
     metrics = {
-        "loss": running_loss["total"] / total_batches,
+        f"loss_{loss_key}": running_loss[loss_key] / total_batches
+        for loss_key in running_loss.keys()
     }
     callbacks.log_metrics(num_steps + total_batches, phase, metrics)
 

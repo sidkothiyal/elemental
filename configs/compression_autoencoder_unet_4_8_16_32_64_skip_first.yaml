@@ -58,7 +58,8 @@ loss:
 optimizer: "AdamW"
 
 lr_scheduler: "CosineAnnealingLR"
-lr_scheduler_params: null
+lr_scheduler_params:
+  T_max: ${num_epochs}
 
 model:
   _target_: model.unet.UNet
