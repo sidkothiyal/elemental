@@ -1,4 +1,4 @@
-experiment_name: compression_autoencoder_unet_4_8_16_32_64_skip_first_ssim_loss_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: compression_autoencoder_unet_4_8_16_32_64_skip_first_weighted_ms_ssim_mse_1_100_loss_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
 mode: "autoencoder"
@@ -14,6 +14,7 @@ dtype:
   _args_:
     - torch.bfloat16
 
+clip_grad_norm: 1.0
 device: "accelerated"
 
 callbacks:
@@ -22,7 +23,7 @@ callbacks:
     project: "elemental"
     entity: "elemental-ai"
     num_samples_to_log: 1
-    logging_interval: 100
+    logging_interval: 50
     mode: ${mode}
 
 dataloader:
@@ -53,14 +54,53 @@ dataloader:
   test: null
 
 loss:
-  _target_: pytorch_msssim.MS_SSIM
+  _target_: loss.phased_loss.PhasedLoss
+  total_epochs: ${num_epochs}
+  phases:
+    - loss:
+        _target_: torch.nn.L1Loss
+      run_until: 0.2
+    - loss:
+        _target_: loss.moving_weighted_loss.MovingWeightedLoss
+        start_weights: [10.0, 0.0]
+        end_weights: [9.0, 1.0]
+        start_percentage: 0.2
+        end_percentage: 0.8
+        total_epochs: ${num_epochs}
+        scale_losses: true
+        loss_fns:
+          - _target_: torch.nn.L1Loss
+          - _target_: loss.ssim.SSIMLoss
+            multi_scale: true
+            ssim_kwargs:
+              data_range: 1.0
+              size_average: True
+              channel: 3
+      run_until: 0.8
+    - loss:
+        _target_: loss.weighted_loss.WeightedLoss
+        weights: [9.0, 1.0]
+        scale_losses: true
+        loss_fns:
+          - _target_: torch.nn.L1Loss
+          - _target_: loss.ssim.SSIMLoss
+            multi_scale: true
+            ssim_kwargs:
+              data_range: 1.0
+              size_average: True
+              channel: 3
+      run_until: 1.0
 
 optimizer: "AdamW"
 
-lr_scheduler: "StepLR"
+lr_scheduler: "CosineAnnealingLR"
 lr_scheduler_params:
-  step_size: 25
-  gamma: 0.9
+  T_max: ${num_epochs}
+
+# lr_scheduler: "StepLR"
+# lr_scheduler_params:
+#   step_size: 25
+#   gamma: 0.9
 
 model:
   _target_: model.unet.UNet

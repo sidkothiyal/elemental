@@ -20,6 +20,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from callback import callback
+from loss.utils import call_loss_with_epoch
 from utils import initializer
 
 # Configure logging
@@ -91,13 +92,17 @@ def batch_loop_gan(
 
             # Discriminator prediction on fake data
             discriminator_fake = model["discriminator"](pred_target.detach())
-            disc_fake_loss = loss["adversarial"](
-                discriminator_fake, torch.zeros_like(discriminator_fake)
+            disc_fake_loss = call_loss_with_epoch(
+                loss["adversarial"], discriminator_fake, torch.zeros_like(discriminator_fake), epoch
             )
 
             if phase == "train":
                 optim["discriminator"].zero_grad()
                 disc_fake_loss.backward()
+                if config.get("clip_grad_norm", None) is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model["discriminator"].parameters(), max_norm=config.get("clip_grad_norm")
+                    )
                 optim["discriminator"].step()
 
         # ---------------------------------------
@@ -116,13 +121,17 @@ def batch_loop_gan(
         ):
             # Discriminator prediction on real data
             discriminator_real = model["discriminator"](real_target)
-            disc_real_loss = loss["adversarial"](
-                discriminator_real, torch.ones_like(discriminator_real)
+            disc_real_loss = call_loss_with_epoch(
+                loss["adversarial"], discriminator_real, torch.ones_like(discriminator_real), epoch
             )
 
             if phase == "train":
                 optim["discriminator"].zero_grad()
                 disc_real_loss.backward()
+                if config.get("clip_grad_norm", None) is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model["discriminator"].parameters(), max_norm=config.get("clip_grad_norm")
+                    )
                 optim["discriminator"].step()
 
         # Store for callbacks
@@ -148,12 +157,14 @@ def batch_loop_gan(
             discriminator_fake = model["discriminator"](pred_target)
 
             # Generator tries to fool discriminator (fake should be classified as real)
-            disc_assumed_real_loss = loss["adversarial"](
-                discriminator_fake, torch.ones_like(discriminator_fake)
+            disc_assumed_real_loss = call_loss_with_epoch(
+                loss["adversarial"], discriminator_fake, torch.ones_like(discriminator_fake), epoch
             )
 
             # Additional feature matching loss
-            feature_matching_loss = loss["feature_matching"](pred_target, batch["target"])
+            feature_matching_loss = call_loss_with_epoch(
+                loss["feature_matching"], pred_target, batch["target"], epoch
+            )
 
             # Total generator loss
             gen_loss = disc_assumed_real_loss + feature_matching_loss
@@ -161,6 +172,10 @@ def batch_loop_gan(
             if phase == "train":
                 optim["generator"].zero_grad()
                 gen_loss.backward()
+                if config.get("clip_grad_norm", None) is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model["generator"].parameters(), max_norm=config.get("clip_grad_norm")
+                    )
                 optim["generator"].step()
 
         running_loss["generator"] += gen_loss.item()
@@ -251,7 +266,9 @@ def batch_loop(
             if hasattr(model, "loss_args"):
                 loss_args = model.loss_args
                 target_data.update(loss_args)
-            batch_loss = loss(pred, batch["target"], **loss_args)
+
+            # Call loss with epoch support for phased losses
+            batch_loss = call_loss_with_epoch(loss, pred, batch["target"], epoch, **loss_args)
             if hasattr(model, "losses"):
                 for key, value in model.losses.items():
                     running_loss[key] += value.clone().detach().item()
@@ -262,6 +279,11 @@ def batch_loop(
                 grad_accum_steps = config.get("gradient_accumulation_steps", 1) if config else 1
                 batch_loss = batch_loss / grad_accum_steps
                 batch_loss.backward()
+
+                if config.get("clip_grad_norm", None) is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), max_norm=config.get("clip_grad_norm")
+                    )
 
                 if (batch_idx + 1) % grad_accum_steps == 0:
                     optim.step()
