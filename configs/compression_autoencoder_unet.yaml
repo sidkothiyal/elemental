@@ -13,7 +13,7 @@ dtype:
   _args_:
     - torch.bfloat16
 
-device: "accelerated"
+device: "gpu"
 
 callbacks:
   - _target_: callback.wandb_callback.WandbCallback
