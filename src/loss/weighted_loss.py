@@ -3,7 +3,7 @@
 from typing import List, Optional, Union
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from loss.utils import call_loss_with_epoch
 
@@ -39,6 +39,10 @@ class WeightedLoss(nn.Module):
         self.scale_losses = scale_losses
         # Track maximum value for each loss function. Default to 1.0.
         self.register_buffer("loss_scales", torch.ones(len(self.loss_fns)))
+        # Track if we've seen any data yet for proper initialization
+        self.register_buffer(
+            "_scales_initialized", torch.zeros(len(self.loss_fns), dtype=torch.bool)
+        )
 
     def forward(
         self, pred: torch.Tensor, target: torch.Tensor, epoch: Optional[int] = None, *args, **kwargs
@@ -61,7 +65,12 @@ class WeightedLoss(nn.Module):
 
             # Update the maximum value if scaling is enabled
             if self.scale_losses:
-                self.loss_scales[i] = torch.max(self.loss_scales[i], loss_val.detach())
+                # On first encounter, initialize the scale to the first loss value
+                if not self._scales_initialized[i]:
+                    self.loss_scales[i] = loss_val.detach()
+                    self._scales_initialized[i] = True
+                else:
+                    self.loss_scales[i] = torch.max(self.loss_scales[i], loss_val.detach())
 
             # Scale the loss by its loss scale. If scaling is not enabled, the loss scale is 1.0.
             scaled_loss = loss_val / torch.clamp(self.loss_scales[i], min=1e-8)

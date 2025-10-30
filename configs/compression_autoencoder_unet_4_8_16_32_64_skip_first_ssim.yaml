@@ -1,4 +1,4 @@
-experiment_name: compression_autoencoder_unet_4_8_16_32_64_skip_first_weighted_ms_ssim_mse_1_100_loss_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: compression_autoencoder_unet_4_8_16_32_64_skip_first_3_phase_loss_l1_ssim_gradient_100-1-10_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
 mode: "autoencoder"
@@ -62,8 +62,8 @@ loss:
       run_until: 0.2
     - loss:
         _target_: loss.moving_weighted_loss.MovingWeightedLoss
-        start_weights: [10.0, 0.0]
-        end_weights: [9.0, 1.0]
+        start_weights: [100.0, 0.0, 0.0]
+        end_weights: [95.0, 1.0, 10.0]
         start_percentage: 0.2
         end_percentage: 0.8
         total_epochs: ${num_epochs}
@@ -76,10 +76,11 @@ loss:
               data_range: 1.0
               size_average: True
               channel: 3
+          - _target_: loss.gradient_loss.GradientLoss
       run_until: 0.8
     - loss:
         _target_: loss.weighted_loss.WeightedLoss
-        weights: [9.0, 1.0]
+        weights: [95.0, 1.0, 10.0]
         scale_losses: true
         loss_fns:
           - _target_: torch.nn.L1Loss
@@ -89,6 +90,7 @@ loss:
               data_range: 1.0
               size_average: True
               channel: 3
+          - _target_: loss.gradient_loss.GradientLoss
       run_until: 1.0
 
 optimizer: "AdamW"

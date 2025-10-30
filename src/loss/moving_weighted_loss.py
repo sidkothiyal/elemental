@@ -100,6 +100,10 @@ class MovingWeightedLoss(nn.Module):
         self.scale_losses = scale_losses
         # Track maximum value for each loss function. Default to 1.0.
         self.register_buffer("loss_scales", torch.ones(len(self.loss_fns)))
+        # Track if we've seen any data yet for proper initialization
+        self.register_buffer(
+            "_scales_initialized", torch.zeros(len(self.loss_fns), dtype=torch.bool)
+        )
 
         logger.info(
             "MovingWeightedLoss initialized for %d epochs with %d losses:",
@@ -176,7 +180,12 @@ class MovingWeightedLoss(nn.Module):
 
             # Update the maximum value if scaling is enabled
             if self.scale_losses:
-                self.loss_scales[i] = torch.max(self.loss_scales[i], loss_value.detach())
+                # On first encounter, initialize the scale to the first loss value
+                if not self._scales_initialized[i]:
+                    self.loss_scales[i] = loss_value.detach()
+                    self._scales_initialized[i] = True
+                else:
+                    self.loss_scales[i] = torch.max(self.loss_scales[i], loss_value.detach())
 
             # Scale the loss by its loss scale. If scaling is not enabled, the loss scale is 1.0.
             scaled_loss = loss_value / torch.clamp(self.loss_scales[i], min=1e-8)
