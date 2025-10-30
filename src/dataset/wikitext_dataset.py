@@ -1,7 +1,6 @@
 """WikiText paragraphs dataset."""
 import pathlib
 import random
-from typing import Dict, Optional, Union
 
 import torch
 from torch.utils import data
@@ -15,12 +14,12 @@ class WikiTextDataset(data.Dataset):
 
     def __init__(
         self,
-        dataset_dir: Union[str, pathlib.Path],
+        dataset_dir: str | pathlib.Path,
         split: str,
         seed: int = 42,
         max_length: int = 512,
         pretrained_tokenizer: str = "gpt2",
-        num_samples: Optional[int] = None,
+        num_samples: int | None = None,
     ):
         """WikiText dataset constructor.
 
@@ -67,7 +66,7 @@ class WikiTextDataset(data.Dataset):
         return len(self.paragraph_files)
 
     @cache_getitem(cache_dir="cache/wikitext_dataset")
-    def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx) -> dict[str, torch.Tensor]:
         """Get an item from the dataset.
 
         Args:

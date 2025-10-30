@@ -1,26 +1,27 @@
-experiment_name: autoregressive_lm_wikitext_${now:%Y-%m-%d}_${now:%H-%M-%S}
-results_dir: results/autoregressive_lm/
+experiment_name: autoregressive_tiny_shakespeare_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoregressive_tiny_shakespeare/
 
 mode: "autoregressive"
 
-lr: 0.00025
+lr: 0.0003
 num_epochs: 10000
 test: false
-batch_size: 6
-gradient_accumulation_steps: 2
+batch_size: 64
+gradient_accumulation_steps: 1
 seed: 42
 validation_interval: 1000
 checkpoint_interval: 1000
 
-device: "accelerated"
+device: "gpu"
 
-max_length: 1024
-pretrained_tokenizer: "gpt2"
-embedding_dim: 768
-ff_embed_dim: 1536
+max_length: 256
+pretrained_tokenizer: null
+vocab_size: 65
+embedding_dim: 384
+ff_embed_dim: 768
 
-num_heads: 6
-num_layers: 6
+num_heads: 1
+num_layers: 1
 
 callbacks:
   - _target_: callback.wandb_callback.WandbCallback
@@ -37,12 +38,10 @@ dataloader:
   train:
     _target_: torch.utils.data.DataLoader
     dataset:
-      _target_: dataset.wikitext_dataset.WikiTextDataset
-      dataset_dir: data/wikitext/paragraphs
+      _target_: dataset.tiny_shakespeare_dataset.TinyShakespeareDataset
+      dataset_dir: data/tiny_shakespeare
       split: train
-      max_length: ${max_length}
-      pretrained_tokenizer: ${pretrained_tokenizer}
-      num_samples: 10
+      block_size: ${max_length}
     batch_size: ${batch_size}
     shuffle: true
     num_workers: 10
@@ -51,12 +50,10 @@ dataloader:
   val:
     _target_: torch.utils.data.DataLoader
     dataset:
-      _target_: dataset.wikitext_dataset.WikiTextDataset
-      dataset_dir: data/wikitext/paragraphs
+      _target_: dataset.tiny_shakespeare_dataset.TinyShakespeareDataset
+      dataset_dir: data/tiny_shakespeare
       split: val
-      max_length: ${max_length}
-      pretrained_tokenizer: ${pretrained_tokenizer}
-      num_samples: 10
+      block_size: ${max_length}
     batch_size: ${batch_size}
     shuffle: false
     num_workers: 10
@@ -66,7 +63,7 @@ dataloader:
 
 loss:
   _target_: loss.shifted_teacher_forcing.ShiftedTeacherForcing
-  shift: 1
+  shift: 0
   loss_fn:
     _target_: torch.nn.CrossEntropyLoss
     # ignore_index: 50256
@@ -83,8 +80,11 @@ model:
     num_heads: ${num_heads}
     num_layers: ${num_layers}
     ff_embed_dim: ${ff_embed_dim}
+    dropout: 0.2
+    attention_dropout: 0.2
   token_embedding: null
   positional_embedding: null
   embedding_dim: ${embedding_dim}
   max_length: ${max_length}
   pretrained_tokenizer: ${pretrained_tokenizer}
+  vocab_size: ${vocab_size}

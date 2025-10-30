@@ -1,6 +1,6 @@
 """Imagenet dataset."""
 import pathlib
-from typing import Any, Dict, List, Union
+from typing import Any
 
 import numpy as np
 import torch
@@ -8,7 +8,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-def read_classes(dataset_dir: Union[str, pathlib.Path]) -> List[str]:
+def read_classes(dataset_dir: str | pathlib.Path) -> list[str]:
     """Read the classes from the file."""
     dataset_dir = pathlib.Path(dataset_dir)
     classes = []
@@ -22,9 +22,9 @@ class ImagenetDataset(Dataset):
 
     def __init__(
         self,
-        root_dir: Union[str, pathlib.Path],
+        root_dir: str | pathlib.Path,
         split: str,
-        classes: List[str],
+        classes: list[str],
         normalize: bool = True,
     ):
         """Imagenet dataset constructor.
@@ -41,7 +41,7 @@ class ImagenetDataset(Dataset):
         self.classes.sort()
         self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
 
-        self.sample_info: Dict[str, Dict[str, Any]] = {}
+        self.sample_info: dict[str, dict[str, Any]] = {}
 
         getattr(self, f"_collect_{self.split}_data")()
 
@@ -67,7 +67,7 @@ class ImagenetDataset(Dataset):
                     "image_path": image_path,
                 }
 
-    def _read_sample_mapping(self, file_path: str) -> Dict[str, Dict[str, str]]:
+    def _read_sample_mapping(self, file_path: str) -> dict[str, dict[str, str]]:
         """Read the sample mapping from the file."""
         with open(file_path, "r", encoding="utf-8") as f:
             return {line.split("\t")[0]: {"class": line.split("\t")[1]} for line in f}

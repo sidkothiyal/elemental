@@ -1,6 +1,5 @@
 """Cityscapes dataset."""
 import pathlib
-from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -12,11 +11,11 @@ class CityscapesDataset(data.Dataset):
 
     def __init__(
         self,
-        root_dir: Union[str, pathlib.Path],
+        root_dir: str | pathlib.Path,
         segmentation_enabled: bool = True,
         depth_enabled: bool = True,
-        segmentation_class_id_mapping: Optional[Dict[int, int]] = None,
-        rename_output_keys: Optional[Dict[str, str]] = None,
+        segmentation_class_id_mapping: dict[int, int] | None = None,
+        rename_output_keys: dict[str, str] | None = None,
     ):
         """Cityscapes dataset constructor.
 
@@ -45,7 +44,7 @@ class CityscapesDataset(data.Dataset):
         """Get the length of the dataset."""
         return len(self.images)
 
-    def _rename_output(self, item_data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def _rename_output(self, item_data: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Rename the output keys."""
         if not self.rename_output_keys:
             return item_data
@@ -54,7 +53,7 @@ class CityscapesDataset(data.Dataset):
             item_data[new_key] = item_data[old_key]
         return item_data
 
-    def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx) -> dict[str, torch.Tensor]:
         """Get an item from the dataset.
 
         Args:

@@ -1,5 +1,4 @@
 """Callback class for Trainer."""
-from typing import Dict, List, Union
 
 import torch
 
@@ -32,23 +31,23 @@ class Callback:
         self,
         step: int,
         phase: str,
-        input_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        target_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        pred_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        input_data: torch.Tensor | dict[str, torch.Tensor],
+        target_data: torch.Tensor | dict[str, torch.Tensor],
+        pred_data: torch.Tensor | dict[str, torch.Tensor],
     ):
         """Called when the batch ends."""
 
     def on_lr_update(self, epoch: int, lr: float, scheduler_type: str = ""):
         """Called when the learning rate is updated."""
 
-    def log_metrics(self, step: int, phase: str, metrics: Dict[str, float]):
+    def log_metrics(self, step: int, phase: str, metrics: dict[str, float]):
         """Log the metrics."""
 
 
 class CallbackList:
-    """List of callbacks."""
+    """list of callbacks."""
 
-    def __init__(self, callbacks: List[Callback]):
+    def __init__(self, callbacks: list[Callback]):
         """Initialize the callback list."""
         self.callbacks = callbacks
 

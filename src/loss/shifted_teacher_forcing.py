@@ -1,5 +1,4 @@
 """Shifted Teacher Forcing"""
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -11,7 +10,7 @@ class ShiftedTeacherForcing(nn.Module):
     def __init__(
         self,
         shift: int = 1,
-        loss_fn: Optional[nn.Module] = None,
+        loss_fn: nn.Module | None = None,
         ignore_index: int = -100,
     ):
         super().__init__()

@@ -2,7 +2,7 @@
 
 import re
 import traceback
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 
 class GraphNode:
@@ -11,18 +11,18 @@ class GraphNode:
     def __init__(
         self,
         name: str,
-        statements: List[Dict[str, Any]],
-        run_modes: Optional[Set[str]] = None,
-        input_mapping: Optional[Dict[str, str]] = None,
-        output_mapping: Optional[Dict[str, str]] = None,
+        statements: list[dict[str, Any]],
+        run_modes: set[str] | None = None,
+        input_mapping: dict[str, str] | None = None,
+        output_mapping: dict[str, str] | None = None,
         expose_all_outputs: bool = False,
     ):
         """Initialize the GraphNode.
 
         Args:
             name: Unique name for the node
-            statements: List of statements to execute in this graph
-            run_modes: Set of run modes where this node should execute
+            statements: list of statements to execute in this graph
+            run_modes: set of run modes where this node should execute
             input_mapping: Optional mapping from graph inputs to internal statement inputs
             output_mapping: Optional mapping from internal statement outputs to graph outputs
             expose_all_outputs: If True, expose all internal statement outputs as graph outputs
@@ -46,12 +46,12 @@ class GraphNode:
         return self._node_type
 
     @property
-    def statements(self) -> List[Dict[str, Any]]:
+    def statements(self) -> list[dict[str, Any]]:
         """Get the list of statements in this graph."""
         return self._statements
 
     @property
-    def run_modes(self) -> Set[str]:
+    def run_modes(self) -> set[str]:
         """Get supported run modes."""
         return self._run_modes.copy()
 
@@ -59,7 +59,7 @@ class GraphNode:
         """Check if node should run in given mode."""
         return run_mode in self._run_modes
 
-    def execute(self, available_vars: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute(self, available_vars: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute the graph of statements sequentially.
 
         Args:
@@ -135,11 +135,11 @@ class ForLoopNode(GraphNode):
         self,
         name: str,
         iterator: str,
-        outputs: List[str],
-        statements: List[Dict[str, Any]],
-        run_modes: Optional[Set[str]] = None,
-        input_mapping: Optional[Dict[str, str]] = None,
-        output_mapping: Optional[Dict[str, str]] = None,
+        outputs: list[str],
+        statements: list[dict[str, Any]],
+        run_modes: set[str] | None = None,
+        input_mapping: dict[str, str] | None = None,
+        output_mapping: dict[str, str] | None = None,
         expose_all_outputs: bool = False,
     ):
         """Initialize the ForLoopNode.
@@ -147,9 +147,9 @@ class ForLoopNode(GraphNode):
         Args:
             name: Unique name for the node
             iterator: String expression for the iterator (e.g., "enumerate(next(node:dataloader))")
-            outputs: List of output variable names from the iterator
-            statements: List of statements to execute in each iteration
-            run_modes: Set of run modes where this node should execute
+            outputs: list of output variable names from the iterator
+            statements: list of statements to execute in each iteration
+            run_modes: set of run modes where this node should execute
             input_mapping: Optional mapping from graph inputs to internal statement inputs
             output_mapping: Optional mapping from internal statement outputs to graph outputs
             expose_all_outputs: If True, expose all internal statement outputs as graph outputs
@@ -173,11 +173,11 @@ class ForLoopNode(GraphNode):
         return self._iterator
 
     @property
-    def loop_outputs(self) -> List[str]:
+    def loop_outputs(self) -> list[str]:
         """Get the loop output variable names."""
         return self._loop_outputs
 
-    def _resolve_iterator(self, available_vars: Dict[str, Any]):
+    def _resolve_iterator(self, available_vars: dict[str, Any]):
         """Resolve the iterator expression with node references.
 
         Args:
@@ -213,7 +213,7 @@ class ForLoopNode(GraphNode):
             # Evaluate expression as-is
             return eval(iterator_expr, {"enumerate": enumerate, "next": next}, available_vars)
 
-    def execute(self, available_vars: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute(self, available_vars: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute the for loop, iterating over statements until StopIteration.
 
         Args:

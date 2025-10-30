@@ -2,7 +2,6 @@
 import logging
 import os
 import random
-from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -27,15 +26,15 @@ class WandbCallback(callback.Callback):
     def __init__(
         self,
         exp_name: str,
-        project: Optional[str] = "elemental",
-        entity: Optional[str] = "elemental-ai",
+        project: str | None = "elemental",
+        entity: str | None = "elemental-ai",
         logging_interval: int = 100,
         num_samples_to_log: int = 1,
-        class_colors: Optional[Dict[int, Tuple[int, int, int]]] = None,
-        num_classes: Optional[int] = None,
-        mode: Optional[str] = None,
+        class_colors: dict[int, tuple[int, int, int]] | None = None,
+        num_classes: int | None = None,
+        mode: str | None = None,
         log_text_data: bool = False,
-        tokenizer: Optional[str] = None,
+        tokenizer: str | None = None,
     ):
         """Initialize the callback.
 
@@ -95,8 +94,8 @@ class WandbCallback(callback.Callback):
         self._wandb_logger.config.update(*args, **kwargs)
 
     def filter_label(
-        self, label: Union[torch.Tensor, Dict[str, torch.Tensor]]
-    ) -> Optional[torch.Tensor]:
+        self, label: torch.Tensor | dict[str, torch.Tensor]
+    ) -> torch.Tensor | None:
         """Filter the label.
 
         Args:
@@ -113,9 +112,9 @@ class WandbCallback(callback.Callback):
         step: int,
         phase: str,
         tag: str,
-        image: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        target_label: Optional[torch.Tensor] = None,
-        pred_label: Optional[torch.Tensor] = None,
+        image: torch.Tensor | dict[str, torch.Tensor],
+        target_label: torch.Tensor | None = None,
+        pred_label: torch.Tensor | None = None,
     ):
         """Log the image.
 
@@ -160,7 +159,7 @@ class WandbCallback(callback.Callback):
         self._wandb_logger.log({f"{phase}/{tag}": wandb_image, f"{phase}/step": step})
 
     def _log_text(
-        self, step: int, phase: str, tag: str, text: Union[torch.Tensor, Dict[str, torch.Tensor]]
+        self, step: int, phase: str, tag: str, text: torch.Tensor | dict[str, torch.Tensor]
     ):
         """Log the text.
 
@@ -194,9 +193,9 @@ class WandbCallback(callback.Callback):
         self,
         step: int,
         phase: str,
-        input_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        target_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        pred_data: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        input_data: torch.Tensor | dict[str, torch.Tensor],
+        target_data: torch.Tensor | dict[str, torch.Tensor],
+        pred_data: torch.Tensor | dict[str, torch.Tensor],
     ):
         """Log the metrics.
 
@@ -227,7 +226,7 @@ class WandbCallback(callback.Callback):
                 self._log_image(step, phase, "target", target_data)
                 self._log_image(step, phase, "pred", pred_data)
 
-    def log_metrics(self, step: int, phase: str, metrics: Dict[str, float]):
+    def log_metrics(self, step: int, phase: str, metrics: dict[str, float]):
         """Log the metrics.
 
         Args:

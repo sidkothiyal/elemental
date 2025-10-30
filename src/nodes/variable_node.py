@@ -1,7 +1,7 @@
 # Variable Node for the graph-based node system.
 
 import warnings
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable
 
 import torch
 
@@ -15,10 +15,10 @@ class VariableNode(BaseNode):
         self,
         name: str,
         variable_name: str,
-        value: Optional[Any] = None,
-        factory_function: Optional[Callable] = None,
-        factory_inputs: Optional[Dict[str, Any]] = None,
-        run_modes: Optional[Set[str]] = None,
+        value: Any | None = None,
+        factory_function: Callable | None = None,
+        factory_inputs: dict[str, Any] | None = None,
+        run_modes: set[str] | None = None,
     ):
         """Initialize the VariableNode.
 
@@ -28,7 +28,7 @@ class VariableNode(BaseNode):
             value: Direct value to use (mutually exclusive with factory_function)
             factory_function: Callable that creates the variable (mutually exclusive with value)
             factory_inputs: Dictionary of inputs to pass to factory function
-            run_modes: Set of run modes where this node should execute
+            run_modes: set of run modes where this node should execute
         """
         if value is not None and factory_function is not None:
             raise ValueError("Only one of 'value' or 'factory_function' should be specified")
@@ -61,7 +61,7 @@ class VariableNode(BaseNode):
         """Get the current variable value."""
         return self._cached_variable if self._cached_variable is not None else self._value
 
-    def _execute(self, inputs: Optional[Dict[str, Any]] = None) -> Any:
+    def _execute(self, inputs: dict[str, Any] | None = None) -> Any:
         """Execute the variable creation.
 
         Returns:
@@ -115,8 +115,8 @@ class VariableNode(BaseNode):
         return getattr(variable, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        """Set attribute, delegating to wrapped variable for non-internal attributes."""
-        # List of internal attributes that should be set on the node itself
+        """set attribute, delegating to wrapped variable for non-internal attributes."""
+        # list of internal attributes that should be set on the node itself
         internal_attrs = {
             "_name",
             "_node_type",
