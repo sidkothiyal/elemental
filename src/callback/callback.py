@@ -9,7 +9,7 @@ class Callback:
     def __init__(self):
         """Initialize the callback."""
 
-    def update_config(self, *args, **kwargs):
+    def update_config(self, config: dict, *args, **kwargs):
         """Update the config of the callback."""
 
     def on_phase_start(self, phase: str):

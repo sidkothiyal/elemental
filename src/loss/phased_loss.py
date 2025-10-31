@@ -1,7 +1,6 @@
 """Phased Loss allows different losses to be applied in different phases of training."""
 
 import logging
-from typing import List, Optional
 
 import torch
 from torch import nn
@@ -21,7 +20,7 @@ class PhasedLoss(nn.Module):
     def __init__(
         self,
         total_epochs: int,
-        phases: List[dict],
+        phases: list[dict],
     ):
         """Initialize the PhasedLoss.
 
@@ -95,7 +94,7 @@ class PhasedLoss(nn.Module):
             )
             prev_end = phase["end_epoch"]
 
-    def _get_phase_for_epoch(self, epoch: int) -> Optional[int]:
+    def _get_phase_for_epoch(self, epoch: int) -> int | None:
         """Get the index of the phase for the given epoch.
 
         Args:
@@ -141,3 +140,11 @@ class PhasedLoss(nn.Module):
 
         loss = call_loss_with_epoch(loss_fn, pred, target, epoch=epoch, *args, **kwargs)
         return loss
+
+    def __repr__(self) -> str:
+        """Return the string representation of the PhasedLoss."""
+        return f"PhasedLoss(total_epochs={self.total_epochs}, phases={self.phases})"
+
+    def __str__(self) -> str:
+        """Return the string representation of the PhasedLoss."""
+        return self.__repr__()

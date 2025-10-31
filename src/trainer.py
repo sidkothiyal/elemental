@@ -344,36 +344,6 @@ def batch_loop(
     return running_loss
 
 
-def save_checkpoint(
-    model: nn.Module | nn.ModuleDict,
-    results_dir: str,
-    name: str,
-    mode: str,
-) -> None:
-    """Save model checkpoint to disk.
-
-    Args:
-        model: Model or dictionary of models to save
-        results_dir: Directory to save checkpoints
-        name: Name of the checkpoint file
-        mode: 'classification' or 'gan'
-    """
-    os.makedirs(results_dir, exist_ok=True)
-
-    if mode == "gan":
-        torch.save(
-            model["generator"].state_dict(), os.path.join(results_dir, f"{name}-generator.pth")
-        )
-        torch.save(
-            model["discriminator"].state_dict(),
-            os.path.join(results_dir, f"{name}-discriminator.pth"),
-        )
-        logger.info("Saved GAN checkpoint: %s", name)
-    else:
-        torch.save(model.state_dict(), os.path.join(results_dir, f"{name}.pth"))
-        logger.info("Saved model checkpoint: %s", name)
-
-
 def run_train(
     config_file: str,
     test: bool = False,
@@ -428,6 +398,9 @@ def run_train(
             "num_parameters": num_parameters,
             "num_trainable_parameters": num_trainable_parameters,
             "num_non_trainable_parameters": num_non_trainable_parameters,
+            "config": config,
+            "dtype": dtype,
+            "device": device,
         }
     )
 
@@ -476,10 +449,12 @@ def run_train(
     # Update callback config with model details
     callbacks.update_config(
         {
-            "scheduler": initializer.extract_class_names(scheduler),
-            "criterion": initializer.extract_class_names(loss),
-            "model": initializer.extract_class_names(model),
+            "scheduler": scheduler,
+            "criterion": loss,
+            "model": model,
+            "optimizer": optim,
             "device": device,
+            "mode": mode,
         }
     )
     # # TODO: check if watch is time consuming and if we should log only the
@@ -488,7 +463,6 @@ def run_train(
 
     # Training loop
     if not test:
-        min_val_loss: dict[str, float] = collections.defaultdict(lambda: float("inf"))
         callbacks.on_phase_start("train")
 
         for epoch in range(config.num_epochs):
@@ -548,30 +522,7 @@ def run_train(
                 callbacks.on_epoch_end(epoch, config.num_epochs, "val")
                 logger.info("Validation loss: %s", val_loss)
 
-                # Save best models
-                if mode == "gan":
-                    # Save generator if improved
-                    if val_loss["generator"] < min_val_loss["generator"]:
-                        min_val_loss["generator"] = val_loss["generator"]
-                        save_checkpoint(model, results_dir, "best-generator", mode=mode)
-                    if val_loss["discriminator"] < min_val_loss["discriminator"]:
-                        min_val_loss["discriminator"] = val_loss["discriminator"]
-                        save_checkpoint(model, results_dir, "best-discriminator", mode=mode)
-                else:
-                    # Save standard model if improved
-                    if val_loss["total"] < min_val_loss["total"]:
-                        min_val_loss["total"] = val_loss["total"]
-                        save_checkpoint(model, results_dir, "best", mode="standard")
-
                 callbacks.on_phase_end("val")
-
-            # Save checkpoint periodically
-            checkpoint_interval = config.get("checkpoint_interval", 10)
-            if (epoch + 1) % checkpoint_interval == 0:
-                save_checkpoint(model, results_dir, f"checkpoint-epoch-{epoch+1}", mode=mode)
-
-        # Save final model
-        save_checkpoint(model, results_dir, "final", mode=mode)
 
     # Test phase
     if test:

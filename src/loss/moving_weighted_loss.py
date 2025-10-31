@@ -1,7 +1,6 @@
 """Moving Weighted Loss - weights transition linearly over training epochs."""
 
 import logging
-from typing import List, Union
 
 import torch
 from torch import nn
@@ -21,9 +20,9 @@ class MovingWeightedLoss(nn.Module):
 
     def __init__(
         self,
-        loss_fns: List[nn.Module],
-        start_weights: Union[List[float], torch.Tensor],
-        end_weights: Union[List[float], torch.Tensor],
+        loss_fns: list[nn.Module],
+        start_weights: list[float] | torch.Tensor,
+        end_weights: list[float] | torch.Tensor,
         total_epochs: int,
         normalize_weights: bool = True,
         start_percentage: float = 0.0,
@@ -193,7 +192,7 @@ class MovingWeightedLoss(nn.Module):
 
         return total_loss
 
-    def get_current_weights(self, epoch: int) -> dict:
+    def get_current_weights(self, epoch: int) -> dict[str, float]:
         """Get the current weights for logging/debugging purposes.
 
         Args:
@@ -207,6 +206,24 @@ class MovingWeightedLoss(nn.Module):
             f"{loss_fn.__class__.__name__}": weight.item()
             for loss_fn, weight in zip(self.loss_fns, weights)
         }
+
+    def __repr__(self) -> str:
+        """Return the string representation of the MovingWeightedLoss."""
+        return (
+            "MovingWeightedLoss("
+            f"loss_fns={self.loss_fns}, "
+            f"start_weights={self.start_weights}, "
+            f"end_weights={self.end_weights}, "
+            f"total_epochs={self.total_epochs}, "
+            f"normalize_weights={self.normalize_weights}, "
+            f"start_percentage={self.start_percentage}, "
+            f"end_percentage={self.end_percentage}, "
+            f"scale_losses={self.scale_losses})"
+        )
+
+    def __str__(self) -> str:
+        """Return the string representation of the MovingWeightedLoss."""
+        return self.__repr__()
 
 
 if __name__ == "__main__":

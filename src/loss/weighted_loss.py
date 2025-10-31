@@ -1,7 +1,5 @@
 """Weighted loss."""
 
-from typing import List, Optional, Union
-
 import torch
 from torch import nn
 
@@ -13,8 +11,8 @@ class WeightedLoss(nn.Module):
 
     def __init__(
         self,
-        loss_fns: List[nn.Module],
-        weights: Union[List[float], torch.Tensor],
+        loss_fns: list[nn.Module],
+        weights: list[float] | torch.Tensor,
         normalize_weights: bool = True,
         scale_losses: bool = False,
     ):
@@ -45,7 +43,7 @@ class WeightedLoss(nn.Module):
         )
 
     def forward(
-        self, pred: torch.Tensor, target: torch.Tensor, epoch: Optional[int] = None, *args, **kwargs
+        self, pred: torch.Tensor, target: torch.Tensor, epoch: int | None = None, *args, **kwargs
     ) -> torch.Tensor:
         """Forward pass.
 
@@ -77,6 +75,19 @@ class WeightedLoss(nn.Module):
             total_loss = total_loss + weight * scaled_loss
 
         return total_loss
+
+    def __repr__(self) -> str:
+        """Return the string representation of the WeightedLoss."""
+        return (
+            "WeightedLoss("
+            f"loss_fns={self.loss_fns}, "
+            f"weights={self.weights}, "
+            f"scale_losses={self.scale_losses})"
+        )
+
+    def __str__(self) -> str:
+        """Return the string representation of the WeightedLoss."""
+        return self.__repr__()
 
 
 if __name__ == "__main__":

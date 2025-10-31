@@ -1,4 +1,5 @@
 """Wandb callback for Trainer"""
+
 import logging
 import os
 import random
@@ -89,9 +90,13 @@ class WandbCallback(callback.Callback):
             name=exp_name,
         )
 
-    def update_config(self, *args, **kwargs):
-        """Update the config of the callback."""
-        self._wandb_logger.config.update(*args, **kwargs)
+    def update_config(self, config: dict, *args, **kwargs):
+        """Update the config of the callback.
+
+        Args:
+            config: The config to update.
+        """
+        self._wandb_logger.config.update(config)
 
     def filter_label(self, label: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor | None:
         """Filter the label.
