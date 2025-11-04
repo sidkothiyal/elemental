@@ -10,6 +10,7 @@ requires-python = ">=3.11, <3.13"
 dependencies = [
   "black (>=25.1.0, <26.0.0)",
   "dill",
+  "datasets",
   "hydra-core",
   "kaggle",
   "einops",
@@ -30,9 +31,9 @@ dependencies = [
   "scikit-learn (>=1.6.1, <2.0.0)", # Unused
   "torch",
   "torchmetrics (>=1.0.0, <2.0.0)",
-  "torchvision", # Unused
-  "transformers",
+  "torchvision",
   "tqdm (>=4.66.5, <5)",
+  "transformers",
   "wandb (>=0.19.7, <0.20.0)",
 ]
 
