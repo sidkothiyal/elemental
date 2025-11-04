@@ -332,8 +332,8 @@ def batch_loop(
 
     # Calculate average metrics
     metrics = {
-        f"loss_{loss_key}": running_loss[loss_key] / total_batches
-        for loss_key in running_loss.keys()
+        f"loss_{loss_key}": loss_value / total_batches
+        for loss_key, loss_value in running_loss.items()
     }
     callbacks.log_metrics(num_steps + total_batches, phase, metrics)
 
@@ -393,16 +393,6 @@ def run_train(
     logger.info("Number of parameters: %d", num_parameters)
     logger.info("Number of trainable parameters: %d", num_trainable_parameters)
     logger.info("Number of non-trainable parameters: %d", num_non_trainable_parameters)
-    callbacks.update_config(
-        {
-            "num_parameters": num_parameters,
-            "num_trainable_parameters": num_trainable_parameters,
-            "num_non_trainable_parameters": num_non_trainable_parameters,
-            "config": config,
-            "dtype": dtype,
-            "device": device,
-        }
-    )
 
     # Initialize optimizer, scheduler and loss function
     mode = config.mode
@@ -446,9 +436,32 @@ def run_train(
     # Initialize loss function
     loss = hy_utils.instantiate(config.loss)
 
+    # Load from checkpoint if specified
+    checkpoint_data = {"epoch": None, "step": None}
+    checkpoint_path = config.get("load_checkpoint_path", None)
+    load_keys = config.get("load_keys", None)
+    resume_training = config.get("resume_training", False)
+
+    if checkpoint_path is not None:
+        checkpoint_data = initializer.load_from_checkpoint(
+            checkpoint_path=checkpoint_path,
+            model=model,
+            optimizer=optim,
+            scheduler=scheduler,
+            criterion=loss,
+            device=device,
+            load_keys=load_keys,
+            resume_training=resume_training,
+        )
+
     # Update callback config with model details
     callbacks.update_config(
         {
+            "num_parameters": num_parameters,
+            "num_trainable_parameters": num_trainable_parameters,
+            "num_non_trainable_parameters": num_non_trainable_parameters,
+            "config": config,
+            "dtype": dtype,
             "scheduler": scheduler,
             "criterion": loss,
             "model": model,
@@ -465,7 +478,13 @@ def run_train(
     if not test:
         callbacks.on_phase_start("train")
 
-        for epoch in range(config.num_epochs):
+        # Determine starting epoch for training
+        start_epoch = 0
+        if resume_training and checkpoint_data.get("epoch") is not None:
+            start_epoch = checkpoint_data["epoch"] + 1
+            logger.info("Resuming training from epoch %d", start_epoch)
+
+        for epoch in range(start_epoch, config.num_epochs):
             callbacks.on_epoch_start(epoch, config.num_epochs, "train")
             logger.info("Starting epoch %d/%d", epoch + 1, config.num_epochs)
 

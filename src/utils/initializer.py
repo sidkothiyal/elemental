@@ -11,6 +11,8 @@ from omegaconf import DictConfig
 from torch import nn
 from torch.utils.data import DataLoader
 
+from utils import checkpoint
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,3 +116,81 @@ def get_num_parameters(model: nn.Module) -> tuple[int, int, int]:
     num_trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     num_non_trainable_parameters = sum(p.numel() for p in model.parameters() if not p.requires_grad)
     return num_parameters, num_trainable_parameters, num_non_trainable_parameters
+
+
+def load_from_checkpoint(
+    checkpoint_path: str,
+    model: nn.Module | nn.ModuleDict,
+    optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
+    scheduler: Any | None = None,
+    criterion: nn.Module | None = None,
+    device: torch.device = torch.device("cpu"),
+    load_keys: list[str] | None = None,
+    resume_training: bool = False,
+) -> dict[str, Any]:
+    """Load model, optimizer, loss, and lr scheduler from checkpoint.
+
+    Args:
+        checkpoint_path: Path to the checkpoint file.
+        model: Model to load state into.
+        optimizer: Optimizer to load state into (optional).
+        scheduler: Scheduler to load state into (optional).
+        criterion: Loss function to load state into (optional).
+        device: Device to map tensors to.
+        load_keys: List of keys to load from checkpoint (e.g., ["model", "optimizer"]).
+            If None and resume_training is False, only model will be loaded.
+        resume_training: Whether to resume training (loads all states and returns epoch/step).
+            If True, loads model, optimizer, scheduler, and criterion.
+
+    Returns:
+        Dictionary containing checkpoint metadata (epoch, step, etc.).
+
+    Raises:
+        ValueError: If both load_keys and resume_training are provided.
+    """
+    # Validate that only one parameter is provided
+    if load_keys is not None and resume_training:
+        raise ValueError("Cannot provide both 'load_keys' and 'resume_training'. Use only one.")
+
+    # Determine what to load
+    if resume_training:
+        # Load everything when resuming training
+        logger.info("Resuming training from checkpoint: %s", checkpoint_path)
+        checkpoint_data = checkpoint.load_checkpoint(
+            checkpoint_path=checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion=criterion,
+            map_location=device,
+        )
+        logger.info(
+            "Resumed from epoch %s, step %s",
+            checkpoint_data.get("epoch"),
+            checkpoint_data.get("step"),
+        )
+        return checkpoint_data
+
+    # Load specific keys or just model by default
+    keys_to_load = load_keys if load_keys is not None else ["model"]
+    logger.info("Loading checkpoint from: %s (keys: %s)", checkpoint_path, keys_to_load)
+
+    # Create dict to pass only the requested components
+    components = {}
+    if "model" in keys_to_load:
+        components["model"] = model
+    if "optimizer" in keys_to_load:
+        components["optimizer"] = optimizer
+    if "scheduler" in keys_to_load:
+        components["scheduler"] = scheduler
+    if "criterion" in keys_to_load:
+        components["criterion"] = criterion
+
+    # Load the checkpoint
+    checkpoint_data = checkpoint.load_checkpoint(
+        checkpoint_path=checkpoint_path,
+        map_location=device,
+        **components,
+    )
+
+    return checkpoint_data
