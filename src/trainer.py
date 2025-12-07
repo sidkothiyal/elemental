@@ -260,7 +260,11 @@ def batch_loop(
             torch.set_grad_enabled(phase == "train"),
             torch.autocast(device_type=device.type, dtype=dtype),
         ):
-            pred = model(batch["input"])
+            model_input_args = {}
+            if "model_input_args" in config:
+                for arg in config.model_input_args:
+                    model_input_args[arg] = batch[arg]
+            pred = model(batch["input"], **model_input_args)
 
             loss_args = {}
             if hasattr(model, "loss_args"):

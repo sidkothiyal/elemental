@@ -1,97 +1,86 @@
-"""Diffusion dataset for loading reverse diffused images."""
-
-import pathlib
-import re
+"""Diffusion dataset that generates noisy images on-the-fly."""
 
 import torch
-from PIL import Image
 from torch.utils import data
-from torchvision import transforms
 
 
 class DiffusionDataset(data.Dataset):
-    """Dataset for loading reverse diffused images created by reverse_diffusion.py.
+    """Dataset wrapper that adds diffusion noise to images on-the-fly.
 
-    This dataset loads pairs of noisy images (input) and clean base images (target)
-    for training diffusion models or denoisers.
+    This dataset wraps another dataset and applies forward diffusion process
+    to generate noisy images during training. This is more flexible and efficient
+    than pre-generating all noisy images.
     """
 
     def __init__(
         self,
-        root_dir: str | pathlib.Path,
-        target_shape: tuple[int, int] | None = None,
-        transform: transforms.Compose | None = None,
-        normalize: bool = True,
-        return_timestep: bool = True,
+        dataset: data.Dataset,
+        num_timesteps: int = 1000,
+        noise_schedule: str = "linear",
+        beta_start: float = 0.0001,
+        beta_end: float = 0.02,
+        device: str = "cpu",
+        prediction_type: str = "epsilon",
     ):
         """DiffusionDataset constructor.
 
         Args:
-            root_dir: Path to the root directory containing subdirectories with
-                     base images and their noisy versions.
-            target_shape: Optional tuple of (height, width) for random cropping.
-                         If None, images are not cropped.
-            transform: Optional torchvision transforms to apply to images.
-            normalize: Whether to normalize images to [-1, 1] range (default: True).
-                      If False, images are in [0, 1] range.
-            return_timestep: Whether to return the timestep value in the output dict.
+            dataset: Base dataset that returns images. Expected to return dict with
+                    'input' or 'target' key containing image tensors normalized to [-1, 1].
+            num_timesteps: Total number of diffusion timesteps.
+            noise_schedule: Type of noise schedule ("linear" or "cosine").
+            beta_start: Starting beta value for noise schedule.
+            beta_end: Ending beta value for noise schedule.
+            device: Device to store noise schedule tensors on.
+            prediction_type: What the model predicts - "epsilon" (noise) or "x0" (clean image).
         """
-        self.root_dir = pathlib.Path(root_dir)
-        self.normalize = normalize
-        self.return_timestep = return_timestep
-        self.target_shape = target_shape
-        # Build index of all image pairs
-        self._build_index()
+        self.dataset = dataset
+        self.num_timesteps = num_timesteps
+        self.noise_schedule = noise_schedule
+        self.device = device
+        self.prediction_type = prediction_type
 
-        # Define transform pipeline
-        transform_list = []
+        # Generate noise schedule
+        if noise_schedule == "linear":
+            self.betas = torch.linspace(beta_start, beta_end, num_timesteps, device=device)
+        elif noise_schedule == "cosine":
+            self.betas = self._cosine_beta_schedule(num_timesteps, device=device)
+        else:
+            raise ValueError(f"Unknown noise schedule: {noise_schedule}")
 
-        # Add custom transforms if provided
-        if transform is not None:
-            transform_list.append(transform)
+        # Calculate alpha values
+        self.alphas = 1.0 - self.betas
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
 
-        # Add random crop if target shape is specified
-        if self.target_shape is not None:
-            height, width = self.target_shape
-            transform_list.append(transforms.RandomCrop((height, width)))
+    def _cosine_beta_schedule(
+        self, timesteps: int, device: str = "cpu", s: float = 0.008
+    ) -> torch.Tensor:
+        """
+        Cosine beta schedule as proposed in "Improved Denoising Diffusion Probabilistic Models".
 
-        # Convert PIL image to tensor
-        transform_list.append(transforms.ToTensor())
+        Args:
+            timesteps: Number of diffusion timesteps.
+            device: Device to create tensor on.
+            s: Small offset to prevent beta from being too small near t=0.
 
-        # Normalize to [-1, 1] if requested (same as training diffusion models)
-        if self.normalize:
-            transform_list.append(transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]))
-
-        self.transform = transforms.Compose(transform_list)
-
-    def _build_index(self):
-        """Build index of all base images and their noisy timestep versions."""
-        # Pattern to match timestep images: {name}_timestep_{t:04d}.png
-        timestep_pattern = re.compile(r"(.+)_timestep_(\d{4})\.png")
-
-        self.samples = []
-
-        for per_image_dir in self.root_dir.iterdir():
-            base_image_path = per_image_dir / f"{per_image_dir.stem}.png"
-            for noisy_image_path in per_image_dir.iterdir():
-                match = timestep_pattern.match(noisy_image_path.name)
-                if match:
-                    timestep = int(match.group(2))
-                    self.samples.append((base_image_path, noisy_image_path, timestep))
-
-        if len(self.samples) == 0:
-            raise ValueError(
-                f"No valid image pairs found in {self.root_dir}. "
-                "Make sure the directory contains subdirectories with base images "
-                "and their corresponding noisy timestep images."
-            )
+        Returns:
+            Beta values for each timestep.
+        """
+        steps = timesteps + 1
+        x = torch.linspace(0, timesteps, steps, device=device)
+        alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
+        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+        betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+        return torch.clip(betas, 0.0001, 0.9999)
 
     def __len__(self):
         """Get the length of the dataset."""
-        return len(self.samples)
+        return len(self.dataset)
 
-    def __getitem__(self, idx) -> dict[str, torch.Tensor | int]:
-        """Get an item from the dataset.
+    def __getitem__(self, idx) -> dict[str, torch.Tensor]:
+        """Get an item from the dataset with added diffusion noise.
 
         Args:
             idx: Index of the item to get.
@@ -99,43 +88,77 @@ class DiffusionDataset(data.Dataset):
         Returns:
             Dictionary with keys:
                 - 'input': Noisy image tensor
-                - 'target': Clean base image tensor
-                - 'timestep': Timestep value (if return_timestep=True)
+                - 'target': Clean image tensor
+                - 'timestep': Timestep value
         """
-        base_path, noisy_path, timestep = self.samples[idx]
+        # Get clean image from base dataset
+        item = self.dataset[idx]
 
-        # Load images using PIL
-        base_image = Image.open(base_path).convert("RGB")
-        noisy_image = Image.open(noisy_path).convert("RGB")
+        # Extract the clean image - try 'target' first, then 'input'
+        if "target" in item:
+            x0 = item["target"]
+        elif "input" in item:
+            x0 = item["input"]
+        else:
+            raise ValueError("Dataset item must contain either 'input' or 'target' key")
 
-        # Apply transforms
-        base_tensor = self.transform(base_image)
-        noisy_tensor = self.transform(noisy_image)
+        # Ensure x0 is a tensor
+        if not isinstance(x0, torch.Tensor):
+            raise ValueError(f"Image must be a tensor, got {type(x0)}")
 
-        result = {
-            "input": noisy_tensor,
-            "target": base_tensor,
+        x0 = x0.to(self.device)
+        # Sample a random timestep
+        t = torch.randint(0, self.num_timesteps, (1,), device=self.device).squeeze()
+
+        # Generate random noise with same shape as x0
+        noise = torch.randn_like(x0)
+
+        # Add noise according to diffusion process
+        # x_t = sqrt(alpha_cumprod_t) * x_0 + sqrt(1 - alpha_cumprod_t) * noise
+        sqrt_alpha_cumprod_t = self.sqrt_alphas_cumprod[t]
+        sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t]
+
+        noisy_image = sqrt_alpha_cumprod_t * x0 + sqrt_one_minus_alpha_cumprod_t * noise
+
+        # Return noisy image and appropriate target based on prediction type
+        # For epsilon prediction: target should be noise
+        # For x0 prediction: target should be clean image
+        target = noise if self.prediction_type == "epsilon" else x0
+
+        return {
+            "input": noisy_image,
+            "target": target,
+            "t": t,
         }
-
-        if self.return_timestep:
-            result["timestep"] = timestep
-
-        return result
 
 
 if __name__ == "__main__":
     from tqdm import tqdm
 
+    # Import a base dataset to wrap
+    from dataset.div2k_dataset import DIV2KDataset
+
     # Test the dataset
     print("Testing DiffusionDataset...")
 
-    dataset = DiffusionDataset(root_dir="data/diffused_div2k/train", target_shape=(640, 1024))
-    print(f"Length of dataset: {len(dataset)}")
+    # Create base dataset
+    base_dataset = DIV2KDataset(root_dir="data/div2k/train", target_shape=(256, 256))
+    print(f"Base dataset length: {len(base_dataset)}")
+
+    # Wrap it with DiffusionDataset
+    diffusion_dataset = DiffusionDataset(
+        dataset=base_dataset,
+        num_timesteps=1000,
+        noise_schedule="cosine",
+        device="cpu",
+    )
+    print(f"Diffusion dataset length: {len(diffusion_dataset)}")
 
     # Test dataloader
-    dataloader = data.DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0)
+    dataloader = data.DataLoader(diffusion_dataset, batch_size=4, shuffle=True, num_workers=0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    print("\nTesting dataloader...")
     for batch_idx, batch in enumerate(tqdm(dataloader)):
         batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
@@ -154,6 +177,7 @@ if __name__ == "__main__":
             break
 
     print("\nDiffusionDataset test completed successfully!")
-
-    # Test DiffusionDatasetByTimestep
-    print("\n" + "=" * 50 + "\n")
+    print("\nUsage example:")
+    print("  base_dataset = DIV2KDataset(root_dir='data/div2k/train', target_shape=(256, 256))")
+    print("  diffusion_dataset = DiffusionDataset(dataset=base_dataset, num_timesteps=1000)")
+    print("  dataloader = DataLoader(diffusion_dataset, batch_size=8, shuffle=True)")
