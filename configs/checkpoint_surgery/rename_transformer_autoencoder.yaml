@@ -1,0 +1,8 @@
+checkpoint_surgery:
+  rename_rules:
+    - old: "encoder.pos_embeddings"
+      new: "pos_embeddings"
+    - old: "encoder.to_patch_embedding"
+      new: "to_patch_embedding"
+    - old: "encoder.transformer.layers"
+      new: "encoder.layers"

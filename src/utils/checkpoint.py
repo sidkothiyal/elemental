@@ -33,7 +33,9 @@ def add_state_to_checkpoint(checkpoint: dict[str, Any], obj: Any, obj_type: str)
         checkpoint[f"{obj_type}_state_dict"] = state_dict
 
 
-def load_state_from_checkpoint(obj: Any, checkpoint: dict[str, Any], obj_type: str) -> None:
+def load_state_from_checkpoint(
+    obj: Any, checkpoint: dict[str, Any], obj_type: str, strict: bool = True
+) -> None:
     """Load state dict from checkpoint into an object, handling both single objects and dicts.
 
     Args:
@@ -51,10 +53,10 @@ def load_state_from_checkpoint(obj: Any, checkpoint: dict[str, Any], obj_type: s
         # Handle dict of objects (e.g., GAN with generator/discriminator)
         for key, value in obj.items():
             if key in state_dict and hasattr(value, "load_state_dict"):
-                value.load_state_dict(state_dict[key])
+                value.load_state_dict(state_dict[key], strict=strict)
     elif hasattr(obj, "load_state_dict"):
         # Handle single object with load_state_dict method
-        obj.load_state_dict(state_dict)
+        obj.load_state_dict(state_dict, strict=strict)
 
 
 def save_checkpoint(
@@ -106,6 +108,7 @@ def load_checkpoint(
     scheduler: Any | None = None,
     criterion: nn.Module | None = None,
     map_location: str | torch.device = "cpu",
+    strict: bool = True,
 ) -> dict[str, Any]:
     """Load checkpoint from disk.
 
@@ -127,7 +130,7 @@ def load_checkpoint(
     logger.info("Loading checkpoint from: %s", checkpoint_path)
 
     # Load states from checkpoint
-    load_state_from_checkpoint(model, checkpoint, "model")
+    load_state_from_checkpoint(model, checkpoint, "model", strict=strict)
     load_state_from_checkpoint(optimizer, checkpoint, "optimizer")
     load_state_from_checkpoint(scheduler, checkpoint, "scheduler")
     load_state_from_checkpoint(criterion, checkpoint, "criterion")

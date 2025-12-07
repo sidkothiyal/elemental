@@ -127,6 +127,7 @@ def load_from_checkpoint(
     device: torch.device = torch.device("cpu"),
     load_keys: list[str] | None = None,
     resume_training: bool = False,
+    strict: bool = True,
 ) -> dict[str, Any]:
     """Load model, optimizer, loss, and lr scheduler from checkpoint.
 
@@ -163,6 +164,7 @@ def load_from_checkpoint(
             scheduler=scheduler,
             criterion=criterion,
             map_location=device,
+            strict=strict,
         )
         logger.info(
             "Resumed from epoch %s, step %s",
@@ -190,6 +192,7 @@ def load_from_checkpoint(
     checkpoint_data = checkpoint.load_checkpoint(
         checkpoint_path=checkpoint_path,
         map_location=device,
+        strict=strict,
         **components,
     )
 

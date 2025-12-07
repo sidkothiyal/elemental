@@ -3,12 +3,16 @@ results_dir: results/autoencoder/
 
 mode: "autoencoder"
 
-lr: 0.0003
-num_epochs: 500
+lr: 0.000075
+num_epochs: 1000
 validation_interval: 50
 test: false
-batch_size: 2
+batch_size: 16
 seed: 42
+
+load_checkpoint_path: results/autoencoder/compression_autoencoder_mae_enc_nl8_nh8_dec_nl6_nh8_dropout_0/last.pt
+load_keys: ["model"]
+
 dtype:
   _target_: hydra.utils.get_object
   _args_:
@@ -62,8 +66,12 @@ dataloader:
   test: null
 
 loss:
-  _target_: loss.masked_mse_loss.MaskedMSELoss
-  mask_weight: 0.25
+  _target_: loss.masked_loss.MaskedLoss
+  loss_function:
+    _target_: torch.nn.MSELoss
+    reduction: "none"
+  auto_scale_loss: true
+  mask_weight: 0.1
   neg_mask_weight: 1.0
 
 optimizer: "AdamW"
@@ -74,12 +82,38 @@ lr_scheduler_params:
 
 model:
   _target_: model.masked_autoencoder.MaskedAutoencoder
-  dropout_percentage: 0.5
+  dropout_percentage: 0.2
   image_size: [3, 640, 1024]
-  patch_size: [16, 16]
+  patch_size: [32, 32]
   embed_dim: 768
-  encoder_num_transformer_layers: 8
-  encoder_attn_heads: 8
-  decoder_num_transformer_layers: 2
-  decoder_attn_heads: 8
+  encoder:
+    _target_: model.transformer.Transformer
+    embed_dim: 768
+    num_heads: 8
+    num_layers: 8
+    ff_embed_dim: 768
+  decoder:
+    _target_: model.transformer.Transformer
+    embed_dim: 768
+    num_heads: 8
+    num_layers: 6
+    ff_embed_dim: 768
+  decoder_projection_dim: 96
+  conv_decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.conv_block.ConvBlock
+        in_channels: 96
+        channels: [48, 16]
+        kernel_sizes: [3, 3]
+        strides: [1, 1]
+        paddings: [1, 1]
+        use_bn: true
+        use_relu: true
+      - _target_: torch.nn.Conv2d
+        in_channels: 16
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1
   return_image: true

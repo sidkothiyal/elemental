@@ -42,6 +42,15 @@ class WeightedLoss(nn.Module):
             "_scales_initialized", torch.zeros(len(self.loss_fns), dtype=torch.bool)
         )
 
+    def to(self, device: torch.device) -> "WeightedLoss":
+        """Move the WeightedLoss to the given device."""
+        super().to(device)
+        self.weights = self.weights.to(device)
+        self.loss_scales = self.loss_scales.to(device)
+        for loss_fn in self.loss_fns:
+            loss_fn = loss_fn.to(device)
+        return self
+
     def forward(
         self, pred: torch.Tensor, target: torch.Tensor, epoch: int | None = None, *args, **kwargs
     ) -> torch.Tensor:

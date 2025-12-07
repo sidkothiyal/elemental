@@ -3,12 +3,17 @@ results_dir: results/autoencoder/
 
 mode: "autoencoder"
 
-lr: 0.0003
-num_epochs: 500
-validation_interval: 25
+lr: 0.000075
+num_epochs: 1000
+validation_interval: 100
 test: false
-batch_size: 64
+batch_size: 4
 seed: 42
+
+# load_checkpoint_path: results/autoencoder/compression_autoencoder_mae_enc_nl8_nh8_dec_nl6_nh8_dropout_0_for_vq_vae/last.pt
+# load_keys: ["model"]
+# strict: false
+
 dtype:
   _target_: hydra.utils.get_object
   _args_:
@@ -40,7 +45,7 @@ dataloader:
     dataset:
       _target_: dataset.div2k_dataset.DIV2KDataset
       root_dir: data/div2k/train
-      target_shape: [640, 1024]
+      target_shape: [640, 960]
     batch_size: ${batch_size}
     shuffle: true
     num_workers: 4
@@ -52,7 +57,7 @@ dataloader:
     dataset:
       _target_: dataset.div2k_dataset.DIV2KDataset
       root_dir: data/div2k/val
-      target_shape: [640, 1024]
+      target_shape: [640, 960]
     batch_size: ${batch_size}
     shuffle: false
     num_workers: 4
@@ -62,7 +67,43 @@ dataloader:
   test: null
 
 loss:
-  _target_: torch.nn.L1Loss
+  _target_: loss.phased_loss.PhasedLoss
+  total_epochs: ${num_epochs}
+  phases:
+    - loss:
+        _target_: torch.nn.L1Loss
+      run_until: 0.3
+    - loss:
+        _target_: loss.moving_weighted_loss.MovingWeightedLoss
+        start_weights: [100.0, 0.0]
+        end_weights: [99.0, 1.0]
+        start_percentage: 0.3
+        end_percentage: 0.8
+        total_epochs: ${num_epochs}
+        scale_losses: true
+        loss_fns:
+          - _target_: torch.nn.L1Loss
+          - _target_: loss.ssim.SSIMLoss
+            multi_scale: true
+            ssim_kwargs:
+              data_range: 1.0
+              size_average: True
+              channel: 3
+      run_until: 0.8
+    - loss:
+        _target_: loss.weighted_loss.WeightedLoss
+        weights: [99.0, 1.0]
+        scale_losses: true
+        loss_fns:
+          - _target_: torch.nn.L1Loss
+          - _target_: loss.ssim.SSIMLoss
+            multi_scale: true
+            ssim_kwargs:
+              data_range: 1.0
+              size_average: True
+              channel: 3
+      run_until: 1.0
+
 
 optimizer: "AdamW"
 
@@ -71,21 +112,95 @@ lr_scheduler_params:
   T_max: ${num_epochs}
 
 model:
-  _target_: model.vq_vae.VQVAE
-  encoder:
-    _target_: model.blocks.conv_block.ConvBlock
-    in_channels: 3
-    channels: [64, 128, 256, 512]
-    kernel_sizes: [3, 3, 3, 3]
-    strides: [2, 2, 2, 2]
-    paddings: [1, 1, 1, 1]
-  decoder:
-    _target_: model.blocks.convtranspose_block.ConvTransposeBlock
-    in_channels: 512
-    channels: [256, 128, 64, 3]
-    kernel_sizes: [4, 4, 4, 4]
-    strides: [2, 2, 2, 2]
-    paddings: [1, 1, 1, 1]
-    output_paddings: [0, 0, 0, 0]
-  codebook_size: 128
-  codebook_dim: 512
+  _target_: model.patcher_unpatcher.PatcherUnpatcher
+  image_size: [64, 640, 960]
+  patch_size: [16, 16]
+  embed_dim: 256
+  conv_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 3
+        out_channels: 16
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 16
+        out_channels: 32
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 32
+        out_channels: 64
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+  model:
+    _target_: model.vq_vae.VQVAE
+    encoder:
+      _target_: model.transformer.Transformer
+      embed_dim: 256
+      num_heads: 8
+      num_layers: 6
+      ff_embed_dim: 256
+    decoder:
+      _target_: model.transformer.Transformer
+      embed_dim: 256
+      num_heads: 8
+      num_layers: 4
+      ff_embed_dim: 256
+    codebook_size: 1024
+    codebook_dim: 256
+  decoder_projection_dim: 64
+  model_downsample_factor: 2
+  conv_decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 64
+        out_channels: 32
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: torch.nn.Upsample
+        mode: bilinear
+        scale_factor: 2
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 32
+        out_channels: 16
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: torch.nn.Conv2d
+        in_channels: 16
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1

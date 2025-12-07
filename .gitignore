@@ -14,6 +14,7 @@ models/
 
 # Logs / Temp files
 outputs/
+results/
 logs/
 *.tmp
 

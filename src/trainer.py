@@ -435,12 +435,18 @@ def run_train(
 
     # Initialize loss function
     loss = hy_utils.instantiate(config.loss)
+    if isinstance(loss, dict):
+        for value in loss.values():
+            value.to(device)
+    elif isinstance(loss, nn.Module):
+        loss.to(device)
 
     # Load from checkpoint if specified
     checkpoint_data = {"epoch": None, "step": None}
     checkpoint_path = config.get("load_checkpoint_path", None)
     load_keys = config.get("load_keys", None)
     resume_training = config.get("resume_training", False)
+    strict = config.get("strict", True)
 
     if checkpoint_path is not None:
         checkpoint_data = initializer.load_from_checkpoint(
@@ -452,6 +458,7 @@ def run_train(
             device=device,
             load_keys=load_keys,
             resume_training=resume_training,
+            strict=strict,
         )
 
     # Update callback config with model details

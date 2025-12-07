@@ -5,6 +5,8 @@ TODO:
 (1) Learnable skip connections in the Transformer.
 """
 
+from typing import Any
+
 import torch
 from torch import nn
 
@@ -51,6 +53,8 @@ class Transformer(nn.Module):
         ff_embed_dim: int,
         dropout: float = 0.1,
         attention_dropout: float = 0.1,
+        attn_module: nn.Module | None = None,
+        attn_module_kwargs: dict[str, Any] | None = None,
     ):
         """Transformer layer.
 
@@ -64,18 +68,25 @@ class Transformer(nn.Module):
         """
         super().__init__()
         # Multi-head self-attention
+        self.attn_module = attn_module
+        self.attn_module_kwargs = attn_module_kwargs or {}
+
+        if self.attn_module is None:
+            self.attn_module = nn.MultiheadAttention
+            if "bias" not in self.attn_module_kwargs:
+                self.attn_module_kwargs["bias"] = False
         self.layers = nn.ModuleList([])
         for _ in range(num_layers):
             self.layers.append(
                 nn.ModuleList(
                     [
                         nn.LayerNorm(embed_dim),
-                        nn.MultiheadAttention(
+                        self.attn_module(
                             embed_dim,
                             num_heads,
                             dropout=attention_dropout,
                             batch_first=True,
-                            bias=False,
+                            **self.attn_module_kwargs,
                         ),
                         FeedForward(embed_dim, ff_embed_dim, dropout),
                     ]

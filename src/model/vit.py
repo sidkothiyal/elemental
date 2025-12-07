@@ -11,6 +11,7 @@ fine-tuning time.
 
 (2) Switch LayerNorm to Learnable TanH.
 """
+from typing import Any
 
 import einops
 import torch
@@ -31,6 +32,8 @@ class ViT(nn.Module):
         num_transformer_layers: int,
         attn_heads: int,
         num_classes: int | None = None,
+        attn_module: nn.Module | None = None,
+        attn_module_kwargs: dict[str, Any] | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -43,6 +46,8 @@ class ViT(nn.Module):
             num_transformer_layers: The number of transformer layers.
             attn_heads: The number of attention heads.
             num_classes: The number of classes.
+            attn_module: The attention module.
+            attn_module_kwargs: The keyword arguments for the attention module.
         """
         super().__init__(*args, **kwargs)
         self.num_classes = num_classes
@@ -87,6 +92,8 @@ class ViT(nn.Module):
             num_heads=attn_heads,
             num_layers=num_transformer_layers,
             ff_embed_dim=embed_dim,
+            attn_module=attn_module,
+            attn_module_kwargs=attn_module_kwargs,
         )
 
         if num_classes is not None:
