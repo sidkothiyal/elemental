@@ -21,7 +21,6 @@ class DenoisingDiffusionModel(nn.Module):
         model: nn.Module,
         conditional_model: nn.Module | None = None,
         use_timestep_embedding: bool = True,
-        temporal_embedding_dim: int = 32,
         num_timesteps: int = 1000,
         noise_schedule: str = "linear",
         beta_start: float = 0.0001,
@@ -38,7 +37,6 @@ class DenoisingDiffusionModel(nn.Module):
             conditional_model: Optional model for processing conditional inputs.
                              Output will be passed as additional input to base model.
             use_timestep_embedding: Whether to use a temporal embedding for the timestep.
-            temporal_embedding_dim: Dimension of the temporal embedding.
             num_timesteps: Total number of diffusion timesteps (default: 1000).
             noise_schedule: Type of noise schedule ("linear" or "cosine").
             beta_start: Starting beta value for linear schedule.
@@ -55,8 +53,6 @@ class DenoisingDiffusionModel(nn.Module):
         self.use_timestep_embedding = use_timestep_embedding
         self.num_timesteps = num_timesteps
         self.prediction_type = prediction_type
-
-        self.temporal_embedding = nn.Embedding(num_timesteps, temporal_embedding_dim)
 
         # Generate noise schedule
         if noise_schedule == "linear":
@@ -203,7 +199,7 @@ class DenoisingDiffusionModel(nn.Module):
             model_args["aux_features"] = cond_features
 
         if self.use_timestep_embedding:
-            model_args["t"] = self.temporal_embedding(t)
+            model_args["t"] = t
         model_output = self.model(x_t, **model_args)
 
         # Convert model output to noise and x0 predictions based on prediction type
@@ -297,7 +293,7 @@ class DenoisingDiffusionModel(nn.Module):
 
         # Compute predicted x_{t-1}
         sqrt_alpha_cumprod_t_prev = torch.sqrt(alpha_cumprod_t_prev)
-        sqrt_one_minus_alpha_cumprod_t_prev = torch.sqrt(1 - alpha_cumprod_t_prev)
+        # sqrt_one_minus_alpha_cumprod_t_prev = torch.sqrt(1 - alpha_cumprod_t_prev)
 
         # Direction pointing to x_t
         pred_dir = torch.sqrt(1 - alpha_cumprod_t_prev - sigma_t**2) * pred_noise

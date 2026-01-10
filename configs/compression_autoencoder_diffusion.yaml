@@ -3,11 +3,11 @@ results_dir: results/autoencoder/
 
 mode: "autoencoder"
 
-lr: 0.0005
-num_epochs: 500
-validation_interval: 25
+lr: 0.00025
+num_epochs: 2000
+validation_interval: 100
 test: false
-batch_size: 64
+batch_size: 32
 seed: 42
 dtype:
   _target_: hydra.utils.get_object
@@ -45,12 +45,13 @@ dataloader:
         root_dir: data/div2k/train
         target_shape: [640, 1024]
       device: "cuda"
-      prediction_type: "epsilon"
+      prediction_type: "x0"
     batch_size: ${batch_size}
     shuffle: true
     num_workers: 4
     persistent_workers: true
     drop_last: false
+    multiprocessing_context: "spawn"
   val:
     _target_: torch.utils.data.DataLoader
     dataset:
@@ -60,12 +61,13 @@ dataloader:
         root_dir: data/div2k/val
         target_shape: [640, 1024]
       device: "cuda"
-      prediction_type: "epsilon"
+      prediction_type: "x0"
     batch_size: ${batch_size}
     shuffle: false
     num_workers: 4
     persistent_workers: true
     drop_last: false
+    multiprocessing_context: "spawn"
   test: null
 
 loss:
@@ -123,13 +125,31 @@ model_input_args:
 
 model:
   _target_: model.diffusion.DenoisingDiffusionModel
-  use_timestep_embedding: false
+  use_timestep_embedding: true
+  prediction_type: "x0"
   model:
-    _target_: model.unet.UNet
-    in_channels: 3
-    out_channels: 3
-    channels: [4, 8, 16, 32, 64]
-    skip_first_connection: true
+    _target_: model.timestep_model.TimestepModel
+    model:
+      _target_: model.unet.UNet
+      in_channels: 3
+      out_channels: 3
+      channels: [4, 8, 16, 32, 64]
+      skip_first_connection: true
+    timestep_model:
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: torch.nn.Embedding
+          num_embeddings: 1000
+          embedding_dim: 3
+        - _target_: utils.torch_np_utils.Unsqueeze
+          axis: -1
+        - _target_: utils.torch_np_utils.Unsqueeze
+          axis: -1
+    combiner:
+      _target_: hydra.utils.get_method
+      _args_:
+        - torch.add
+
     # Vanilla CNN based autoencoder
     # _target_: torch.nn.Sequential
     # _args_:
