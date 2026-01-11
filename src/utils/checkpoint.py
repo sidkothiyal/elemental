@@ -56,7 +56,10 @@ def load_state_from_checkpoint(
                 value.load_state_dict(state_dict[key], strict=strict)
     elif hasattr(obj, "load_state_dict"):
         # Handle single object with load_state_dict method
-        obj.load_state_dict(state_dict, strict=strict)
+        load_state_dict_kwargs = {}
+        if not isinstance(obj, (torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler)):
+            load_state_dict_kwargs["strict"] = strict
+        obj.load_state_dict(state_dict, **load_state_dict_kwargs)
 
 
 def save_checkpoint(
