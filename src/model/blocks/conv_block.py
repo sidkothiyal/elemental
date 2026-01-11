@@ -1,7 +1,10 @@
 """Convolutional blocks for the model."""
 
+from typing import Callable, Literal
+
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 
 class ConvBNReLU(nn.Module):
@@ -77,6 +80,8 @@ class ConvBlock(nn.Module):
         bias: bool | None = False,
         use_bn: bool | None = True,
         use_relu: bool | None = True,
+        checkpoint_layers: list[int] | Literal["all"] | None = None,
+        checkpoint_use_reentrant: bool = False,
     ):
         """Block of ConvBNReLU layers.
 
@@ -91,6 +96,9 @@ class ConvBlock(nn.Module):
             bias: Whether to use a bias in the convolution.
             use_bn: Whether to use batch normalization.
             use_relu: Whether to use a ReLU activation.
+            checkpoint_layers: List of layer indices to checkpoint, "all" for all layers,
+                or None to disable checkpointing.
+            checkpoint_use_reentrant: Whether to use reentrant checkpointing.
         """
         super().__init__()
         self.in_channels = in_channels
@@ -102,6 +110,10 @@ class ConvBlock(nn.Module):
         self.dilations = dilations
         self.use_bn = use_bn
         self.use_relu = use_relu
+        self.num_layers = len(channels)
+
+        # Setup checkpointing
+        self._setup_checkpointing(checkpoint_layers, checkpoint_use_reentrant)
 
         self.assert_same_lengths()
         self.conv_blocks = nn.ModuleList()
@@ -136,6 +148,46 @@ class ConvBlock(nn.Module):
                 )
             )
 
+    def _setup_checkpointing(
+        self,
+        checkpoint_layers: list[int] | Literal["all"] | None,
+        checkpoint_use_reentrant: bool,
+    ) -> None:
+        """Setup gradient checkpointing configuration.
+
+        Args:
+            checkpoint_layers: Layer indices to checkpoint, "all", or None.
+            checkpoint_use_reentrant: Whether to use reentrant checkpointing.
+        """
+        self.checkpoint_use_reentrant = checkpoint_use_reentrant
+
+        if checkpoint_layers is None:
+            self.checkpoint_layers: set[int] = set()
+        elif checkpoint_layers == "all":
+            self.checkpoint_layers = set(range(self.num_layers))
+        else:
+            for layer_idx in checkpoint_layers:
+                if not 0 <= layer_idx < self.num_layers:
+                    raise ValueError(
+                        f"Invalid layer index {layer_idx}. Must be in range [0, {self.num_layers})"
+                    )
+            self.checkpoint_layers = set(checkpoint_layers)
+
+    def _should_checkpoint(self, layer_idx: int) -> bool:
+        """Check if a layer should use gradient checkpointing."""
+        return self.training and layer_idx in self.checkpoint_layers
+
+    def _run_module(
+        self,
+        fn: nn.Module | Callable[[torch.Tensor], torch.Tensor],
+        x: torch.Tensor,
+        layer_idx: int,
+    ) -> torch.Tensor:
+        """Run a module with optional gradient checkpointing."""
+        if self._should_checkpoint(layer_idx):
+            return checkpoint(fn, x, use_reentrant=self.checkpoint_use_reentrant)
+        return fn(x)
+
     def assert_same_lengths(self):
         """Assert that all lists have the same length."""
         num_layers = len(self.channels)
@@ -158,8 +210,8 @@ class ConvBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the ConvBlock."""
-        for conv_block in self.conv_blocks:
-            x = conv_block(x)
+        for idx, conv_block in enumerate(self.conv_blocks):
+            x = self._run_module(conv_block, x, idx)
         return x
 
 

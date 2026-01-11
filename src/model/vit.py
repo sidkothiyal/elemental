@@ -11,7 +11,7 @@ fine-tuning time.
 
 (2) Switch LayerNorm to Learnable TanH.
 """
-from typing import Any
+from typing import Any, Literal
 
 import einops
 import torch
@@ -34,6 +34,9 @@ class ViT(nn.Module):
         num_classes: int | None = None,
         attn_module: nn.Module | None = None,
         attn_module_kwargs: dict[str, Any] | None = None,
+        checkpoint_transformer_layers: list[int] | Literal["all"] | None = None,
+        checkpoint_transformer_modules: list[str] | Literal["all"] | None = None,
+        checkpoint_use_reentrant: bool = False,
         *args,
         **kwargs,
     ) -> None:
@@ -48,6 +51,11 @@ class ViT(nn.Module):
             num_classes: The number of classes.
             attn_module: The attention module.
             attn_module_kwargs: The keyword arguments for the attention module.
+            checkpoint_transformer_layers: Layer indices to checkpoint in transformer,
+                "all" for all layers, or None to disable.
+            checkpoint_transformer_modules: Module types to checkpoint in transformer.
+                Valid types are "attn_norm", "attn", "ff_norm", "ff".
+            checkpoint_use_reentrant: Whether to use reentrant checkpointing.
         """
         super().__init__(*args, **kwargs)
         self.num_classes = num_classes
@@ -94,6 +102,9 @@ class ViT(nn.Module):
             ff_embed_dim=embed_dim,
             attn_module=attn_module,
             attn_module_kwargs=attn_module_kwargs,
+            checkpoint_layers=checkpoint_transformer_layers,
+            checkpoint_modules=checkpoint_transformer_modules,
+            checkpoint_use_reentrant=checkpoint_use_reentrant,
         )
 
         if num_classes is not None:

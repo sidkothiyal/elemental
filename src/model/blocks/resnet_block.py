@@ -1,7 +1,10 @@
 """ResNet blocks for the model."""
 
+from typing import Callable, Literal
+
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from model.blocks.conv_block import ConvBNReLU
 
@@ -222,6 +225,8 @@ class ResNetStage(nn.Module):
         groups: int = 1,
         base_width: int = 64,
         dilation: int = 1,
+        checkpoint_blocks: list[int] | Literal["all"] | None = None,
+        checkpoint_use_reentrant: bool = False,
     ):
         """ResNet stage initialization.
 
@@ -234,8 +239,15 @@ class ResNetStage(nn.Module):
             groups: Number of groups for grouped convolution.
             base_width: Base width for computing the bottleneck width.
             dilation: Dilation rate for convolutions.
+            checkpoint_blocks: List of block indices to checkpoint, "all" for all blocks,
+                or None to disable checkpointing.
+            checkpoint_use_reentrant: Whether to use reentrant checkpointing.
         """
         super().__init__()
+        self.num_blocks = num_blocks
+
+        # Setup checkpointing
+        self._setup_checkpointing(checkpoint_blocks, checkpoint_use_reentrant)
 
         self.blocks = nn.ModuleList()
 
@@ -253,56 +265,73 @@ class ResNetStage(nn.Module):
                 nn.BatchNorm2d(out_channels * block_type.expansion),
             )
 
-        # First block with potential downsampling
+        # Common kwargs for all block types
+        common_kwargs = {"groups": groups, "dilation": dilation}
         if block_type == BottleneckResNetBlock:
-            self.blocks.append(
-                block_type(
-                    in_channels=in_channels,
-                    out_channels=out_channels,
-                    stride=stride,
-                    downsample=downsample,
-                    groups=groups,
-                    base_width=base_width,
-                    dilation=dilation,
-                )
+            common_kwargs["base_width"] = base_width
+
+        # First block with potential downsampling
+        self.blocks.append(
+            block_type(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                stride=stride,
+                downsample=downsample,
+                **common_kwargs,
             )
-        else:  # BasicResNetBlock or PreActBasicBlock
-            self.blocks.append(
-                block_type(
-                    in_channels=in_channels,
-                    out_channels=out_channels,
-                    stride=stride,
-                    downsample=downsample,
-                    groups=groups,
-                    dilation=dilation,
-                )
-            )
+        )
 
         # Remaining blocks
         for _ in range(1, num_blocks):
-            if block_type == BottleneckResNetBlock:
-                self.blocks.append(
-                    block_type(
-                        in_channels=out_channels * block_type.expansion,
-                        out_channels=out_channels,
-                        stride=1,
-                        downsample=None,
-                        groups=groups,
-                        base_width=base_width,
-                        dilation=dilation,
-                    )
+            self.blocks.append(
+                block_type(
+                    in_channels=out_channels * block_type.expansion,
+                    out_channels=out_channels,
+                    stride=1,
+                    downsample=None,
+                    **common_kwargs,
                 )
-            else:  # BasicResNetBlock or PreActBasicBlock
-                self.blocks.append(
-                    block_type(
-                        in_channels=out_channels * block_type.expansion,
-                        out_channels=out_channels,
-                        stride=1,
-                        downsample=None,
-                        groups=groups,
-                        dilation=dilation,
+            )
+
+    def _setup_checkpointing(
+        self,
+        checkpoint_blocks: list[int] | Literal["all"] | None,
+        checkpoint_use_reentrant: bool,
+    ) -> None:
+        """Setup gradient checkpointing configuration.
+
+        Args:
+            checkpoint_blocks: Block indices to checkpoint, "all", or None.
+            checkpoint_use_reentrant: Whether to use reentrant checkpointing.
+        """
+        self.checkpoint_use_reentrant = checkpoint_use_reentrant
+
+        if checkpoint_blocks is None:
+            self.checkpoint_blocks: set[int] = set()
+        elif checkpoint_blocks == "all":
+            self.checkpoint_blocks = set(range(self.num_blocks))
+        else:
+            for block_idx in checkpoint_blocks:
+                if not 0 <= block_idx < self.num_blocks:
+                    raise ValueError(
+                        f"Invalid block index {block_idx}. Must be in range [0, {self.num_blocks})"
                     )
-                )
+            self.checkpoint_blocks = set(checkpoint_blocks)
+
+    def _should_checkpoint(self, block_idx: int) -> bool:
+        """Check if a block should use gradient checkpointing."""
+        return self.training and block_idx in self.checkpoint_blocks
+
+    def _run_module(
+        self,
+        fn: nn.Module | Callable[[torch.Tensor], torch.Tensor],
+        x: torch.Tensor,
+        block_idx: int,
+    ) -> torch.Tensor:
+        """Run a module with optional gradient checkpointing."""
+        if self._should_checkpoint(block_idx):
+            return checkpoint(fn, x, use_reentrant=self.checkpoint_use_reentrant)
+        return fn(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the ResNet stage.
@@ -313,8 +342,8 @@ class ResNetStage(nn.Module):
         Returns:
             Output tensor of shape (B, C', H', W').
         """
-        for block in self.blocks:
-            x = block(x)
+        for idx, block in enumerate(self.blocks):
+            x = self._run_module(block, x, idx)
         return x
 
 
