@@ -18,6 +18,7 @@ dependencies = [
   "hydra-core",
   "lz4",
   "matplotlib (>=3.10.0, <4.0.0)", # Unused
+  "mmcv",
   "numpy (>=2.0.0, <3)",
   "onnx (>=1.17.0, <2)", # Unused
   "onnxruntime (>=1.20.0, <2)", # Unused
@@ -29,7 +30,7 @@ dependencies = [
   "pytorch-msssim",
   "pyyaml (>=6.0.2, <7.0.0)", # Unused
   "scikit-learn (>=1.6.1, <2.0.0)", # Unused
-  "torch",
+  "torch (>=2.9)",
   "torchmetrics (>=1.0.0, <2.0.0)",
   "torchvision",
   "tqdm (>=4.66.5, <5)",
@@ -91,13 +92,16 @@ source = ["src"]
 [tool.uv.sources]
 torch = [
   { index = "pytorch", marker = "sys_platform == 'darwin'"},
-  { index = "pytorch-cu124", marker = "sys_platform == 'linux'"},
-  { index = "pytorch-cu126", marker = "sys_platform == 'win32'"},
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'"},
+  { index = "pytorch-cu130", marker = "sys_platform == 'win32'"},
 ]
 torchvision = [
   { index = "pytorch", marker = "sys_platform == 'darwin'"},
-  { index = "pytorch-cu124", marker = "sys_platform == 'linux'"},
-  { index = "pytorch-cu126", marker = "sys_platform == 'win32'"},
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'"},
+  { index = "pytorch-cu130", marker = "sys_platform == 'win32'"},
+]
+mmcv = [
+    { url = "https://github.com/sidkothiyal/builtlibs/releases/download/mmcv/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl"},
 ]
 
 [[tool.uv.index]]
@@ -106,9 +110,5 @@ url = "https://download.pytorch.org/whl"
 
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"

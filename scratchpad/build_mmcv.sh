@@ -1,6 +1,6 @@
 set -eu pipefail
 
-docker run --gpus all --network host -v $PWD/host -it nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 bash -ec '
+docker run --gpus all --network host -v $PWD/host -it nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04 bash -ec '
 
 apt-get -y update --fix-missing
 apt-get install -y software-properties-common curl wget git unzip
@@ -17,10 +17,10 @@ TMPDIR="/tmp"
 mkdir -p ${TMPDIR}/packages
 cd ${TMPDIR}/packages
 
-wget https://download.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp312-cp312-linux_x86_64.whl#sha256=a393b506844035c0dac2f30ea8478c343b8e95a429f06f3b3cadfc7f53adb597
+wget https://download.pytorch.org/whl/cu130/torch-2.9.1%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl
 ls -lh
-python3.12 -m pip install torch-2.6.0+cu124-cp312-cp312-linux_x86_64.whl
-rm torch-2.6.0+cu124-cp312-cp312-linux_x86_64.whl
+python3.12 -m pip install torch-2.9.1+cu130-cp312-cp312-manylinux_2_28_x86_64.whl
+rm torch-2.9.1+cu130-cp312-cp312-manylinux_2_28_x86_64.whl
 
 git clone https://github.com/open-mmlab/mmcv.git
 echo "Moving into mmcv directory"
@@ -34,7 +34,7 @@ export PATH="$PWD:$PATH"
 
 echo "Checking nvcc version and setting CUDA Arch List"
 nvcc --version
-export TORCH_CUDA_ARCH_LIST="6.0;6.1;6.2;7.0;7.2;7.5;8.0;8.6;8.7;9.0"
+export TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.3;11.0;12.0;12.1"
 export FORCE_CUDA="1"
 
 echo "Building mmcv"
@@ -46,7 +46,7 @@ python3.12 setup.py bdist_wheel
 echo "Wheel file created and moved to"
 ls
 ls dist/
-cp dist/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl /host/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl
+cp dist/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl /mmcv-2.2.0-cp312-cp312-torch-2.9.1+cu130-linux_x86_64.whl
 
-echo "Saved generated wheel file at $PWD/dist/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl"
+echo "Saved generated wheel file at /mmcv-2.2.0-cp312-cp312-torch-2.9.1+cu130-linux_x86_64.whl"
 '

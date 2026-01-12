@@ -16,6 +16,7 @@ models/
 outputs/
 results/
 logs/
+wheels/
 *.tmp
 
 # Jupyter Notebook
