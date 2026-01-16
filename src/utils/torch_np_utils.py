@@ -29,3 +29,24 @@ class Unsqueeze(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the Unsqueeze module."""
         return torch.unsqueeze(x, self.axis)
+
+
+class Add(nn.Module):
+    """Add two tensors."""
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the Add module."""
+        return x + y
+
+
+class Concat(nn.Module):
+    """Concatenate two tensors."""
+
+    def __init__(self, axis: int = -1):
+        """Initialize the Concatenate module."""
+        super().__init__()
+        self.axis = axis
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the Concat module."""
+        return torch.cat((x, y), self.axis)

@@ -129,6 +129,7 @@ class DiffusionDataset(data.Dataset):
             "input": noisy_image,
             "target": target,
             "t": t,
+            "cond": x0,
         }
 
 

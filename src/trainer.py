@@ -30,6 +30,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def collect_module_losses(model: nn.Module) -> dict[str, torch.Tensor]:
+    """Recursively collect losses from all submodules that have a 'losses' attribute.
+
+    This allows nested modules (e.g., VQVAE inside PatcherUnpatcher) to contribute
+    their custom losses to the training loop.
+
+    Args:
+        model: The root model to collect losses from.
+
+    Returns:
+        Dictionary mapping loss names to loss tensors. Names are prefixed with
+        the module path to avoid collisions (e.g., "model/dictionary_loss").
+    """
+    all_losses = {}
+    for name, module in model.named_modules():
+        if hasattr(module, "losses") and module.losses:
+            for loss_name, loss_value in module.losses.items():
+                # Prefix with module path to avoid name collisions
+                full_name = f"{name}/{loss_name}" if name else loss_name
+                all_losses[full_name] = loss_value
+    return all_losses
+
+
 def batch_loop_gan(
     phase: str,
     epoch: int,
@@ -273,10 +296,13 @@ def batch_loop(
 
             # Call loss with epoch support for phased losses
             batch_loss = call_loss_with_epoch(loss, pred, batch["target"], epoch, **loss_args)
-            if hasattr(model, "losses"):
-                for key, value in model.losses.items():
-                    running_loss[key] += value.clone().detach().item()
-                    batch_loss += value
+
+            # Collect losses from all submodules (handles nested modules like VQVAE
+            # in PatcherUnpatcher)
+            module_losses = collect_module_losses(model)
+            for key, value in module_losses.items():
+                running_loss[key] += value.clone().detach().item()
+                batch_loss += value
 
             if phase == "train":
                 # Gradient accumulation

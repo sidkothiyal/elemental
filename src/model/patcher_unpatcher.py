@@ -1,46 +1,32 @@
+"""Patcher and Unpatcher modules."""
+
 import einops
 import torch
 from einops.layers.torch import Rearrange
 from torch import nn
 
 
-class PatcherUnpatcher(nn.Module):
-    """Patcher and Unpatcher."""
+class Patcher(nn.Module):
+    """Patcher: convert images to patch embeddings."""
 
     def __init__(
         self,
         image_size: tuple[int, int, int],
         patch_size: tuple[int, int],
         embed_dim: int,
-        model: nn.Module,
         conv_encoder: nn.Module | None = None,
-        decoder_projection_dim: int | None = None,
-        conv_decoder: nn.Module | None = None,
-        model_downsample_factor: int = 1,
     ):
-        """Initialize the PatcherUnpatcher."""
+        """Initialize the Patcher."""
         super().__init__()
         channels, height, width = image_size
-        self.channels = channels
-        self.height = height
-        self.width = width
-
         patch_height, patch_width = patch_size
-        self.patch_height = patch_height
-        self.patch_width = patch_width
-
-        self.model = model
-
-        self.conv_encoder = conv_encoder
-        self.decoder_projection_dim = decoder_projection_dim or channels
-        self.conv_decoder = conv_decoder
-
-        self.model_downsample_factor = model_downsample_factor
 
         assert height % patch_height == 0, "Image height must be divisible by patch height"
         assert width % patch_width == 0, "Image width must be divisible by patch width"
 
-        self.num_patches = (height // patch_height) * (width // patch_width)
+        self.conv_encoder = conv_encoder
+
+        num_patches = (height // patch_height) * (width // patch_width)
         patch_dim = channels * patch_height * patch_width
 
         self.to_patch_embedding = nn.Sequential(
@@ -54,28 +40,53 @@ class PatcherUnpatcher(nn.Module):
             nn.LayerNorm(embed_dim),
         )
 
-        num_pos_embeddings = self.num_patches
         # 1D sequence of token embeddings
-        self.pos_embeddings = nn.Parameter(torch.randn(1, num_pos_embeddings, embed_dim))
-
-        decoded_patch_dim = self.decoder_projection_dim * patch_height * patch_width
-        self.embedding_to_patch_projection = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, decoded_patch_dim // self.model_downsample_factor**2),
-        )
+        self.pos_embeddings = nn.Parameter(torch.randn(1, num_patches, embed_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the PatcherUnpatcher."""
+        """Forward pass: convert image to patch embeddings."""
         if self.conv_encoder:
             x = self.conv_encoder(x)
-        # Patchify and add positional embeddings
         patched_x = self.to_patch_embedding(x)
         patched_x += self.pos_embeddings
+        return patched_x
 
-        # Encoder and decoder model forward pass
-        decoded_tokens = self.model(patched_x)
 
-        # Embedding to patch projection
+class Unpatcher(nn.Module):
+    """Unpatcher: convert patch embeddings back to images."""
+
+    def __init__(
+        self,
+        image_size: tuple[int, int, int],
+        patch_size: tuple[int, int],
+        embed_dim: int,
+        decoder_projection_dim: int | None = None,
+        conv_decoder: nn.Module | None = None,
+        model_downsample_factor: int = 1,
+    ):
+        """Initialize the Unpatcher."""
+        super().__init__()
+        channels, height, width = image_size
+        patch_height, patch_width = patch_size
+
+        self.height = height
+        self.width = width
+        self.patch_height = patch_height
+        self.patch_width = patch_width
+        self.model_downsample_factor = model_downsample_factor
+
+        self.conv_decoder = conv_decoder
+
+        decoder_projection_dim = decoder_projection_dim or channels
+        decoded_patch_dim = decoder_projection_dim * patch_height * patch_width
+
+        self.embedding_to_patch_projection = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, decoded_patch_dim // model_downsample_factor**2),
+        )
+
+    def forward(self, decoded_tokens: torch.Tensor) -> torch.Tensor:
+        """Forward pass: convert patch embeddings to image."""
         decoded_tokens = self.embedding_to_patch_projection(decoded_tokens)
 
         image = einops.rearrange(
@@ -90,4 +101,44 @@ class PatcherUnpatcher(nn.Module):
         if self.conv_decoder:
             image = self.conv_decoder(image)
 
+        return image
+
+
+class PatcherUnpatcher(nn.Module):
+    """PatcherUnpatcher: combine Patcher and Unpatcher with a model."""
+
+    def __init__(
+        self,
+        image_size: tuple[int, int, int],
+        patch_size: tuple[int, int],
+        embed_dim: int,
+        model: nn.Module,
+        conv_encoder: nn.Module | None = None,
+        decoder_projection_dim: int | None = None,
+        conv_decoder: nn.Module | None = None,
+        model_downsample_factor: int = 1,
+    ):
+        """Initialize the PatcherUnpatcher."""
+        super().__init__()
+        self.patcher = Patcher(
+            image_size=image_size,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            conv_encoder=conv_encoder,
+        )
+        self.model = model
+        self.unpatcher = Unpatcher(
+            image_size=image_size,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            decoder_projection_dim=decoder_projection_dim,
+            conv_decoder=conv_decoder,
+            model_downsample_factor=model_downsample_factor,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the PatcherUnpatcher."""
+        patched_x = self.patcher(x)
+        decoded_tokens = self.model(patched_x)
+        image = self.unpatcher(decoded_tokens)
         return image

@@ -3,7 +3,7 @@
 from typing import Literal
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 class DenoisingDiffusionModel(nn.Module):
@@ -20,7 +20,7 @@ class DenoisingDiffusionModel(nn.Module):
         self,
         model: nn.Module,
         conditional_model: nn.Module | None = None,
-        use_timestep_embedding: bool = True,
+        timestep_model: nn.Module | None = None,
         num_timesteps: int = 1000,
         noise_schedule: str = "linear",
         beta_start: float = 0.0001,
@@ -36,7 +36,8 @@ class DenoisingDiffusionModel(nn.Module):
                   Should accept (x, t) or (x, t, cond) and output same shape as x.
             conditional_model: Optional model for processing conditional inputs.
                              Output will be passed as additional input to base model.
-            use_timestep_embedding: Whether to use a temporal embedding for the timestep.
+            timestep_model: Model to project the timestep to a tensor of the same shape as
+                the input (e.g. a linear layer, embedding layer, etc.).
             num_timesteps: Total number of diffusion timesteps (default: 1000).
             noise_schedule: Type of noise schedule ("linear" or "cosine").
             beta_start: Starting beta value for linear schedule.
@@ -50,7 +51,7 @@ class DenoisingDiffusionModel(nn.Module):
 
         self.model = model
         self.conditional_model = conditional_model
-        self.use_timestep_embedding = use_timestep_embedding
+        self.timestep_model = timestep_model
         self.num_timesteps = num_timesteps
         self.prediction_type = prediction_type
 
@@ -198,8 +199,8 @@ class DenoisingDiffusionModel(nn.Module):
             cond_features = self.conditional_model(cond)
             model_args["aux_features"] = cond_features
 
-        if self.use_timestep_embedding:
-            model_args["t"] = t
+        if self.timestep_model:
+            model_args["t"] = self.timestep_model(t)
         model_output = self.model(x_t, **model_args)
 
         # Convert model output to noise and x0 predictions based on prediction type
@@ -347,10 +348,9 @@ class DenoisingDiffusionModel(nn.Module):
 
         if self.prediction_type == "epsilon":
             return pred_noise
-        elif self.prediction_type == "x0":
+        if self.prediction_type == "x0":
             return pred_x0
-        else:
-            raise ValueError(f"Unknown prediction type: {self.prediction_type}")
+        raise ValueError(f"Unknown prediction type: {self.prediction_type}")
 
         # device = x.device
         # batch_size = x.shape[0]
@@ -490,8 +490,7 @@ if __name__ == "__main__":
     )
 
     # Test with random noisy input
-    batch_size = 2
-    x_noisy = torch.randn(batch_size, 3, 64, 64)
+    x_noisy = torch.randn(2, 3, 64, 64)
 
     print(f"\nInput shape: {x_noisy.shape}")
     print(f"Input range: [{x_noisy.min():.3f}, {x_noisy.max():.3f}]")

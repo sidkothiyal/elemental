@@ -164,7 +164,6 @@ class Quantizer(nn.Module):
             quantized = self.codebook[closest_indices].view(
                 x.shape[0], x.shape[1], self.codebook_dim
             )
-            quantized = quantized
 
         # Update codebook with EMA if enabled
         self.update_codebook_with_ema(flattened_x, closest_indices)
@@ -189,17 +188,17 @@ class VQVAE(nn.Module):
     def __init__(
         self,
         encoder: nn.Module,
-        decoder: nn.Module,
         codebook_size: int,
         codebook_dim: int,
+        decoder: nn.Module | None = None,
     ):
         """Initialize the VQVAE.
 
         Args:
             encoder: The encoder module.
-            decoder: The decoder module.
             codebook_size: The size of the codebook.
             codebook_dim: The dimension of the codebook.
+            decoder: The decoder module. If None, the decoder will not be used.
         """
         super().__init__()
         self.encoder = encoder
@@ -222,8 +221,9 @@ class VQVAE(nn.Module):
         """
         encoded = self.encoder(x)
         quantized = self.quantizer(encoded)
-        decoded = self.decoder(quantized)
-        return decoded
+        if not self.decoder:
+            return quantized
+        return self.decoder(quantized)
 
 
 if __name__ == "__main__":
