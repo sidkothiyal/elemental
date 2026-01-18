@@ -1,0 +1,39 @@
+# Main Hydra configuration entry point
+#
+# Usage with trainer.py (Compose API):
+#   python src/trainer.py experiment/autoencoder/compression_unet
+#   python src/trainer.py experiment/classification/imagenet
+#   python src/trainer.py experiment/gan/cityscapes_seg
+#
+# The old flat configs still work:
+#   python src/trainer.py compression_autoencoder_unet
+#   python src/trainer.py base_classification
+#
+# ============================================================================
+# FLAT → HIERARCHICAL CONFIG LOOKUP TABLE
+# ============================================================================
+#
+# | Flat Config                                              | Hierarchical Config                                              |
+# |----------------------------------------------------------|------------------------------------------------------------------|
+# | base_autoencoder.yaml                                    | experiment/autoencoder/depth_estimation.yaml                     |
+# | base_autoregressive_lm.yaml                              | experiment/autoregressive/wikitext_lm.yaml                       |
+# | base_autoregressive_tiny_shakespeare.yaml                | experiment/autoregressive/tiny_shakespeare.yaml                  |
+# | base_classification.yaml                                 | experiment/classification/imagenet.yaml                          |
+# | base_gan.yaml                                            | experiment/gan/cityscapes_seg.yaml                               |
+# | base_masked_autoencoder.yaml                             | experiment/autoencoder/masked_autoencoder.yaml                   |
+# | compression_autoencoder_conditional_diffusion.yaml       | experiment/autoencoder/compression_conditional_diffusion.yaml    |
+# | compression_autoencoder_diffusion.yaml                   | experiment/autoencoder/compression_diffusion.yaml                |
+# | compression_autoencoder_gan_unet.yaml                    | experiment/gan/compression_unet.yaml                             |
+# | compression_autoencoder_mae.yaml                         | experiment/autoencoder/compression_mae.yaml                      |
+# | compression_autoencoder_transformer_conditional_diffusion.yaml | experiment/autoencoder/compression_transformer_conditional_diffusion.yaml |
+# | compression_autoencoder_unet.yaml                        | experiment/autoencoder/compression_unet.yaml                     |
+# | compression_autoencoder_unet_4_8_16_32_64_skip_first.yaml| experiment/autoencoder/compression_unet_l1.yaml                  |
+# | compression_autoencoder_unet_4_8_16_32_64_skip_first_ssim.yaml | experiment/autoencoder/compression_unet_ssim.yaml          |
+# | compression_autoencoder_vq_transformer_conditional_diffusion.yaml | experiment/autoencoder/compression_vq_transformer_conditional_diffusion.yaml |
+# | compression_autoencoder_vq_vae.yaml                      | experiment/autoencoder/compression_vqvae.yaml                    |
+#
+# ============================================================================
+
+defaults:
+  - default
+  - _self_

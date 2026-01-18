@@ -1,0 +1,29 @@
+# @package _global_
+# Compression Autoencoder using UNet architecture on DIV2K dataset
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_unet
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: unet_compression
+  - /loss: mse
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - _self_
+
+experiment_name: compression_autoencoder_unet_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.0003
+num_epochs: 200
+batch_size: 4
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16

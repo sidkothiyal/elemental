@@ -1,0 +1,36 @@
+# @package _global_
+# Compression Autoencoder using UNet with phased L1+SSIM loss
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_unet_ssim
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: unet_compression
+  - /loss: phased_l1_ssim
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - _self_
+
+experiment_name: compression_autoencoder_unet_ssim_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.0005
+num_epochs: 500
+validation_interval: 25
+batch_size: 64
+clip_grad_norm: 1.0
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override checkpoint callback to save every epoch
+callbacks:
+  checkpoint:
+    save_every_n_epochs: 1

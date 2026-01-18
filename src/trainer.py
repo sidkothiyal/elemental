@@ -444,8 +444,10 @@ def run_train(
     os.makedirs(results_dir, exist_ok=True)
     logger.info("Results will be saved to: %s", results_dir)
 
-    # Initialize callbacks
+    # Initialize callbacks (handle both list and dict configs)
     callbacks = hy_utils.instantiate(config.callbacks)
+    if isinstance(callbacks, dict):
+        callbacks = list(callbacks.values())
     callbacks = callback.CallbackList(callbacks)
     callbacks.update_config({"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed})
 
@@ -474,6 +476,8 @@ def run_train(
         torch.optim.lr_scheduler, config.get("lr_scheduler", "CosineAnnealingLR")
     )
     scheduler_params = config.get("lr_scheduler_params", {})
+    # Filter out None values (allows scheduler configs to override defaults by setting to null)
+    scheduler_params = {k: v for k, v in scheduler_params.items() if v is not None}
     if mode == "gan":
         # GAN specific setup
         optim = {

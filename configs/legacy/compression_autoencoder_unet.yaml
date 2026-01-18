@@ -1,0 +1,88 @@
+# @package _global_
+experiment_name: compression_autoencoder_unet_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+lr: 0.0003
+num_epochs: 200
+test: false
+batch_size: 4
+seed: 42
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+device: "gpu"
+
+callbacks:
+  - _target_: callback.wandb_callback.WandbCallback
+    exp_name: ${experiment_name}
+    project: "elemental"
+    entity: "elemental-ai"
+    num_samples_to_log: 1
+    logging_interval: 50
+    mode: ${mode}
+  - _target_: callback.checkpoint_callback.CheckpointCallback
+    save_dir: ${results_dir}/${experiment_name}
+    save_every_n_epochs: 10
+    save_every_n_steps: null
+    save_best: true
+    save_last: true
+    monitor_metric: "total"
+    mode: "min"
+    max_checkpoints_saved: 5
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.div2k_dataset.DIV2KDataset
+      root_dir: data/div2k/train
+      target_shape: [640, 1024]
+    batch_size: ${batch_size}
+    shuffle: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.div2k_dataset.DIV2KDataset
+      root_dir: data/div2k/val
+      target_shape: [640, 1024]
+    batch_size: ${batch_size}
+    shuffle: false
+  test: null
+
+loss:
+  _target_: torch.nn.MSELoss
+
+# lr_scheduler_params:
+#   step_size: 10
+#   gamma: 0.75
+
+model:
+  _target_: model.unet.UNet
+  in_channels: 3
+  out_channels: 3
+  # Vanilla CNN based autoencoder
+  # _target_: torch.nn.Sequential
+  # _args_:
+  #   - _target_: model.blocks.conv_block.ConvBlock
+  #     in_channels: 3
+  #     channels: [32, 64, 128, 256, 512]
+  #     kernel_sizes: [3, 3, 3, 3, 3]
+  #     strides: [2, 2, 2, 2, 2]
+  #     paddings: [1, 1, 1, 1, 1]
+  #   - _target_: model.blocks.convtranspose_block.ConvTransposeBlock
+  #     in_channels: 512
+  #     channels: [256, 128, 64, 32, 16]
+  #     kernel_sizes: [2, 2, 2, 2, 2]
+  #     strides: [2, 2, 2, 2, 2]
+  #     paddings: [0, 0, 0, 0, 0]
+  #     output_paddings: [0, 0, 0, 0, 0]
+  #   - _target_: torch.nn.Conv2d
+  #     in_channels: 16
+  #     out_channels: 1
+  #     kernel_size: 3
+  #     stride: 1
+  #     padding: 1

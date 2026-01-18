@@ -1,0 +1,4 @@
+# @package _global_
+# L1/Mean Absolute Error loss
+loss:
+  _target_: torch.nn.L1Loss

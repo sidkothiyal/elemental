@@ -1,0 +1,4 @@
+# @package _global_
+# Mean Squared Error loss
+loss:
+  _target_: torch.nn.MSELoss

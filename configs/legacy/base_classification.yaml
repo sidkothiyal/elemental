@@ -1,0 +1,88 @@
+# @package _global_
+experiment_name: classification_imagenet_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/classification/
+
+mode: "classification"
+
+lr: 0.00025
+num_epochs: 100
+test: false
+batch_size: 128
+seed: 42
+
+device: "gpu"
+
+dataset_dir: data/tiny_imagenet
+classes:
+  _target_: dataset.imagenet_dataset.read_classes
+  dataset_dir: ${dataset_dir}
+num_classes:
+  _target_: builtins.len
+  _args_:
+    - ${classes}
+
+callbacks:
+  - _target_: callback.wandb_callback.WandbCallback
+    exp_name: ${experiment_name}
+    project: "elemental"
+    entity: "elemental-ai"
+    num_samples_to_log: 1
+    logging_interval: 50
+    mode: ${mode}
+  - _target_: callback.checkpoint_callback.CheckpointCallback
+    save_dir: ${results_dir}/${experiment_name}
+    save_every_n_epochs: 10
+    save_every_n_steps: null
+    save_best: true
+    save_last: true
+    monitor_metric: "total"
+    mode: "min"
+    max_checkpoints_saved: 5
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.imagenet_dataset.ImagenetDataset
+      root_dir: data/tiny_imagenet/train
+      split: train
+      classes: ${classes}
+      normalize: true
+    batch_size: ${batch_size}
+    shuffle: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.imagenet_dataset.ImagenetDataset
+      root_dir: data/tiny_imagenet/val
+      split: val
+      classes: ${classes}
+      normalize: true
+    batch_size: ${batch_size}
+    shuffle: false
+  test: null
+
+loss:
+  _target_: torch.nn.CrossEntropyLoss
+
+lr_scheduler_params:
+  step_size: 2
+  gamma: 0.5
+
+model:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: model.blocks.conv_block.ConvBlock
+      in_channels: 3
+      channels: [32, 64, 128, 256, 512, 1024]
+      kernel_sizes: [3, 3, 3, 3, 3, 3]
+      strides: [2, 2, 2, 2, 2, 2]
+      paddings: [1, 1, 1, 1, 1, 1]
+    - _target_: torch.nn.Flatten
+      start_dim: 1
+    - _target_: model.blocks.linear_block.LinearBlock
+      dims: [1024]
+      out_dim: ${num_classes}
+      bias: true
+      use_bn: true
+      use_relu: true

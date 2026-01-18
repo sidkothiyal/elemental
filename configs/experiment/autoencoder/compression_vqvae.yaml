@@ -1,0 +1,38 @@
+# @package _global_
+# Compression Autoencoder using VQ-VAE with Transformer
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_vqvae
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: vq_vae_transformer
+  - /loss: phased_l1_ssim_vqvae
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - _self_
+
+experiment_name: compression_autoencoder_vq_vae_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.000075
+num_epochs: 1000
+validation_interval: 100
+batch_size: 4
+
+# Override dataset target shape for VQ-VAE
+target_shape: [640, 960]
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks to match flat config
+callbacks:
+  wandb:
+    logging_interval: 100

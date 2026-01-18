@@ -1,0 +1,40 @@
+# @package _global_
+# Character-level Language Model on Tiny Shakespeare
+#
+# Usage: python src/trainer.py experiment/autoregressive/tiny_shakespeare
+
+defaults:
+  - /default
+  - /dataset: tiny_shakespeare
+  - /model: autoregressive_lm_small
+  - /loss: shifted_teacher_forcing_char
+  - /optimizer: adamw
+  - /scheduler: step_lr
+  - /callback: default
+  - _self_
+
+experiment_name: autoregressive_tiny_shakespeare_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoregressive_tiny_shakespeare/
+
+mode: "autoregressive"
+
+# Training overrides
+lr: 0.0003
+num_epochs: 10000
+batch_size: 64
+gradient_accumulation_steps: 1
+validation_interval: 1000
+
+# Scheduler params override
+lr_scheduler_params:
+  step_size: 500
+  gamma: 0.9
+
+# Override callbacks for language modeling
+callbacks:
+  wandb:
+    logging_interval: 100
+    log_text_data: true
+    tokenizer: ${pretrained_tokenizer}
+  checkpoint:
+    save_every_n_epochs: 100

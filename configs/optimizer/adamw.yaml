@@ -1,0 +1,3 @@
+# @package _global_
+# AdamW optimizer configuration
+optimizer: "AdamW"

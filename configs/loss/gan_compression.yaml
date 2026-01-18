@@ -1,0 +1,29 @@
+# @package _global_
+# GAN losses for compression - phased L1+SSIM feature matching with BCE adversarial
+loss:
+  feature_matching:
+    _target_: loss.phased_loss.PhasedLoss
+    total_epochs: ${num_epochs}
+    phases:
+      - loss:
+          _target_: torch.nn.L1Loss
+        run_until: 0.5
+      - loss:
+          _target_: loss.moving_weighted_loss.MovingWeightedLoss
+          start_weights: [100.0, 0.0]
+          end_weights: [99.0, 1.0]
+          start_percentage: 0.5
+          end_percentage: 1.0
+          total_epochs: ${num_epochs}
+          scale_losses: true
+          loss_fns:
+            - _target_: torch.nn.L1Loss
+            - _target_: loss.ssim.SSIMLoss
+              multi_scale: true
+              ssim_kwargs:
+                data_range: 1.0
+                size_average: True
+                channel: 3
+        run_until: 1.0
+  adversarial:
+    _target_: torch.nn.BCEWithLogitsLoss

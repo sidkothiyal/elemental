@@ -1,0 +1,184 @@
+# @package _global_
+# Transformer-based Conditional Diffusion model for image compression
+# Uses Patcher/Unpatcher with Transformer encoder/decoder
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_transformer_conditional_diffusion
+
+defaults:
+  - /default
+  - /loss: l1
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - _self_
+
+experiment_name: compression_autoencoder_transformer_conditional_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Custom dataset with 960 width for transformer patches
+target_shape: [640, 960]
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/train
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: "x0"
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/val
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: "x0"
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  test: null
+
+# Training overrides
+lr: 0.00025
+num_epochs: 5000
+validation_interval: 500
+batch_size: 2
+gradient_accumulation_steps: 12
+clip_grad_norm: 1.0
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 500
+  checkpoint:
+    save_every_n_epochs: 1
+
+model_input_args:
+  - "t"
+  - "cond"
+
+model:
+  _target_: model.diffusion.DenoisingDiffusionModel
+  timestep_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: torch.nn.Embedding
+        num_embeddings: 1000
+        embedding_dim: 64
+  prediction_type: "x0"
+  conditional_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.patcher_unpatcher.Patcher
+        image_size: [3, 640, 960]
+        patch_size: [16, 16]
+        embed_dim: 192
+      - _target_: model.transformer.Transformer
+        embed_dim: 192
+        num_heads: 8
+        num_layers: 8
+        ff_embed_dim: 192
+  model:
+    _target_: model.conditional_autoencoder.ConditionalAutoencoder
+    encoder:
+      _target_: model.combiner.DiffusionCombiner
+      model:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: model.patcher_unpatcher.Patcher
+            image_size: [3, 640, 960]
+            patch_size: [16, 16]
+            embed_dim: 192
+          - _target_: model.transformer.Transformer
+            embed_dim: 192
+            num_heads: 8
+            num_layers: 8
+            ff_embed_dim: 192
+      time_mlp: null
+      aux_features_combiner: null
+    decoder:
+      _target_: model.combiner.DiffusionCombiner
+      model:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: model.transformer.Transformer
+            embed_dim: 192
+            num_heads: 8
+            num_layers: 8
+            ff_embed_dim: 192
+          - _target_: model.patcher_unpatcher.Unpatcher
+            image_size: [64, 640, 960]
+            patch_size: [16, 16]
+            embed_dim: 192
+            decoder_projection_dim: 64
+            model_downsample_factor: 1
+            conv_decoder:
+              _target_: torch.nn.Sequential
+              _args_:
+                - _target_: model.blocks.resnet_block.ResNetStage
+                  block_type:
+                    _target_: hydra.utils.get_class
+                    _args_:
+                      - model.blocks.resnet_block.BasicResNetBlock
+                  in_channels: 64
+                  out_channels: 32
+                  num_blocks: 4
+                  stride: 1
+                  groups: 1
+                  dilation: 1
+                - _target_: model.blocks.resnet_block.ResNetStage
+                  block_type:
+                    _target_: hydra.utils.get_class
+                    _args_:
+                      - model.blocks.resnet_block.BasicResNetBlock
+                  in_channels: 32
+                  out_channels: 16
+                  num_blocks: 4
+                  stride: 1
+                  groups: 1
+                  dilation: 1
+                - _target_: torch.nn.Conv2d
+                  in_channels: 16
+                  out_channels: 3
+                  kernel_size: 3
+                  stride: 1
+                  padding: 1
+      time_mlp:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.SiLU
+          - _target_: torch.nn.Linear
+            in_features: 64
+            out_features: 384
+      time_modulation_type: "feature_wise"
+      aux_features_combiner:
+        _target_: model.combiner.Combiner
+        combiner:
+          _target_: model.combiner.CrossAttentionCombiner
+          embed_dim: 192
+          num_heads: 6
+        x_model: null
+        y_model: null
+        model: null

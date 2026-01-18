@@ -1,0 +1,28 @@
+# @package _global_
+# Image Classification on TinyImageNet
+#
+# Usage: python src/trainer.py experiment/classification/imagenet
+
+defaults:
+  - /default
+  - /dataset: imagenet
+  - /model: classification_cnn
+  - /loss: cross_entropy
+  - /optimizer: adam
+  - /scheduler: step_lr
+  - /callback: default
+  - _self_
+
+experiment_name: classification_imagenet_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/classification/
+
+mode: "classification"
+
+# Training overrides
+lr: 0.00025
+batch_size: 128
+
+# Scheduler params override
+lr_scheduler_params:
+  step_size: 2
+  gamma: 0.5

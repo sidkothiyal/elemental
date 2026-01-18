@@ -1,0 +1,36 @@
+# @package _global_
+# WikiText dataset configuration for language modeling
+dataset_name: wikitext
+max_length: 1024
+pretrained_tokenizer: "gpt2"
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.wikitext_dataset.WikiTextDataset
+      dataset_dir: data/wikitext/paragraphs
+      split: train
+      max_length: ${max_length}
+      pretrained_tokenizer: ${pretrained_tokenizer}
+      num_samples: 10
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 10
+    pin_memory: true
+    persistent_workers: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.wikitext_dataset.WikiTextDataset
+      dataset_dir: data/wikitext/paragraphs
+      split: val
+      max_length: ${max_length}
+      pretrained_tokenizer: ${pretrained_tokenizer}
+      num_samples: 10
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 10
+    pin_memory: true
+    persistent_workers: true
+  test: null

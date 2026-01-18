@@ -1,0 +1,31 @@
+# @package _global_
+# Diffusion model with UNet backbone for denoising
+prediction_type: "x0"
+
+model_input_args:
+  - "t"
+
+model:
+  _target_: model.diffusion.DenoisingDiffusionModel
+  use_timestep_embedding: true
+  timestep_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: torch.nn.Embedding
+        num_embeddings: 1000
+        embedding_dim: 3
+      - _target_: utils.torch_np_utils.Unsqueeze
+        axis: -1
+      - _target_: utils.torch_np_utils.Unsqueeze
+        axis: -1
+  prediction_type: ${prediction_type}
+  model:
+    _target_: model.combiner.DiffusionCombiner
+    timestep_combiner:
+      _target_: utils.torch_np_utils.Add
+    model:
+      _target_: model.unet.UNet
+      in_channels: 3
+      out_channels: 3
+      channels: [4, 8, 16, 32, 64]
+      skip_first_connection: true

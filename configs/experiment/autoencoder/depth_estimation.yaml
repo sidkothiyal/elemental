@@ -1,0 +1,19 @@
+# @package _global_
+# Depth Estimation Autoencoder using UNet on Cityscapes
+#
+# Usage: python src/trainer.py experiment/autoencoder/depth_estimation
+
+defaults:
+  - /default
+  - /dataset: cityscapes_depth
+  - /model: unet_depth
+  - /loss: mse
+  - /optimizer: adam
+  - /scheduler: step_lr
+  - /callback: default
+  - _self_
+
+experiment_name: autoencoder_depth_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"

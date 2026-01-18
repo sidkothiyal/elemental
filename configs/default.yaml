@@ -1,0 +1,29 @@
+# Default training configuration - base values shared across all experiments
+
+# Training parameters
+lr: 0.0001
+num_epochs: 100
+test: false
+batch_size: 64
+seed: 42
+
+# Device configuration
+device: "gpu"
+
+# Optional parameters (set to null if not used)
+validation_interval: 5
+gradient_accumulation_steps: 1
+clip_grad_norm: null
+dtype: null
+
+# Default optimizer and scheduler (trainer.py uses these strings with getattr)
+optimizer: "AdamW"
+lr_scheduler: "CosineAnnealingLR"
+lr_scheduler_params:
+  T_max: ${num_epochs}
+
+# Checkpoint loading (optional)
+load_checkpoint_path: null
+load_keys: null
+strict: true
+resume_training: false

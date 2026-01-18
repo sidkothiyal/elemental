@@ -1,0 +1,40 @@
+# @package _global_
+# Autoregressive Language Model on WikiText
+#
+# Usage: python src/trainer.py experiment/autoregressive/wikitext_lm
+
+defaults:
+  - /default
+  - /dataset: wikitext
+  - /model: autoregressive_lm
+  - /loss: shifted_teacher_forcing
+  - /optimizer: adam
+  - /scheduler: step_lr
+  - /callback: default
+  - _self_
+
+experiment_name: autoregressive_lm_wikitext_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoregressive_lm/
+
+mode: "autoregressive"
+
+# Training overrides
+lr: 0.00025
+num_epochs: 10000
+batch_size: 6
+gradient_accumulation_steps: 2
+validation_interval: 1000
+
+# Scheduler params override
+lr_scheduler_params:
+  step_size: 500
+  gamma: 0.9
+
+# Override callbacks for language modeling
+callbacks:
+  wandb:
+    logging_interval: 100
+    log_text_data: true
+    tokenizer: ${pretrained_tokenizer}
+  checkpoint:
+    save_every_n_epochs: 100

@@ -86,8 +86,15 @@ disable = [
 [tool.yapf]
 blank_line_before_nested_class_or_def = true
 
-#[tool.pytest.ini_options]
-#addopts = "--cov --cov-report html --cov-report term-missing --cov-fail-under 95"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
 
 [tool.coverage.run]
 source = ["src"]

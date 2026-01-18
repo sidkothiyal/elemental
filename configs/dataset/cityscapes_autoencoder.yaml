@@ -1,0 +1,28 @@
+# @package _global_
+# Cityscapes dataset configuration for autoencoder (image reconstruction)
+dataset_name: cityscapes_autoencoder
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.cityscapes_dataset.CityscapesDataset
+      root_dir: data/cityscapes/train
+      segmentation_enabled: false
+      depth_enabled: false
+      rename_output_keys:
+        input: target
+    batch_size: ${batch_size}
+    shuffle: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.cityscapes_dataset.CityscapesDataset
+      root_dir: data/cityscapes/val
+      segmentation_enabled: false
+      depth_enabled: false
+      rename_output_keys:
+        input: target
+    batch_size: ${batch_size}
+    shuffle: false
+  test: null

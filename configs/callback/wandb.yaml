@@ -1,0 +1,8 @@
+# WandB callback configuration
+_target_: callback.wandb_callback.WandbCallback
+exp_name: ${experiment_name}
+project: "elemental"
+entity: "elemental-ai"
+num_samples_to_log: 1
+logging_interval: 50
+mode: ${mode}
