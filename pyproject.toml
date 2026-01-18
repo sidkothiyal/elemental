@@ -104,7 +104,7 @@ torchvision = [
   { index = "pytorch-cu130", marker = "sys_platform == 'win32'"},
 ]
 mmcv = [
-    { url = "https://github.com/sidkothiyal/builtlibs/releases/download/mmcv/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl"},
+    { url = "https://github.com/sidkothiyal/builtlibs/releases/download/mmcv/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux'"},
 ]
 
 [[tool.uv.index]]
