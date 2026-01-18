@@ -15,7 +15,7 @@ dependencies = [
   "hydra-core",
   "kaggle",
   "einops",
-  "flash-attn",
+  "flash-attn; sys_platform == 'linux'",
   "fire (>=0.6.0, <1.0.0)",
   "hydra-core",
   "lz4",
