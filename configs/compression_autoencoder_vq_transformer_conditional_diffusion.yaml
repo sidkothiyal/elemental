@@ -1,13 +1,14 @@
-experiment_name: compression_autoencoder_conditional_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: compression_autoencoder_vq_transformer_conditional_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
 mode: "autoencoder"
 
-lr: 0.0003
+lr: 0.00025
 num_epochs: 5000
 validation_interval: 500
 test: false
 batch_size: 2
+gradient_accumulation_steps: 12
 seed: 42
 dtype:
   _target_: hydra.utils.get_object
@@ -126,13 +127,12 @@ model_input_args:
 
 model:
   _target_: model.diffusion.DenoisingDiffusionModel
-  use_timestep_embedding: true
   timestep_model:
     _target_: torch.nn.Sequential
     _args_:
       - _target_: torch.nn.Embedding
         num_embeddings: 1000
-        embedding_dim: 3
+        embedding_dim: 64
   prediction_type: "x0"
   conditional_model:
     _target_: model.vq_vae.VQVAE
@@ -142,14 +142,18 @@ model:
         - _target_: model.patcher_unpatcher.Patcher
           image_size: [3, 640, 960]
           patch_size: [16, 16]
-          embed_dim: 256
+          embed_dim: 192
         - _target_: model.transformer.Transformer
-          embed_dim: 256
+          embed_dim: 192
           num_heads: 8
           num_layers: 8
-          ff_embed_dim: 256
-    codebook_size: 1024
-    codebook_dim: 256
+          ff_embed_dim: 192
+    codebook_size: 512
+    codebook_dim: 192
+    quantizer_kwargs:
+      codebook_hit_summary_frequency: 500
+      dictionary_loss_weight: 1.0
+      commitment_loss_weight: 0.25
   model:
     _target_: model.conditional_autoencoder.ConditionalAutoencoder
     encoder:
@@ -160,12 +164,12 @@ model:
           - _target_: model.patcher_unpatcher.Patcher
             image_size: [3, 640, 960]
             patch_size: [16, 16]
-            embed_dim: 256
+            embed_dim: 192
           - _target_: model.transformer.Transformer
-            embed_dim: 256
+            embed_dim: 192
             num_heads: 8
             num_layers: 8
-            ff_embed_dim: 256
+            ff_embed_dim: 192
       time_mlp: null
       aux_features_combiner: null
     decoder:
@@ -174,14 +178,14 @@ model:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: model.transformer.Transformer
-            embed_dim: 256
+            embed_dim: 192
             num_heads: 8
             num_layers: 8
-            ff_embed_dim: 256
+            ff_embed_dim: 192
           - _target_: model.patcher_unpatcher.Unpatcher
             image_size: [64, 640, 960]
             patch_size: [16, 16]
-            embed_dim: 256
+            embed_dim: 192
             decoder_projection_dim: 64
             model_downsample_factor: 1
             conv_decoder:
@@ -194,7 +198,7 @@ model:
                       - model.blocks.resnet_block.BasicResNetBlock
                   in_channels: 64
                   out_channels: 32
-                  num_blocks: 2
+                  num_blocks: 4
                   stride: 1
                   groups: 1
                   dilation: 1
@@ -205,7 +209,7 @@ model:
                       - model.blocks.resnet_block.BasicResNetBlock
                   in_channels: 32
                   out_channels: 16
-                  num_blocks: 2
+                  num_blocks: 4
                   stride: 1
                   groups: 1
                   dilation: 1
@@ -220,14 +224,15 @@ model:
         _args_:
           - _target_: torch.nn.SiLU
           - _target_: torch.nn.Linear
-            in_features: 3
-            out_features: 4800
+            in_features: 64
+            out_features: 384
+      time_modulation_type: "feature_wise"
       aux_features_combiner:
         _target_: model.combiner.Combiner
         combiner:
           _target_: model.combiner.CrossAttentionCombiner
-          embed_dim: 256
-          num_heads: 8
+          embed_dim: 192
+          num_heads: 6
         x_model: null
         y_model: null
         model: null

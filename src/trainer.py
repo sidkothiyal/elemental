@@ -53,6 +53,49 @@ def collect_module_losses(model: nn.Module) -> dict[str, torch.Tensor]:
     return all_losses
 
 
+def clear_module_losses(model: nn.Module) -> None:
+    """Clear losses from all submodules that have a 'losses' attribute.
+
+    This prevents memory accumulation from stored loss tensors across batches/phases.
+
+    Args:
+        model: The root model to clear losses from.
+    """
+    for module in model.modules():
+        if hasattr(module, "losses"):
+            module.losses.clear()
+
+
+def cleanup_memory(
+    model: nn.Module,
+    optim: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
+    device: torch.device,
+) -> None:
+    """Clean up GPU memory before validation or between phases.
+
+    This function clears accumulated gradients, model losses, and CUDA cache
+    to prevent OOM errors when transitioning between training and validation.
+
+    Args:
+        model: The model to clear losses from.
+        optim: Optimizer or dict of optimizers to clear gradients from.
+        device: The torch device being used.
+    """
+    # Clear accumulated gradients to free memory
+    if isinstance(optim, dict):
+        for opt in optim.values():
+            opt.zero_grad(set_to_none=True)
+    else:
+        optim.zero_grad(set_to_none=True)
+
+    # Clear model's internal losses to prevent memory accumulation
+    clear_module_losses(model)
+
+    # Clear CUDA cache to defragment memory
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
 def batch_loop_gan(
     phase: str,
     epoch: int,
@@ -522,6 +565,9 @@ def run_train(
             logger.info("Resuming training from epoch %d", start_epoch)
 
         for epoch in range(start_epoch, config.num_epochs):
+            # Clean up memory at the start of each epoch (except first)
+            cleanup_memory(model, optim, device)
+
             callbacks.on_epoch_start(epoch, config.num_epochs, "train")
             logger.info("Starting epoch %d/%d", epoch + 1, config.num_epochs)
 
@@ -557,6 +603,8 @@ def run_train(
             # Validation phase (every 2 epochs by default)
             validation_interval = config.get("validation_interval", 2)
             if epoch % validation_interval == 0:
+                cleanup_memory(model, optim, device)
+
                 callbacks.on_phase_end("train")
                 callbacks.on_phase_start("val")
 

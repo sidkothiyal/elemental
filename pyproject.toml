@@ -8,12 +8,14 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
+  "accelerate",
   "black (>=25.1.0, <26.0.0)",
   "dill",
   "datasets",
   "hydra-core",
   "kaggle",
   "einops",
+  "flash-attn",
   "fire (>=0.6.0, <1.0.0)",
   "hydra-core",
   "lz4",
@@ -34,12 +36,13 @@ dependencies = [
   "torchmetrics (>=1.0.0, <2.0.0)",
   "torchvision",
   "tqdm (>=4.66.5, <5)",
-  "transformers",
+  "transformers (>=4.57)",
   "wandb (>=0.19.7, <0.20.0)",
 ]
 
 [tool.uv]
 package = true
+no-build-isolation-package = ["flash-attn"]
 
 [dependency-groups]
 dev = [

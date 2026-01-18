@@ -49,19 +49,28 @@ class DiffusionCombiner(nn.Module):
         time_mlp: nn.Module | None = None,
         timestep_combiner: nn.Module | None = None,
         aux_features_combiner: nn.Module | None = None,
+        time_modulation_type: str = "feature_wise",
     ):
         """Initialize the Diffusion Combiner module.
 
         Args:
             model: The model to apply to the x tensor.
-            use_timestep_embedding: Whether to use the timestep embedding.
-            use_aux_features: Whether to use the auxiliary features.
+            time_mlp: MLP to process timestep embedding. Output should be 2*D where D is
+                the modulation dimension.
+            timestep_combiner: Alternative to time_mlp for combining timestep.
+            aux_features_combiner: Module to combine auxiliary features.
+            time_modulation_type: How to apply timestep modulation. Options:
+                - "feature_wise": Modulate each feature dimension uniformly across positions.
+                    time_mlp output should be 2*embed_dim (e.g., 384 for embed_dim=192).
+                - "position_wise": Modulate each position uniformly across features.
+                    time_mlp output should be 2*seq_len (e.g., 4800 for seq_len=2400).
         """
         super().__init__()
         self.time_mlp = time_mlp
         self.timestep_combiner = timestep_combiner
         self.aux_features_combiner = aux_features_combiner
         self.model = model
+        self.time_modulation_type = time_modulation_type
 
         if self.timestep_combiner and self.time_mlp:
             raise ValueError("Specify either time_mlp or timestep_combiner, not both")
@@ -74,12 +83,27 @@ class DiffusionCombiner(nn.Module):
     ) -> torch.Tensor:
         """Forward pass of the Diffusion Combiner module."""
         if self.time_mlp and t is not None:
-            t_emb = self.time_mlp(t)
+            t_emb = self.time_mlp(t)  # [B, 2*D] where D is modulation dim
+            t_scale, t_shift = t_emb.chunk(2, dim=1)  # [B, D] each
+
             if x.ndim == 4:
-                t_emb = t_emb[:, :, None, None]
+                # 4D tensor: [B, C, H, W]
+                # Always feature-wise for 4D (modulate channels)
+                t_scale = t_scale[:, :, None, None]  # [B, D, 1, 1]
+                t_shift = t_shift[:, :, None, None]
             elif x.ndim == 3:
-                t_emb = t_emb[:, :, None]
-            t_scale, t_shift = t_emb.chunk(2, dim=1)
+                # 3D tensor: [B, seq_len, embed_dim]
+                if self.time_modulation_type == "feature_wise":
+                    # Modulate each feature uniformly across positions
+                    # t_scale: [B, embed_dim] → [B, 1, embed_dim]
+                    t_scale = t_scale[:, None, :]  # [B, 1, D]
+                    t_shift = t_shift[:, None, :]
+                else:
+                    # position_wise: Modulate each position uniformly across features
+                    # t_scale: [B, seq_len] → [B, seq_len, 1]
+                    t_scale = t_scale[:, :, None]  # [B, D, 1]
+                    t_shift = t_shift[:, :, None]
+
             x = x * (1 + t_scale) + t_shift
 
         if self.timestep_combiner and t is not None:

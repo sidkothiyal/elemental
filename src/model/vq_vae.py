@@ -1,6 +1,6 @@
 """Vector Quantized Variational Autoencoder."""
 
-from typing import Dict
+from typing import Any, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -20,6 +20,8 @@ class Quantizer(nn.Module):
         use_ema: bool = True,
         ema_decay: float = 0.99,
         ema_epsilon: float = 1e-5,
+        dictionary_loss_weight: float = 1.0,
+        commitment_loss_weight: float = 0.25,
     ):
         """Initialize the Quantizer.
 
@@ -32,6 +34,8 @@ class Quantizer(nn.Module):
             use_ema: Whether to use EMA to update codebook entries instead of gradients.
             ema_decay: Decay rate for EMA updates (only used if use_ema=True).
             ema_epsilon: Small constant for numerical stability in EMA updates.
+            dictionary_loss_weight: Weight for the dictionary loss (default: 1.0).
+            commitment_loss_weight: Weight for the commitment loss (default: 0.25).
         """
         super().__init__()
         self.codebook_size = codebook_size
@@ -39,6 +43,8 @@ class Quantizer(nn.Module):
         self.use_ema = use_ema
         self.ema_decay = ema_decay
         self.ema_epsilon = ema_epsilon
+        self.dictionary_loss_weight = dictionary_loss_weight
+        self.commitment_loss_weight = commitment_loss_weight
 
         # When using EMA, codebook is updated via EMA, not gradients
         if use_ema:
@@ -191,6 +197,7 @@ class VQVAE(nn.Module):
         codebook_size: int,
         codebook_dim: int,
         decoder: nn.Module | None = None,
+        quantizer_kwargs: Mapping[str, Any] = {},
     ):
         """Initialize the VQVAE.
 
@@ -199,19 +206,26 @@ class VQVAE(nn.Module):
             codebook_size: The size of the codebook.
             codebook_dim: The dimension of the codebook.
             decoder: The decoder module. If None, the decoder will not be used.
+            quantizer_kwargs: Keyword arguments for the Quantizer.
         """
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.quantizer = Quantizer(codebook_size, codebook_dim)
+        self.quantizer = Quantizer(codebook_size, codebook_dim, **quantizer_kwargs)
 
     @property
-    def losses(self) -> Dict[str, torch.Tensor]:
-        """Losses of the VQVAE."""
-        return {
-            "dictionary_loss": self.quantizer.dictionary_loss,
-            "commitment_loss": self.quantizer.commitment_loss,
-        }
+    def losses(self) -> dict[str, torch.Tensor]:
+        """Losses of the VQVAE with applied weights."""
+        losses: dict[str, torch.Tensor] = {}
+        if self.quantizer.dictionary_loss is not None:
+            losses["dictionary_loss"] = (
+                self.quantizer.dictionary_loss * self.quantizer.dictionary_loss_weight
+            )
+        if self.quantizer.commitment_loss is not None:
+            losses["commitment_loss"] = (
+                self.quantizer.commitment_loss * self.quantizer.commitment_loss_weight
+            )
+        return losses
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the VQVAE.
