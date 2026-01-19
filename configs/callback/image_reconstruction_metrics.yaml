@@ -1,0 +1,42 @@
+# Metrics callback configuration
+# Tracks and logs metrics during training using TorchMetrics
+
+_target_: callback.metrics_callback.MetricsCallback
+
+# Metrics to track - define as dict of name -> metric config
+# These will be wrapped in a MetricCollection
+metrics:
+  mse:
+    _target_: metrics.mse.MSE
+    data_range: 1.0
+    normalize: false
+  psnr:
+    _target_: metrics.psnr.PSNR
+    data_range: 1.0
+  ssim:
+    _target_: metrics.ssim.SSIM
+    data_range: 1.0
+    win_size: 11
+    win_sigma: 1.5
+
+# Phases to track metrics for with computation frequency
+# Key: phase name (train/val/test)
+# Value: compute metrics every nth epoch (1 = every epoch, 2 = every other, etc.)
+phases:
+  train: 50  # Compute training metrics every 50 epochs (saves computation)
+  val: 10    # Compute validation metrics every 10 epochs
+  test: 1    # Compute test metrics every epoch
+
+# Whether to log metrics per batch (can be expensive)
+log_per_batch: false
+
+# Keys to extract predictions and targets from the data dicts
+# passed to on_batch_end
+pred_key: data
+target_key: data
+
+# Optional transforms for predictions/targets before metric computation
+# Set to null to disable
+# Example: for classification, you might use a lambda or partial to apply argmax
+transform_pred: null
+transform_target: null

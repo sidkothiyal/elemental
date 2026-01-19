@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 
 from callback import callback
 from loss.utils import call_loss_with_epoch
-from utils import initializer
+from utils import distributed, initializer
 
 # Configure logging
 logging.basicConfig(
@@ -107,7 +107,9 @@ def batch_loop_gan(
     device: torch.device,
     dtype: torch.dtype = torch.bfloat16,
     mode: str = "gan",  # pylint: disable=unused-argument
-    config: dict | object | None = None,  # pylint: disable=unused-argument
+    config: dict | object | None = None,
+    scaler: torch.amp.GradScaler | None = None,
+    scheduler: dict[str, torch.optim.lr_scheduler.LRScheduler] | None = None,
 ) -> dict[str, float]:
     """Batch loop for GAN training.
 
@@ -120,6 +122,11 @@ def batch_loop_gan(
         optim: Dictionary containing optimizers for generator and discriminator
         callbacks: list of callbacks for monitoring and logging
         device: Torch device to run computations on
+        dtype: Data type for mixed precision training
+        mode: Training mode (unused, kept for API consistency)
+        config: Configuration object
+        scaler: GradScaler for mixed precision training (optional)
+        scheduler: Dict of schedulers for per-batch stepping (optional)
 
     Returns:
         Dictionary of average losses for the epoch
@@ -127,6 +134,11 @@ def batch_loop_gan(
     running_loss: dict[str, float] = collections.defaultdict(float)
     total_batches = len(dataloader)
     num_steps = total_batches * epoch
+
+    # Extract config values at the start
+    clip_grad_norm = config.get("clip_grad_norm", None) if config else None
+    scheduler_step_per = config.get("scheduler_step_per", "epoch") if config else "epoch"
+    use_scaler = scaler is not None and scaler.is_enabled()
 
     # Progress bar with phase information
     progress_bar = tqdm.tqdm(dataloader, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True)
@@ -162,12 +174,22 @@ def batch_loop_gan(
                 loss["adversarial"], discriminator_fake, torch.zeros_like(discriminator_fake), epoch
             )
 
-            if phase == "train":
-                optim["discriminator"].zero_grad()
-                disc_fake_loss.backward()
-                if config.get("clip_grad_norm", None) is not None:
+        if phase == "train":
+            optim["discriminator"].zero_grad()
+            if use_scaler:
+                scaler.scale(disc_fake_loss).backward()
+                if clip_grad_norm is not None:
+                    scaler.unscale_(optim["discriminator"])
                     torch.nn.utils.clip_grad_norm_(
-                        model["discriminator"].parameters(), max_norm=config.get("clip_grad_norm")
+                        model["discriminator"].parameters(), max_norm=clip_grad_norm
+                    )
+                scaler.step(optim["discriminator"])
+                scaler.update()
+            else:
+                disc_fake_loss.backward()
+                if clip_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model["discriminator"].parameters(), max_norm=clip_grad_norm
                     )
                 optim["discriminator"].step()
 
@@ -191,12 +213,22 @@ def batch_loop_gan(
                 loss["adversarial"], discriminator_real, torch.ones_like(discriminator_real), epoch
             )
 
-            if phase == "train":
-                optim["discriminator"].zero_grad()
-                disc_real_loss.backward()
-                if config.get("clip_grad_norm", None) is not None:
+        if phase == "train":
+            optim["discriminator"].zero_grad()
+            if use_scaler:
+                scaler.scale(disc_real_loss).backward()
+                if clip_grad_norm is not None:
+                    scaler.unscale_(optim["discriminator"])
                     torch.nn.utils.clip_grad_norm_(
-                        model["discriminator"].parameters(), max_norm=config.get("clip_grad_norm")
+                        model["discriminator"].parameters(), max_norm=clip_grad_norm
+                    )
+                scaler.step(optim["discriminator"])
+                scaler.update()
+            else:
+                disc_real_loss.backward()
+                if clip_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model["discriminator"].parameters(), max_norm=clip_grad_norm
                     )
                 optim["discriminator"].step()
 
@@ -235,14 +267,29 @@ def batch_loop_gan(
             # Total generator loss
             gen_loss = disc_assumed_real_loss + feature_matching_loss
 
-            if phase == "train":
-                optim["generator"].zero_grad()
-                gen_loss.backward()
-                if config.get("clip_grad_norm", None) is not None:
+        if phase == "train":
+            optim["generator"].zero_grad()
+            if use_scaler:
+                scaler.scale(gen_loss).backward()
+                if clip_grad_norm is not None:
+                    scaler.unscale_(optim["generator"])
                     torch.nn.utils.clip_grad_norm_(
-                        model["generator"].parameters(), max_norm=config.get("clip_grad_norm")
+                        model["generator"].parameters(), max_norm=clip_grad_norm
+                    )
+                scaler.step(optim["generator"])
+                scaler.update()
+            else:
+                gen_loss.backward()
+                if clip_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model["generator"].parameters(), max_norm=clip_grad_norm
                     )
                 optim["generator"].step()
+
+            # Per-batch scheduler stepping for GAN
+            if scheduler_step_per == "batch" and scheduler is not None:
+                for sched in scheduler.values():
+                    sched.step()
 
         running_loss["generator"] += gen_loss.item()
 
@@ -286,6 +333,8 @@ def batch_loop(
     dtype: torch.dtype = torch.bfloat16,
     mode: str = "classification",
     config: dict | object | None = None,
+    scaler: torch.amp.GradScaler | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> dict[str, float]:
     """Batch loop for standard DNN training.
 
@@ -298,6 +347,11 @@ def batch_loop(
         optim: Optimizer
         callbacks: list of callbacks for monitoring and logging
         device: Torch device to run computations on
+        dtype: Data type for mixed precision training
+        mode: Training mode ('classification', 'autoregressive', 'autoencoder')
+        config: Configuration object
+        scaler: GradScaler for mixed precision training (optional)
+        scheduler: Learning rate scheduler for per-batch stepping (optional)
 
     Returns:
         Dictionary of average losses for the epoch
@@ -305,6 +359,12 @@ def batch_loop(
     running_loss: dict[str, float] = collections.defaultdict(float)
     total_batches = len(dataloader)
     num_steps = total_batches * epoch
+
+    # Extract config values at the start for clarity and efficiency
+    grad_accum_steps = config.get("gradient_accumulation_steps", 1) if config else 1
+    clip_grad_norm = config.get("clip_grad_norm", None) if config else None
+    scheduler_step_per = config.get("scheduler_step_per", "epoch") if config else "epoch"
+    use_scaler = scaler is not None and scaler.is_enabled()
 
     # Progress bar with phase information
     progress_bar = tqdm.tqdm(dataloader, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True)
@@ -344,23 +404,39 @@ def batch_loop(
             # in PatcherUnpatcher)
             module_losses = collect_module_losses(model)
             for key, value in module_losses.items():
-                running_loss[key] += value.clone().detach().item()
+                running_loss[key] += value.detach().item()
                 batch_loss += value
 
-            if phase == "train":
-                # Gradient accumulation
-                grad_accum_steps = config.get("gradient_accumulation_steps", 1) if config else 1
-                batch_loss = batch_loss / grad_accum_steps
-                batch_loss.backward()
+        if phase == "train":
+            # Scale loss for gradient accumulation
+            scaled_loss = batch_loss / grad_accum_steps
 
-                if config.get("clip_grad_norm", None) is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), max_norm=config.get("clip_grad_norm")
-                    )
+            # Backward pass with optional GradScaler
+            if use_scaler:
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
 
-                if (batch_idx + 1) % grad_accum_steps == 0:
+            # Check if we should update weights (accumulation complete or last batch)
+            is_accumulation_step = (batch_idx + 1) % grad_accum_steps == 0
+            is_last_batch = (batch_idx + 1) == total_batches
+
+            if is_accumulation_step or is_last_batch:
+                if clip_grad_norm is not None:
+                    if use_scaler:
+                        scaler.unscale_(optim)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad_norm)
+
+                if use_scaler:
+                    scaler.step(optim)
+                    scaler.update()
+                else:
                     optim.step()
-                    optim.zero_grad()
+                optim.zero_grad()
+
+                # Per-batch scheduler stepping
+                if scheduler_step_per == "batch" and scheduler is not None:
+                    scheduler.step()
 
         # TODO: Add a post processor for input, target, pred to correctly format
         # the data for logging and metrics
@@ -387,8 +463,8 @@ def batch_loop(
                 pred_data["data"] = pred
         target_data["data"] = batch["target"]
 
-        # Accumulate loss (avoid double .item() calls)
-        loss_value = batch_loss.clone().detach().item()
+        # Accumulate loss
+        loss_value = batch_loss.detach().item()
         running_loss["total"] += loss_value
 
         # Update progress bar
@@ -420,29 +496,41 @@ def batch_loop(
 def run_train(
     config_file: str,
     test: bool = False,
+    local_rank: int = -1,
 ) -> None:
     """Run model training, validation, and testing.
 
     Args:
         config_file: Path to the configuration file
         test: Whether to run only in test mode
+        local_rank: Local rank for distributed training (-1 for single GPU)
     """
     # Load configuration
     with hydra.initialize(version_base=None, config_path="../configs"):
         config = hydra.compose(config_name=config_file)
 
+    # Set up distributed training if requested
+    use_distributed = config.get("distributed", False) and local_rank >= 0
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+    if use_distributed:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        distributed.setup_distributed(local_rank, world_size, backend)
+
     # Set up environment: set seeds, initialize device, create results directory
     initializer.set_seeds(config.seed)
-    logger.info("Configuration: %s", config)
+    if distributed.is_main_process():
+        logger.info("Configuration: %s", config)
 
     # Initialize device
     device = initializer.initialize_device(config.device)
     dtype = initializer.initialize_dtype(config.get("dtype"))
 
-    # Create results directory
+    # Create results directory (only on main process)
     results_dir = os.path.join(config.results_dir, config.experiment_name)
-    os.makedirs(results_dir, exist_ok=True)
-    logger.info("Results will be saved to: %s", results_dir)
+    if distributed.is_main_process():
+        os.makedirs(results_dir, exist_ok=True)
+        logger.info("Results will be saved to: %s", results_dir)
 
     # Initialize callbacks (handle both list and dict configs)
     callbacks = hy_utils.instantiate(config.callbacks)
@@ -452,12 +540,21 @@ def run_train(
     callbacks.update_config({"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed})
 
     # Initialize dataset and dataloaders
-    train_loader, val_loader, test_loader = initializer.initialize_dataset(config.dataloader)
+    train_loader, val_loader, test_loader = initializer.initialize_dataset(
+        config.dataloader,
+        local_rank,
+        world_size,
+        use_distributed,
+    )
     logger.info("Dataloaders initialized successfully")
 
     # Initialize model
     model = hy_utils.instantiate(config.model)
     model.to(device)
+    # Wrap model with DDP if distributed training is enabled``
+    if use_distributed:
+        find_unused = config.get("find_unused_parameters", False)
+        model = distributed.wrap_model_ddp(model, device, find_unused_parameters=find_unused)
     logger.info("Model initialized: %s", type(model).__name__)
 
     (
@@ -465,9 +562,10 @@ def run_train(
         num_trainable_parameters,
         num_non_trainable_parameters,
     ) = initializer.get_num_parameters(model)
-    logger.info("Number of parameters: %d", num_parameters)
-    logger.info("Number of trainable parameters: %d", num_trainable_parameters)
-    logger.info("Number of non-trainable parameters: %d", num_non_trainable_parameters)
+    if distributed.is_main_process():
+        logger.info("Number of parameters: %d", num_parameters)
+        logger.info("Number of trainable parameters: %d", num_trainable_parameters)
+        logger.info("Number of non-trainable parameters: %d", num_non_trainable_parameters)
 
     # Initialize optimizer, scheduler and loss function
     mode = config.mode
@@ -517,6 +615,15 @@ def run_train(
             value.to(device)
     elif isinstance(loss, nn.Module):
         loss.to(device)
+
+    # Initialize GradScaler for mixed precision training
+    # Only enable for float16 on CUDA; bfloat16 doesn't need scaling
+    use_amp_scaler = (
+        device.type == "cuda" and dtype == torch.float16 and config.get("use_amp_scaler", True)
+    )
+    scaler = torch.amp.GradScaler(enabled=use_amp_scaler)
+    if distributed.is_main_process():
+        logger.info("GradScaler enabled: %s", use_amp_scaler)
 
     # Load from checkpoint if specified
     checkpoint_data = {"epoch": None, "step": None}
@@ -568,12 +675,20 @@ def run_train(
             start_epoch = checkpoint_data["epoch"] + 1
             logger.info("Resuming training from epoch %d", start_epoch)
 
+        # Get scheduler stepping mode
+        scheduler_step_per = config.get("scheduler_step_per", "epoch")
+
         for epoch in range(start_epoch, config.num_epochs):
             # Clean up memory at the start of each epoch (except first)
             cleanup_memory(model, optim, device)
 
+            # Set epoch for distributed sampler (ensures different shuffling each epoch)
+            if use_distributed and hasattr(train_loader.sampler, "set_epoch"):
+                train_loader.sampler.set_epoch(epoch)
+
             callbacks.on_epoch_start(epoch, config.num_epochs, "train")
-            logger.info("Starting epoch %d/%d", epoch + 1, config.num_epochs)
+            if distributed.is_main_process():
+                logger.info("Starting epoch %d/%d", epoch + 1, config.num_epochs)
 
             model.train()
 
@@ -590,19 +705,26 @@ def run_train(
                 dtype=dtype,
                 mode=mode,
                 config=config,
+                scaler=scaler,
+                scheduler=scheduler if scheduler_step_per == "batch" else None,
             )
-            logger.info("Train loss: %s", train_loss)
+            if distributed.is_main_process():
+                logger.info("Train loss: %s", train_loss)
 
-            # Update learning rate
-            if isinstance(scheduler, dict):
-                for key in scheduler:
-                    scheduler[key].step()
-                    callbacks.on_lr_update(
-                        epoch, float(statistics.mean(scheduler[key].get_lr())), key
-                    )
-            else:
-                scheduler.step()
-                callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
+            # Update learning rate (only if stepping per epoch)
+            if scheduler_step_per == "epoch":
+                if isinstance(scheduler, dict):
+                    for key in scheduler:
+                        scheduler[key].step()
+                        callbacks.on_lr_update(
+                            epoch, float(statistics.mean(scheduler[key].get_lr())), key
+                        )
+                else:
+                    scheduler.step()
+                    callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
+
+            # Call on_epoch_end for training phase (was previously missing!)
+            callbacks.on_epoch_end(epoch, config.num_epochs, "train")
 
             # Validation phase (every 2 epochs by default)
             validation_interval = config.get("validation_interval", 2)
@@ -626,15 +748,19 @@ def run_train(
                     dtype=dtype,
                     mode=mode,
                     config=config,
+                    scaler=None,  # No scaler needed for validation
+                    scheduler=None,
                 )
                 callbacks.on_epoch_end(epoch, config.num_epochs, "val")
-                logger.info("Validation loss: %s", val_loss)
+                if distributed.is_main_process():
+                    logger.info("Validation loss: %s", val_loss)
 
                 callbacks.on_phase_end("val")
 
     # Test phase
     if test:
-        logger.info("Running test...")
+        if distributed.is_main_process():
+            logger.info("Running test...")
 
         # Load best model
         if mode == "gan":
@@ -644,16 +770,22 @@ def run_train(
             if not (os.path.exists(generator_path) and os.path.exists(discriminator_path)):
                 raise FileNotFoundError("Best GAN model checkpoints not found")
 
-            model["generator"].load_state_dict(torch.load(generator_path))
-            model["discriminator"].load_state_dict(torch.load(discriminator_path))
+            # Load each model separately with safe loading (weights_only=True by default)
+            initializer.load_from_checkpoint(
+                generator_path, model["generator"], device=device, weights_only=True
+            )
+            initializer.load_from_checkpoint(
+                discriminator_path, model["discriminator"], device=device, weights_only=True
+            )
         else:
             model_path = os.path.join(results_dir, "best.pth")
             if not os.path.exists(model_path):
                 raise FileNotFoundError("Best model checkpoint not found")
 
-            model.load_state_dict(torch.load(model_path))
+            # Use safe loading with proper device mapping (weights_only=True by default)
+            initializer.load_from_checkpoint(model_path, model, device=device)
 
-        # set model to evaluation mode
+        # Set model to evaluation mode
         model.eval()
 
         # Run test
@@ -668,8 +800,16 @@ def run_train(
             device,
             dtype=dtype,
             mode=mode,
+            config=config,
+            scaler=None,
+            scheduler=None,
         )
-        logger.info("Test results: %s", test_loss)
+        if distributed.is_main_process():
+            logger.info("Test results: %s", test_loss)
+
+    # Clean up distributed training
+    if use_distributed:
+        distributed.cleanup_distributed()
 
 
 if __name__ == "__main__":

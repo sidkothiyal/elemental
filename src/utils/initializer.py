@@ -11,22 +11,29 @@ from omegaconf import DictConfig
 from torch import nn
 from torch.utils.data import DataLoader
 
-from utils import checkpoint
+from utils import checkpoint, distributed
 
 logger = logging.getLogger(__name__)
 
 
-def initialize_device(device: str) -> torch.device:
+def initialize_device(
+    device: str, local_rank: int = -1, use_distributed: bool = False
+) -> torch.device:
     """Initialize the device.
 
     Args:
         device: The device to initialize.
+        local_rank: The local rank for distributed training.
+        use_distributed: Whether to use distributed training.
 
     Returns:
         Initialized torch device.
     """
     if device == "gpu":
         if torch.cuda.is_available():
+            if use_distributed:
+                torch.cuda.set_device(local_rank)
+                return torch.device(f"cuda:{local_rank}")
             return torch.device("cuda")
         if torch.backends.mps.is_available():
             return torch.device("mps")
@@ -73,16 +80,34 @@ def set_seeds(seed: int) -> None:
 
 def initialize_dataset(
     dataloader_config: DictConfig,
+    local_rank: int = -1,
+    world_size: int = 1,
+    use_distributed: bool = False,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Initialize the dataset.
 
     Args:
         dataloader_config: The dataloader config.
+        local_rank: The local rank for distributed training.
+        world_size: The world size for distributed training.
+        use_distributed: Whether to use distributed training.
 
     Returns:
         The train, val, and test dataloaders.
     """
     dataloaders = hy_utils.instantiate(dataloader_config)
+
+    # Set up distributed samplers if needed for distributed training
+    if use_distributed:
+        dataloaders["train"] = distributed.get_distributed_dataloader(
+            dataloaders["train"], local_rank, world_size
+        )
+        dataloaders["val"] = distributed.get_distributed_dataloader(
+            dataloaders["val"], local_rank, world_size
+        )
+        dataloaders["test"] = distributed.get_distributed_dataloader(
+            dataloaders["test"], local_rank, world_size
+        )
 
     return dataloaders["train"], dataloaders["val"], dataloaders["test"]
 
@@ -128,6 +153,7 @@ def load_from_checkpoint(
     load_keys: list[str] | None = None,
     resume_training: bool = False,
     strict: bool = True,
+    weights_only: bool | None = None,
 ) -> dict[str, Any]:
     """Load model, optimizer, loss, and lr scheduler from checkpoint.
 
@@ -142,6 +168,10 @@ def load_from_checkpoint(
             If None and resume_training is False, only model will be loaded.
         resume_training: Whether to resume training (loads all states and returns epoch/step).
             If True, loads model, optimizer, scheduler, and criterion.
+        strict: Whether to strictly enforce state_dict key matching for model.
+        weights_only: If True, only load tensor weights (safer, prevents arbitrary
+            code execution). If None (default), automatically set to True when only
+            loading model weights, False otherwise. Recommended True for inference/testing.
 
     Returns:
         Dictionary containing checkpoint metadata (epoch, step, etc.).
@@ -155,7 +185,7 @@ def load_from_checkpoint(
 
     # Determine what to load
     if resume_training:
-        # Load everything when resuming training
+        # Load everything when resuming training - need weights_only=False for optimizer state
         logger.info("Resuming training from checkpoint: %s", checkpoint_path)
         checkpoint_data = checkpoint.load_checkpoint(
             checkpoint_path=checkpoint_path,
@@ -165,6 +195,7 @@ def load_from_checkpoint(
             criterion=criterion,
             map_location=device,
             strict=strict,
+            weights_only=False,  # Optimizer/scheduler state may contain non-tensor data
         )
         logger.info(
             "Resumed from epoch %s, step %s",
@@ -188,11 +219,17 @@ def load_from_checkpoint(
     if "criterion" in keys_to_load:
         components["criterion"] = criterion
 
+    # Auto-determine weights_only if not specified:
+    # Use weights_only=True when only loading model (safer for inference/testing)
+    if weights_only is None:
+        weights_only = keys_to_load == ["model"]
+
     # Load the checkpoint
     checkpoint_data = checkpoint.load_checkpoint(
         checkpoint_path=checkpoint_path,
         map_location=device,
         strict=strict,
+        weights_only=weights_only,
         **components,
     )
 
