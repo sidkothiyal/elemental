@@ -1,14 +1,24 @@
 """Vector Quantized Variational Autoencoder."""
 
+import logging
 from typing import Any, Mapping
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+logger = logging.getLogger(__name__)
+
 
 class Quantizer(nn.Module):
-    """Quantizer module."""
+    """Quantizer module with improved codebook management.
+
+    Features:
+    - EMA or gradient-based codebook updates
+    - Codebook diversity loss to prevent collapse
+    - Smart initialization from multiple batches
+    - Dead code revival mechanism
+    """
 
     def __init__(
         self,
@@ -22,6 +32,15 @@ class Quantizer(nn.Module):
         ema_epsilon: float = 1e-5,
         dictionary_loss_weight: float = 1.0,
         commitment_loss_weight: float = 0.25,
+        # Diversity loss parameters
+        diversity_loss_enabled: bool = True,
+        diversity_loss_weight: float = 0.1,
+        diversity_loss_margin: float = 0.5,
+        # Smart initialization parameters
+        smart_init_enabled: bool = True,
+        smart_init_steps: int = 100,
+        smart_init_initial_resample_pct: float = 0.5,
+        smart_init_final_resample_pct: float = 0.0,
     ):
         """Initialize the Quantizer.
 
@@ -36,6 +55,14 @@ class Quantizer(nn.Module):
             ema_epsilon: Small constant for numerical stability in EMA updates.
             dictionary_loss_weight: Weight for the dictionary loss (default: 1.0).
             commitment_loss_weight: Weight for the commitment loss (default: 0.25).
+            diversity_loss_enabled: Whether to enable codebook diversity loss.
+            diversity_loss_weight: Weight for the diversity loss.
+            diversity_loss_margin: Minimum margin for pairwise codebook distances.
+            smart_init_enabled: Whether to enable smart initialization from batches.
+            smart_init_steps: Number of steps for smart initialization.
+            smart_init_initial_resample_pct: Initial percentage of codebook to resample per batch.
+            smart_init_final_resample_pct: Final percentage of codebook to resample
+                (end of init phase). Must be between 0.0 and 1.0.
         """
         super().__init__()
         self.codebook_size = codebook_size
@@ -46,6 +73,17 @@ class Quantizer(nn.Module):
         self.dictionary_loss_weight = dictionary_loss_weight
         self.commitment_loss_weight = commitment_loss_weight
 
+        # Diversity loss parameters
+        self._diversity_loss_enabled = diversity_loss_enabled
+        self.diversity_loss_weight = diversity_loss_weight
+        self._diversity_loss_margin = diversity_loss_margin
+
+        # Smart initialization parameters
+        self._smart_init_enabled = smart_init_enabled
+        self._smart_init_steps = smart_init_steps
+        self._smart_init_initial_resample_pct = smart_init_initial_resample_pct
+        self._smart_init_final_resample_pct = smart_init_final_resample_pct
+
         # When using EMA, codebook is updated via EMA, not gradients
         if use_ema:
             self.register_buffer("codebook", torch.randn(codebook_size, codebook_dim))
@@ -55,7 +93,15 @@ class Quantizer(nn.Module):
         else:
             self.codebook = nn.Parameter(torch.randn(codebook_size, codebook_dim))
 
+        # Tracking buffers
         self.register_buffer("codebook_hits", torch.zeros(codebook_size))
+        # Cumulative hits for smart init (not reset at summary frequency)
+        self.register_buffer("codebook_cumulative_hits", torch.zeros(codebook_size))
+        # Track which codebook entries have been initialized from data
+        self.register_buffer("codebook_initialized", torch.zeros(codebook_size, dtype=torch.bool))
+        # Track how many batches each entry has survived since last initialization/resampling
+        self.register_buffer("codebook_batches_survived", torch.zeros(codebook_size))
+
         self._codebook_hit_summary_frequency = codebook_hit_summary_frequency
         self._codebook_revival_threshold = codebook_revival_threshold
         self._codebook_revival_enabled = codebook_revival_enabled
@@ -65,6 +111,149 @@ class Quantizer(nn.Module):
         self.commitment_loss_fn = nn.MSELoss(reduction="mean")
         self.dictionary_loss = None
         self.commitment_loss = None
+        self.diversity_loss = None
+
+    def _compute_diversity_loss(self) -> torch.Tensor:
+        """Compute diversity loss to encourage spread-out codebook vectors.
+
+        Uses a margin-based loss that penalizes codebook vectors that are
+        closer than the specified margin. This prevents codebook collapse
+        where multiple entries converge to similar values.
+
+        Returns:
+            Diversity loss tensor.
+        """
+        # Compute pairwise distances between all codebook vectors
+        # Shape: [codebook_size, codebook_size]
+        pairwise_distances = torch.cdist(self.codebook, self.codebook, p=2)
+
+        # Create mask to exclude diagonal (self-distances)
+        mask = ~torch.eye(self.codebook_size, dtype=torch.bool, device=self.codebook.device)
+
+        # Get non-diagonal distances
+        distances = pairwise_distances[mask]
+
+        # Margin-based loss: penalize distances below the margin
+        # loss = max(0, margin - distance)^2
+        margin_violations = F.relu(self._diversity_loss_margin - distances)
+        diversity_loss = (margin_violations**2).mean()
+
+        return diversity_loss
+
+    def _get_smart_init_resample_percentage(self) -> float:
+        """Get the current resample percentage based on linear decay schedule.
+
+        Returns:
+            Current resample percentage (0.0 to 1.0).
+        """
+        if self._call_count >= self._smart_init_steps:
+            return 0.0
+
+        # Linear interpolation from initial to final percentage
+        progress = self._call_count / self._smart_init_steps
+        resample_pct = self._smart_init_initial_resample_pct + progress * (
+            self._smart_init_final_resample_pct - self._smart_init_initial_resample_pct
+        )
+        return max(0.0, resample_pct)
+
+    def _compute_resample_probabilities(self) -> torch.Tensor:
+        """Compute resampling probabilities based on inverse usage frequency.
+
+        Codebook entries that are used less frequently have higher probability
+        of being resampled. This helps ensure all codebook entries get
+        initialized from actual data.
+
+        Returns:
+            Probability tensor of shape [codebook_size].
+        """
+        # Avoid division by zero - add small epsilon
+        epsilon = 1e-8
+
+        # Use per-entry survival count (how many batches since this entry was initialized/resampled)
+        # Add 1 to avoid division by zero for newly initialized entries
+        batches_survived = self.codebook_batches_survived + 1
+
+        # Compute usage rate for each codebook entry relative to its survival time
+        usage_rate = self.codebook_cumulative_hits / batches_survived
+
+        # Inverse probability: less used entries have higher probability
+        # Add epsilon to avoid division by zero for unused entries
+        inverse_usage = 1.0 / (usage_rate + epsilon)
+
+        # Entries that haven't been initialized from data get highest priority
+        # Give uninitialized entries 10x the weight of the least used initialized entry
+        max_inverse = inverse_usage.max()
+        inverse_usage = torch.where(
+            self.codebook_initialized,
+            inverse_usage,
+            max_inverse * 10.0,
+        )
+
+        # Normalize to get probabilities
+        probabilities = inverse_usage / inverse_usage.sum()
+
+        return probabilities
+
+    def _smart_init_resample(self, flattened_x: torch.Tensor) -> int:
+        """Perform smart initialization resampling from batch.
+
+        Args:
+            flattened_x: Flattened input tensor of shape [N, codebook_dim].
+
+        Returns:
+            Number of codebook entries resampled.
+        """
+        if not self._smart_init_enabled:
+            return 0
+
+        resample_pct = self._get_smart_init_resample_percentage()
+        if resample_pct <= 0:
+            return 0
+
+        batch_size = flattened_x.shape[0]
+        if batch_size == 0:
+            return 0
+
+        # Number of entries to resample this step
+        num_to_resample = max(1, int(self.codebook_size * resample_pct))
+
+        # Get resampling probabilities
+        probabilities = self._compute_resample_probabilities()
+
+        # Sample which codebook entries to replace
+        indices_to_resample = torch.multinomial(probabilities, num_to_resample, replacement=False)
+
+        # Sample random vectors from the batch
+        batch_indices = torch.randint(0, batch_size, (num_to_resample,), device=flattened_x.device)
+
+        # Replace codebook entries
+        with torch.no_grad():
+            if self.use_ema:
+                self.codebook[indices_to_resample] = flattened_x[batch_indices].clone()
+                self.ema_embed[indices_to_resample] = flattened_x[batch_indices].clone()
+                self.ema_cluster_size[indices_to_resample] = 1.0
+            else:
+                self.codebook.data[indices_to_resample] = flattened_x[batch_indices].clone()
+
+            # Mark these entries as initialized from data
+            self.codebook_initialized[indices_to_resample] = True
+            # Reset survival and hit counters for resampled entries
+            self.codebook_batches_survived[indices_to_resample] = 0
+            self.codebook_cumulative_hits[indices_to_resample] = 0
+
+        if self._call_count % self._codebook_hit_summary_frequency == 0:
+            init_progress = min(1.0, self._call_count / self._smart_init_steps)
+            num_initialized = self.codebook_initialized.sum().item()
+            logger.info(
+                "Smart init: resampled %d entries (pct: %.2f, progress: %.1f, initialized: %d/%d)",
+                num_to_resample,
+                resample_pct,
+                init_progress,
+                num_initialized,
+                self.codebook_size,
+            )
+
+        return num_to_resample
 
     def update_codebook_with_ema(
         self, flattened_x: torch.Tensor, closest_indices: torch.Tensor
@@ -146,15 +335,63 @@ class Quantizer(nn.Module):
                             random_batch_indices
                         ].clone()
 
-                print(
-                    f"Revived {num_unused} unused codebook entries "
-                    f"(threshold: {self._codebook_revival_threshold})"
+                    # Mark these as initialized
+                    self.codebook_initialized[unused_indices] = True
+                    # Reset survival and hit counters for revived entries
+                    self.codebook_batches_survived[unused_indices] = 0
+                    self.codebook_cumulative_hits[unused_indices] = 0
+
+                logger.info(
+                    "Revived %d unused codebook entries (threshold: %d)",
+                    num_unused,
+                    self._codebook_revival_threshold,
                 )
 
         return num_unused
 
+    def get_codebook_utilization(self) -> dict[str, float]:
+        """Get codebook utilization statistics.
+
+        Returns:
+            Dictionary with utilization metrics.
+        """
+        used_count = (self.codebook_hits > 0).sum().item()
+        total_hits = self.codebook_hits.sum().item()
+
+        return {
+            "codebook_utilization": used_count / self.codebook_size,
+            "codebook_used_entries": used_count,
+            "codebook_total_entries": self.codebook_size,
+            "codebook_total_hits": total_hits,
+            "codebook_perplexity": self._compute_perplexity().item() if total_hits > 0 else 0.0,
+        }
+
+    def _compute_perplexity(self) -> torch.Tensor:
+        """Compute codebook perplexity (effective number of codes used).
+
+        Higher perplexity indicates better codebook utilization.
+
+        Returns:
+            Perplexity value.
+        """
+        # Normalize hits to get probability distribution
+        probs = self.codebook_hits / (self.codebook_hits.sum() + 1e-8)
+        # Filter out zero probabilities for entropy calculation
+        probs = probs[probs > 0]
+        # Compute entropy and convert to perplexity
+        entropy = -(probs * torch.log(probs + 1e-8)).sum()
+        perplexity = torch.exp(entropy)
+        return perplexity
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the Quantizer."""
+        """Forward pass of the Quantizer.
+
+        Args:
+            x: Input tensor of shape [B, C, H, W] (4D) or [B, N, C] (3D).
+
+        Returns:
+            Quantized tensor with same shape as input.
+        """
         if x.dim() == 4:
             flattened_x = x.permute(0, 2, 3, 1).reshape(-1, self.codebook_dim)
             distances = torch.cdist(flattened_x, self.codebook)
@@ -170,21 +407,54 @@ class Quantizer(nn.Module):
             quantized = self.codebook[closest_indices].view(
                 x.shape[0], x.shape[1], self.codebook_dim
             )
+        else:
+            raise ValueError(f"Expected 3D or 4D input, got {x.dim()}D")
 
         # Update codebook with EMA if enabled
         self.update_codebook_with_ema(flattened_x, closest_indices)
 
+        # Update hit counts
         self._call_count += 1
-        self.codebook_hits[closest_indices] += 1
+
+        # Use bincount for efficient hit counting (handles duplicates correctly)
+        batch_hits = torch.bincount(closest_indices, minlength=self.codebook_size).float()
+        self.codebook_hits += batch_hits
+        self.codebook_cumulative_hits += batch_hits
+
+        # Increment survival counter for all entries (tracks batches since last init/resample)
+        self.codebook_batches_survived += 1
+
+        # Smart initialization resampling (during init phase)
+        if self.training:
+            self._smart_init_resample(flattened_x)
+
+        # Periodic logging and maintenance
         if self._call_count % self._codebook_hit_summary_frequency == 0:
-            print(f"Codebook hits: {self.codebook_hits}")
+            utilization = self.get_codebook_utilization()
+            logger.info(
+                "Codebook stats: - utilization: %.2f, perplexity: %.1f, used: %d/%d",
+                utilization["codebook_utilization"],
+                utilization["codebook_perplexity"],
+                utilization["codebook_used_entries"],
+                utilization["codebook_total_entries"],
+            )
+            logger.info(
+                "Codebook stats: - hits: %d",
+                utilization["codebook_total_hits"],
+            )
             # Revive unused codebook entries before resetting the hits
             self.revive_dead_codebook_entries(flattened_x)
             self.codebook_hits.zero_()
 
+        # Compute losses
         self.dictionary_loss = self.dictionary_loss_fn(quantized, x.detach())
         self.commitment_loss = self.commitment_loss_fn(x, quantized.detach())
 
+        # Compute diversity loss if enabled
+        if self._diversity_loss_enabled:
+            self.diversity_loss = self._compute_diversity_loss()
+
+        # Straight-through estimator: gradients flow through quantized
         return x + (quantized - x).detach()
 
 
@@ -224,6 +494,10 @@ class VQVAE(nn.Module):
         if self.quantizer.commitment_loss is not None:
             losses["commitment_loss"] = (
                 self.quantizer.commitment_loss * self.quantizer.commitment_loss_weight
+            )
+        if self.quantizer.diversity_loss is not None:
+            losses["diversity_loss"] = (
+                self.quantizer.diversity_loss * self.quantizer.diversity_loss_weight
             )
         return losses
 
@@ -268,6 +542,14 @@ if __name__ == "__main__":
         ),
         codebook_size=128,
         codebook_dim=512,
+        quantizer_kwargs={
+            "diversity_loss_enabled": True,
+            "diversity_loss_weight": 0.1,
+            "diversity_loss_margin": 0.5,
+            "smart_init_enabled": True,
+            "smart_init_steps": 50,
+            "smart_init_initial_resample_pct": 0.3,
+        },
     )
 
     input_data = torch.randn(2, 3, 480, 640).to("cuda")
@@ -275,15 +557,15 @@ if __name__ == "__main__":
     output_data = model(input_data)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
-    print(output_data.shape)
+    print(f"Output shape: {output_data.shape}")
 
-    for _ in range(10):
+    for step in range(10):
         output_data = model(input_data)
-        print(model.losses)
+        print(f"\nStep {step + 1} losses: {model.losses}")
 
         loss = sum(list(model.losses.values())) + F.mse_loss(output_data, input_data)
         loss.backward()
-        print(loss)
+        print(f"Total loss: {loss.item():.6f}")
         optimizer.step()
         optimizer.zero_grad()
-        print("=" * 100)
+        print("=" * 80)
