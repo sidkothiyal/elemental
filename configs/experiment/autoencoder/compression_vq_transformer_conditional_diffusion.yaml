@@ -109,6 +109,13 @@ model:
       codebook_hit_summary_frequency: 500
       dictionary_loss_weight: 1.0
       commitment_loss_weight: 0.25
+      diversity_loss_enabled: true
+      diversity_loss_weight: 0.1
+      diversity_loss_margin: 0.5
+      smart_init_enabled: true
+      smart_init_steps: 1000
+      smart_init_initial_resample_pct: 0.5
+      smart_init_final_resample_pct: 0.0
   model:
     _target_: model.conditional_autoencoder.ConditionalAutoencoder
     encoder:

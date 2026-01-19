@@ -71,7 +71,8 @@ class MetricsCallback(callback.Callback):
             if isinstance(metrics, MetricCollection):
                 base_metrics = metrics
             else:
-                base_metrics = MetricCollection(metrics)
+                # Convert to regular dict in case it's a DictConfig from Hydra
+                base_metrics = MetricCollection(dict(metrics))
 
             for phase in self.phases:
                 # Clone creates independent metric instances

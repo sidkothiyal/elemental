@@ -13,6 +13,7 @@ import statistics
 import fire
 import hydra
 import hydra.utils as hy_utils
+from omegaconf import DictConfig
 import torch
 import tqdm
 from torch import nn
@@ -370,6 +371,8 @@ def batch_loop(
     progress_bar = tqdm.tqdm(dataloader, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True)
 
     for batch_idx, batch in enumerate(progress_bar):
+        if batch_idx > 10:
+            break
         step = num_steps + batch_idx
         callbacks.on_batch_start(step, phase)
 
@@ -534,7 +537,7 @@ def run_train(
 
     # Initialize callbacks (handle both list and dict configs)
     callbacks = hy_utils.instantiate(config.callbacks)
-    if isinstance(callbacks, dict):
+    if isinstance(callbacks, (dict, DictConfig)):
         callbacks = list(callbacks.values())
     callbacks = callback.CallbackList(callbacks)
     callbacks.update_config({"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed})
