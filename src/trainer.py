@@ -13,9 +13,9 @@ import statistics
 import fire
 import hydra
 import hydra.utils as hy_utils
-from omegaconf import DictConfig
 import torch
 import tqdm
+from omegaconf import DictConfig
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -371,8 +371,6 @@ def batch_loop(
     progress_bar = tqdm.tqdm(dataloader, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True)
 
     for batch_idx, batch in enumerate(progress_bar):
-        if batch_idx > 10:
-            break
         step = num_steps + batch_idx
         callbacks.on_batch_start(step, phase)
 
