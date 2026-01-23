@@ -58,8 +58,8 @@ dataloader:
 
 # Training overrides
 lr: 0.00025
-num_epochs: 5000
-validation_interval: 500
+num_epochs: 2000
+validation_interval: 200
 batch_size: 2
 gradient_accumulation_steps: 12
 clip_grad_norm: 1.0
@@ -96,10 +96,11 @@ model:
         image_size: [3, 640, 960]
         patch_size: [16, 16]
         embed_dim: 192
+        overlap: 4  # Overlapping patch extraction for more context
       - _target_: model.transformer.Transformer
         embed_dim: 192
-        num_heads: 8
-        num_layers: 8
+        num_heads: 6
+        num_layers: 6
         ff_embed_dim: 192
   model:
     _target_: model.conditional_autoencoder.ConditionalAutoencoder
@@ -112,10 +113,11 @@ model:
             image_size: [3, 640, 960]
             patch_size: [16, 16]
             embed_dim: 192
+            overlap: 4  # Overlapping patch extraction for more context
           - _target_: model.transformer.Transformer
             embed_dim: 192
-            num_heads: 8
-            num_layers: 8
+            num_heads: 6
+            num_layers: 4
             ff_embed_dim: 192
       time_mlp: null
       aux_features_combiner: null
@@ -126,14 +128,14 @@ model:
         _args_:
           - _target_: model.transformer.Transformer
             embed_dim: 192
-            num_heads: 8
-            num_layers: 8
+            num_heads: 6
+            num_layers: 6
             ff_embed_dim: 192
           - _target_: model.patcher_unpatcher.Unpatcher
             image_size: [64, 640, 960]
             patch_size: [16, 16]
             embed_dim: 192
-            decoder_projection_dim: 64
+            decoder_projection_dim: 192
             model_downsample_factor: 1
             overlap: 4  # Overlapping patches with Hann window blending to reduce grid artifacts
             conv_decoder:
@@ -145,9 +147,9 @@ model:
                     _target_: hydra.utils.get_class
                     _args_:
                       - model.blocks.resnet_block.BasicResNetBlock
-                  in_channels: 64
+                  in_channels: 192
                   out_channels: 32
-                  num_blocks: 4
+                  num_blocks: 2
                   stride: 1
                   groups: 1
                   dilation: 1
@@ -158,7 +160,7 @@ model:
                       - model.blocks.resnet_block.BasicResNetBlock
                   in_channels: 32
                   out_channels: 16
-                  num_blocks: 4
+                  num_blocks: 2
                   stride: 1
                   groups: 1
                   dilation: 1

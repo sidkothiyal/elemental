@@ -50,6 +50,7 @@ class DiffusionCombiner(nn.Module):
         timestep_combiner: nn.Module | None = None,
         aux_features_combiner: nn.Module | None = None,
         time_modulation_type: str = "feature_wise",
+        pass_through_args: bool = False,
     ):
         """Initialize the Diffusion Combiner module.
 
@@ -64,6 +65,8 @@ class DiffusionCombiner(nn.Module):
                     time_mlp output should be 2*embed_dim (e.g., 384 for embed_dim=192).
                 - "position_wise": Modulate each position uniformly across features.
                     time_mlp output should be 2*seq_len (e.g., 4800 for seq_len=2400).
+            pass_through_args: Whether to pass through the time and aux_features arguments
+                to the model.
         """
         super().__init__()
         self.time_mlp = time_mlp
@@ -71,6 +74,7 @@ class DiffusionCombiner(nn.Module):
         self.aux_features_combiner = aux_features_combiner
         self.model = model
         self.time_modulation_type = time_modulation_type
+        self.pass_through_args = pass_through_args
 
         if self.timestep_combiner and self.time_mlp:
             raise ValueError("Specify either time_mlp or timestep_combiner, not both")
@@ -112,7 +116,11 @@ class DiffusionCombiner(nn.Module):
         if self.aux_features_combiner and aux_features is not None:
             x = self.aux_features_combiner(x, aux_features)
 
-        return self.model(x)
+        model_args = []
+        if self.pass_through_args:
+            model_args.append(t)
+            model_args.append(aux_features)
+        return self.model(x, *model_args)
 
 
 class CrossAttentionCombiner(nn.Module):

@@ -50,3 +50,29 @@ class Concat(nn.Module):
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Forward pass of the Concat module."""
         return torch.cat((x, y), self.axis)
+
+
+class Flatten(nn.Module):
+    """Flatten a tensor."""
+
+    def __init__(self, start_dim: int = 1):
+        """Initialize the Flatten module."""
+        super().__init__()
+        self.start_dim = start_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the Flatten module."""
+        return x.flatten(self.start_dim)
+
+
+class Permute(nn.Module):
+    """Permute a tensor."""
+
+    def __init__(self, *dims):
+        """Initialize the Permute module."""
+        super().__init__()
+        self.dims = dims
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the Permute module."""
+        return x.permute(*self.dims)

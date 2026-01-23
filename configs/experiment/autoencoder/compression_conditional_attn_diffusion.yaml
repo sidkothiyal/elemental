@@ -1,0 +1,136 @@
+# @package _global_
+# Transformer-based Conditional Diffusion model for image compression
+# Uses Patcher/Unpatcher with Transformer encoder/decoder
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_transformer_conditional_diffusion
+
+defaults:
+  - /default
+  - /loss: l1
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - _self_
+
+experiment_name: compression_autoencoder_conditional_attn_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Custom dataset with 960 width for transformer patches
+target_shape: [640, 960]
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/train
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: "x0"
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/val
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: "x0"
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  test: null
+
+# Training overrides
+lr: 0.00025
+num_epochs: 1000
+validation_interval: 100
+batch_size: 2
+gradient_accumulation_steps: 4
+clip_grad_norm: 1.0
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 500
+  checkpoint:
+    save_every_n_epochs: 1
+
+model_input_args:
+  - "t"
+  - "cond"
+
+model:
+  _target_: model.diffusion.DenoisingDiffusionModel
+  timestep_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: torch.nn.Embedding
+        num_embeddings: 1000
+        embedding_dim: 128
+  prediction_type: "x0"
+  conditional_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.conv_block.ConvBlock
+        in_channels: 3
+        channels: [8, 16, 32, 64, 128, 256]
+        kernel_sizes: [3, 3, 3, 3, 3, 3]
+        strides: [2, 2, 2, 2, 2, 2]
+        paddings: [1, 1, 1, 1, 1, 1]
+      - _target_: utils.torch_np_utils.Flatten
+        start_dim: 2
+      - _target_: utils.torch_np_utils.Permute
+        _args_: [0, 2, 1]
+  model:
+    _target_: model.conditional_autoencoder.ConditionalAutoencoder
+    encoder:
+      _target_: model.combiner.DiffusionCombiner
+      pass_through_args: true
+      model:
+        _target_: model.blocks.conditional_conv_block.ConditionalConvStage
+        in_channels: 3
+        channels: [16, 32, 64, 128, 256]
+        time_embed_dim: 128
+        cond_embed_dim: 256
+        num_groups: [1, 8, 8, 8, 8]
+        dropout: 0.1
+        use_cross_attn: False
+        cross_attn_num_heads: [1, 4, 4, 4, 4]
+        downsample: [False, True, True, True, True]
+        upsample: [False, False, False, False, False]
+    decoder:
+      _target_: model.combiner.DiffusionCombiner
+      pass_through_args: true
+      model:
+        _target_: model.blocks.conditional_conv_block.ConditionalConvStage
+        in_channels: 256
+        channels: [128, 64, 32, 16, 8, 8, 3]
+        time_embed_dim: 128
+        cond_embed_dim: 256
+        num_groups: [8, 8, 8, 8, 4, 4, 1]
+        dropout: 0.1
+        use_cross_attn: True
+        cross_attn_num_heads: [4, 4, 4, 4, 2, 2, 1]
+        downsample: [False, False, False, False, False, False, False]
+        upsample: [True, True, True, True, False, False, False]

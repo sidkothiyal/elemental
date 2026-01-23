@@ -36,6 +36,8 @@ class DenoisingDiffusionModel(nn.Module):
                   Should accept (x, t) or (x, t, cond) and output same shape as x.
             conditional_model: Optional model for processing conditional inputs.
                              Output will be passed as additional input to base model.
+                             If None, and cond is provided in forward step, it will be passed to
+                             the model as "aux_features".
             timestep_model: Model to project the timestep to a tensor of the same shape as
                 the input (e.g. a linear layer, embedding layer, etc.).
             num_timesteps: Total number of diffusion timesteps (default: 1000).
@@ -195,9 +197,11 @@ class DenoisingDiffusionModel(nn.Module):
         """
         model_args = {}
         # Process conditional input if provided
-        if cond is not None and self.conditional_model is not None:
-            cond_features = self.conditional_model(cond)
-            model_args["aux_features"] = cond_features
+        if cond is not None:
+            aux_features = cond
+            if self.conditional_model is not None:
+                aux_features = self.conditional_model(aux_features)
+            model_args["aux_features"] = aux_features
 
         if self.timestep_model:
             model_args["t"] = self.timestep_model(t)
