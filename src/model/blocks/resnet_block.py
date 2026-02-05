@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from model.blocks.conv_block import ConvBNReLU
+from model.blocks.conv_block import ConvNormAct
 
 
 class BasicResNetBlock(nn.Module):
@@ -41,7 +41,7 @@ class BasicResNetBlock(nn.Module):
         super().__init__()
 
         # First 3x3 convolution with stride (for potential downsampling)
-        self.conv1 = ConvBNReLU(
+        self.conv1 = ConvNormAct(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=3,
@@ -50,12 +50,12 @@ class BasicResNetBlock(nn.Module):
             groups=groups,
             dilation=dilation,
             bias=False,
-            use_bn=True,
-            use_relu=True,
+            norm=nn.BatchNorm2d,
+            act=nn.ReLU,
         )
 
         # Second 3x3 convolution with stride 1
-        self.conv2 = ConvBNReLU(
+        self.conv2 = ConvNormAct(
             in_channels=out_channels,
             out_channels=out_channels,
             kernel_size=3,
@@ -64,8 +64,8 @@ class BasicResNetBlock(nn.Module):
             groups=groups,
             dilation=dilation,
             bias=False,
-            use_bn=True,
-            use_relu=False,  # No ReLU here, applied after addition
+            norm=nn.BatchNorm2d,
+            act=None,  # No ReLU here, applied after addition
         )
 
         self.downsample = downsample
@@ -137,7 +137,7 @@ class BottleneckResNetBlock(nn.Module):
         width = int(out_channels * (base_width / 64.0)) * groups
 
         # 1x1 convolution to reduce dimensions
-        self.conv1 = ConvBNReLU(
+        self.conv1 = ConvNormAct(
             in_channels=in_channels,
             out_channels=width,
             kernel_size=1,
@@ -146,12 +146,12 @@ class BottleneckResNetBlock(nn.Module):
             groups=1,
             dilation=1,
             bias=False,
-            use_bn=True,
-            use_relu=True,
+            norm=nn.BatchNorm2d,
+            act=nn.ReLU,
         )
 
         # 3x3 convolution with stride (for potential downsampling)
-        self.conv2 = ConvBNReLU(
+        self.conv2 = ConvNormAct(
             in_channels=width,
             out_channels=width,
             kernel_size=3,
@@ -160,12 +160,12 @@ class BottleneckResNetBlock(nn.Module):
             groups=groups,
             dilation=dilation,
             bias=False,
-            use_bn=True,
-            use_relu=True,
+            norm=nn.BatchNorm2d,
+            act=nn.ReLU,
         )
 
         # 1x1 convolution to expand dimensions
-        self.conv3 = ConvBNReLU(
+        self.conv3 = ConvNormAct(
             in_channels=width,
             out_channels=out_channels * self.expansion,
             kernel_size=1,
@@ -174,8 +174,8 @@ class BottleneckResNetBlock(nn.Module):
             groups=1,
             dilation=1,
             bias=False,
-            use_bn=True,
-            use_relu=False,  # No ReLU here, applied after addition
+            norm=nn.BatchNorm2d,
+            act=None,  # No ReLU here, applied after addition
         )
 
         self.downsample = downsample
@@ -442,40 +442,40 @@ if __name__ == "__main__":
     # Test BasicResNetBlock
     print("Testing BasicResNetBlock...")
     basic_block = BasicResNetBlock(in_channels=64, out_channels=64)
-    x = torch.randn(2, 64, 56, 56)
-    out = basic_block(x)
-    print(f"Input shape: {x.shape}, Output shape: {out.shape}")
+    sample_x = torch.randn(2, 64, 56, 56)
+    sample_out = basic_block(sample_x)
+    print(f"Input shape: {sample_x.shape}, Output shape: {sample_out.shape}")
 
     # Test BasicResNetBlock with downsampling
     print("\nTesting BasicResNetBlock with downsampling...")
-    downsample = nn.Sequential(
+    downsample_module = nn.Sequential(
         nn.Conv2d(64, 128, kernel_size=1, stride=2, bias=False),
         nn.BatchNorm2d(128),
     )
     basic_block_downsample = BasicResNetBlock(
-        in_channels=64, out_channels=128, stride=2, downsample=downsample
+        in_channels=64, out_channels=128, stride=2, downsample=downsample_module
     )
-    out = basic_block_downsample(x)
-    print(f"Input shape: {x.shape}, Output shape: {out.shape}")
+    sample_out = basic_block_downsample(sample_x)
+    print(f"Input shape: {sample_x.shape}, Output shape: {sample_out.shape}")
 
     # Test BottleneckResNetBlock
     print("\nTesting BottleneckResNetBlock...")
     bottleneck_block = BottleneckResNetBlock(in_channels=256, out_channels=64)
-    x = torch.randn(2, 256, 56, 56)
-    out = bottleneck_block(x)
-    print(f"Input shape: {x.shape}, Output shape: {out.shape}")
+    sample_x = torch.randn(2, 256, 56, 56)
+    sample_out = bottleneck_block(sample_x)
+    print(f"Input shape: {sample_x.shape}, Output shape: {sample_out.shape}")
 
     # Test BottleneckResNetBlock with downsampling
     print("\nTesting BottleneckResNetBlock with downsampling...")
-    downsample = nn.Sequential(
+    downsample_module = nn.Sequential(
         nn.Conv2d(256, 512, kernel_size=1, stride=2, bias=False),
         nn.BatchNorm2d(512),
     )
     bottleneck_block_downsample = BottleneckResNetBlock(
-        in_channels=256, out_channels=128, stride=2, downsample=downsample
+        in_channels=256, out_channels=128, stride=2, downsample=downsample_module
     )
-    out = bottleneck_block_downsample(x)
-    print(f"Input shape: {x.shape}, Output shape: {out.shape}")
+    sample_out = bottleneck_block_downsample(sample_x)
+    print(f"Input shape: {sample_x.shape}, Output shape: {sample_out.shape}")
 
     # Test ResNetStage
     print("\nTesting ResNetStage...")
@@ -486,15 +486,15 @@ if __name__ == "__main__":
         num_blocks=3,
         stride=2,
     )
-    x = torch.randn(2, 64, 56, 56)
-    out = stage(x)
-    print(f"Input shape: {x.shape}, Output shape: {out.shape}")
+    sample_x = torch.randn(2, 64, 56, 56)
+    sample_out = stage(sample_x)
+    print(f"Input shape: {sample_x.shape}, Output shape: {sample_out.shape}")
 
     # Test PreActBasicBlock
     print("\nTesting PreActBasicBlock...")
     preact_block = PreActBasicBlock(in_channels=64, out_channels=64)
-    x = torch.randn(2, 64, 56, 56)
-    out = preact_block(x)
-    print(f"Input shape: {x.shape}, Output shape: {out.shape}")
+    sample_x = torch.randn(2, 64, 56, 56)
+    sample_out = preact_block(sample_x)
+    print(f"Input shape: {sample_x.shape}, Output shape: {sample_out.shape}")
 
     print("\nAll tests passed!")

@@ -133,15 +133,15 @@ model:
       - _target_: torch.nn.Embedding
         num_embeddings: 1000
         embedding_dim: 3
-      - _target_: utils.torch_np_utils.Unsqueeze
+      - _target_: model.nn_modules.Unsqueeze
         axis: -1
-      - _target_: utils.torch_np_utils.Unsqueeze
+      - _target_: model.nn_modules.Unsqueeze
         axis: -1
   prediction_type: "x0"
   model:
     _target_: model.combiner.DiffusionCombiner
     timestep_combiner:
-      _target_: utils.torch_np_utils.Add
+      _target_: model.nn_modules.Add
     model:
       _target_: model.unet.UNet
       in_channels: 3

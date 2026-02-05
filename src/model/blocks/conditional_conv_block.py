@@ -107,34 +107,50 @@ class ConditionalConvBlock(nn.Module):
             self.sample_up_or_down = self._create_up_block(out_channels, out_channels)
 
     def _create_down_block(self, in_channels, out_channels):
-        # TODO: Downsample and 2x channels on the same layer instead of two separate layers.
-        return nn.Sequential(
-            blocks.ConvBlock(
-                in_channels=in_channels,
-                channels=[out_channels, out_channels],
-                kernel_sizes=[3, 3],
-                strides=[1, 1],
-                paddings=[1, 1],
-            ),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, padding=1),
-        )
+        """Create a downsampling block.
 
-    def _create_up_block(self, in_channels, out_channels):
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+        """
         return nn.Sequential(
-            blocks.ConvTransposeBNReLU(
+            blocks.ConvNormAct(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                kernel_size=2,
+                kernel_size=3,
                 stride=2,
-                padding=0,
+                padding=1,
+                norm=nn.GroupNorm,
+                norm_kwargs={"num_groups": self.num_groups},
+                act=nn.SiLU,
             ),
-            blocks.ConvBlock(
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
+        )
+
+    def _create_up_block(self, in_channels, out_channels, mode: str = "bilinear"):
+        """Create an upsampling block.
+
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            mode: Mode of the upsampling.
+                Can be 'nearest' or 'bilinear'.
+                Bilinear is more expensive but better for image reconstruction.
+                Nearest is faster but less accurate.
+        """
+        return nn.Sequential(
+            blocks.UpsampleNormAct(
+                scale_factor=2.0,
+                mode=mode,
                 in_channels=in_channels,
-                channels=[out_channels, out_channels],
-                kernel_sizes=[3, 3],
-                strides=[1, 1],
-                paddings=[1, 1],
+                out_channels=out_channels,
+                kernel_size=3,
+                padding=1,
+                norm=nn.GroupNorm,
+                norm_kwargs={"num_groups": self.num_groups},
+                act=nn.SiLU,
             ),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
         )
 
     def forward(
@@ -192,8 +208,8 @@ class ConditionalConvStage(nn.Module):
         cond_embed_dim: int,
         num_groups: int | list[int] = 32,
         dropout: float = 0.1,
-        use_cross_attn: bool = True,
-        cross_attn_num_heads: int = 8,
+        use_cross_attn: list[bool] | bool = True,
+        cross_attn_num_heads: list[int] | int = 8,
         downsample: list[bool] | bool = False,
         upsample: list[bool] | bool = False,
     ):
@@ -217,6 +233,7 @@ class ConditionalConvStage(nn.Module):
         block_in_channels = in_channels
         num_blocks = len(channels)
 
+        use_cross_attn = self._create_block_params(use_cross_attn, num_blocks, "use_cross_attn")
         block_num_groups = self._create_block_params(num_groups, num_blocks, "num_groups")
         block_cross_attn_num_heads = self._create_block_params(
             cross_attn_num_heads, num_blocks, "cross_attn_num_heads"
@@ -233,7 +250,7 @@ class ConditionalConvStage(nn.Module):
                     cond_embed_dim=cond_embed_dim,
                     num_groups=block_num_groups[idx],
                     dropout=dropout,
-                    use_cross_attn=use_cross_attn,
+                    use_cross_attn=use_cross_attn[idx],
                     cross_attn_num_heads=block_cross_attn_num_heads[idx],
                     downsample=block_downsample[idx],
                     upsample=block_upsample[idx],
@@ -263,12 +280,13 @@ class ConditionalConvStage(nn.Module):
         if isinstance(param, (bool, int)):
             return [param] * num_blocks
 
-        if not isinstance(param, list) or len(param) != num_blocks:
+        param = list(param)
+        if len(param) != num_blocks:
             raise ValueError(
                 f"{param_name} must be a single number, or a list of the same length "
-                f"as the number of blocks. Got {len(param)} for {param_name}."
+                f"as the number of blocks. Got {len(param)} for {param_name}, while "
+                f"num_blocks is {num_blocks}."
             )
-
         return param
 
     def forward(self, x, time_embed, cond_embed):

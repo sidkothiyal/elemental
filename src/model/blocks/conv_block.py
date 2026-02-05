@@ -6,9 +6,11 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from model import utils
 
-class ConvBNReLU(nn.Module):
-    """Layer with a convolution, batch normalization, and ReLU activation."""
+
+class ConvNormAct(nn.Module):
+    """Layer with a convolution, normalization, and activation."""
 
     def __init__(
         self,
@@ -20,10 +22,12 @@ class ConvBNReLU(nn.Module):
         groups: int | None = 1,
         dilation: int | None = 1,
         bias: bool | None = False,
-        use_bn: bool | None = True,
-        use_relu: bool | None = True,
+        norm: type[nn.Module] | None = nn.BatchNorm2d,
+        norm_kwargs: dict | None = None,
+        act: type[nn.Module] | None = nn.ReLU,
+        act_kwargs: dict | None = None,
     ):
-        """Layer with a convolution, batch normalization, and ReLU activation.
+        """Layer with a convolution, normalization, and activation.
 
         Args:
             in_channels: Number of input channels.
@@ -34,8 +38,10 @@ class ConvBNReLU(nn.Module):
             groups: Number of groups in the convolution.
             dilation: Dilation of the convolution.
             bias: Whether to use a bias in the convolution.
-            use_bn: Whether to use batch normalization.
-            use_relu: Whether to use a ReLU activation.
+            norm: Normalization class (e.g., nn.BatchNorm2d, nn.GroupNorm, None).
+            norm_kwargs: Keyword arguments for initializing the normalization layer.
+            act: Activation class (e.g., nn.ReLU, nn.SiLU, None).
+            act_kwargs: Keyword arguments for initializing the activation layer.
         """
         super().__init__()
         self.conv = nn.Conv2d(
@@ -48,25 +54,21 @@ class ConvBNReLU(nn.Module):
             groups=groups,
             bias=bias,
         )
-        self.use_bn = use_bn
-        if self.use_bn:
-            self.bn = nn.BatchNorm2d(out_channels)
-        self.use_relu = use_relu
-        if self.use_relu:
-            self.relu = nn.ReLU()
+        self.norm = utils.create_normalization(norm, out_channels, norm_kwargs)
+        self.act = utils.create_activation(act, act_kwargs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the ConvBNReLU."""
+        """Forward pass of the ConvNormAct."""
         x = self.conv(x)
-        if self.use_bn:
-            x = self.bn(x)
-        if self.use_relu:
-            x = self.relu(x)
+        if self.norm is not None:
+            x = self.norm(x)
+        if self.act is not None:
+            x = self.act(x)
         return x
 
 
 class ConvBlock(nn.Module):
-    """Block of ConvBNReLU layers."""
+    """Block of ConvNormAct layers."""
 
     def __init__(
         self,
@@ -78,12 +80,14 @@ class ConvBlock(nn.Module):
         groups: list[int] | None = None,
         dilations: list[int] | None = None,
         bias: bool | None = False,
-        use_bn: bool | None = True,
-        use_relu: bool | None = True,
+        norm: type[nn.Module] | None = nn.BatchNorm2d,
+        norm_kwargs: dict | None = None,
+        act: type[nn.Module] | None = nn.ReLU,
+        act_kwargs: dict | None = None,
         checkpoint_layers: list[int] | Literal["all"] | None = None,
         checkpoint_use_reentrant: bool = False,
     ):
-        """Block of ConvBNReLU layers.
+        """Block of ConvNormAct layers.
 
         Args:
             in_channels: Number of input channels.
@@ -94,8 +98,10 @@ class ConvBlock(nn.Module):
             groups: list of groups.
             dilations: list of dilations.
             bias: Whether to use a bias in the convolution.
-            use_bn: Whether to use batch normalization.
-            use_relu: Whether to use a ReLU activation.
+            norm: Normalization class (e.g., nn.BatchNorm2d, nn.GroupNorm, None).
+            norm_kwargs: Keyword arguments for initializing the normalization layer.
+            act: Activation class (e.g., nn.ReLU, nn.SiLU, None).
+            act_kwargs: Keyword arguments for initializing the activation layer.
             checkpoint_layers: List of layer indices to checkpoint, "all" for all layers,
                 or None to disable checkpointing.
             checkpoint_use_reentrant: Whether to use reentrant checkpointing.
@@ -108,8 +114,10 @@ class ConvBlock(nn.Module):
         self.paddings = paddings
         self.groups = groups
         self.dilations = dilations
-        self.use_bn = use_bn
-        self.use_relu = use_relu
+        self.norm = norm
+        self.norm_kwargs = norm_kwargs
+        self.act = act
+        self.act_kwargs = act_kwargs
         self.num_layers = len(channels)
 
         # Setup checkpointing
@@ -134,7 +142,7 @@ class ConvBlock(nn.Module):
             group = groups[idx] if groups else 1
             dilation = dilations[idx] if dilations else 1
             self.conv_blocks.append(
-                ConvBNReLU(
+                ConvNormAct(
                     in_channels,
                     out_channels,
                     kernel_size,
@@ -143,8 +151,10 @@ class ConvBlock(nn.Module):
                     group,
                     dilation,
                     bias,
-                    use_bn,
-                    use_relu,
+                    norm,
+                    norm_kwargs,
+                    act,
+                    act_kwargs,
                 )
             )
 
@@ -191,22 +201,12 @@ class ConvBlock(nn.Module):
     def assert_same_lengths(self):
         """Assert that all lists have the same length."""
         num_layers = len(self.channels)
-        if (
-            len(self.kernel_sizes) != num_layers
-            or len(self.strides) != num_layers
-            or len(self.paddings) != num_layers
-            or (self.groups and len(self.groups) != num_layers)
-            or (self.dilations and len(self.dilations) != num_layers)
-        ):
-            error_msg = (
-                "All lists must have the same length. Got: "
-                f"Kernel sizes: {len(self.kernel_sizes)}, "
-                f"Strides: {len(self.strides)}, "
-                f"Paddings: {len(self.paddings)}, "
-                f"Groups: {len(self.groups) if self.groups else None}, "
-                f"Dilations: {len(self.dilations) if self.dilations else None}"
-            )
-            raise ValueError(error_msg)
+        utils.assert_list_length(self.channels, num_layers, "channels")
+        utils.assert_list_length(self.kernel_sizes, num_layers, "kernel_sizes")
+        utils.assert_list_length(self.strides, num_layers, "strides")
+        utils.assert_list_length(self.paddings, num_layers, "paddings")
+        utils.assert_list_length(self.groups, num_layers, "groups")
+        utils.assert_list_length(self.dilations, num_layers, "dilations")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the ConvBlock."""
