@@ -74,6 +74,7 @@ def get_distributed_dataloader(
     dataloader: DataLoader,
     rank: int,
     world_size: int,
+    shuffle: bool = True,
 ) -> DataLoader:
     """Create a distributed sampler for the dataloader.
 
@@ -89,7 +90,7 @@ def get_distributed_dataloader(
         dataloader.dataset,
         num_replicas=world_size,
         rank=rank,
-        shuffle=True,
+        shuffle=shuffle,
     )
 
     return DataLoader(

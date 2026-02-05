@@ -763,29 +763,6 @@ def run_train(
         if distributed.is_main_process():
             logger.info("Running test...")
 
-        # Load best model
-        if mode == "gan":
-            generator_path = os.path.join(results_dir, "best-generator.pth")
-            discriminator_path = os.path.join(results_dir, "best-discriminator.pth")
-
-            if not (os.path.exists(generator_path) and os.path.exists(discriminator_path)):
-                raise FileNotFoundError("Best GAN model checkpoints not found")
-
-            # Load each model separately with safe loading (weights_only=True by default)
-            initializer.load_from_checkpoint(
-                generator_path, model["generator"], device=device, weights_only=True
-            )
-            initializer.load_from_checkpoint(
-                discriminator_path, model["discriminator"], device=device, weights_only=True
-            )
-        else:
-            model_path = os.path.join(results_dir, "best.pth")
-            if not os.path.exists(model_path):
-                raise FileNotFoundError("Best model checkpoint not found")
-
-            # Use safe loading with proper device mapping (weights_only=True by default)
-            initializer.load_from_checkpoint(model_path, model, device=device)
-
         # Set model to evaluation mode
         model.eval()
 

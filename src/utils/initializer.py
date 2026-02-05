@@ -100,13 +100,17 @@ def initialize_dataset(
     # Set up distributed samplers if needed for distributed training
     if use_distributed:
         dataloaders["train"] = distributed.get_distributed_dataloader(
-            dataloaders["train"], local_rank, world_size
+            dataloaders["train"], local_rank, world_size, shuffle=True
         )
         dataloaders["val"] = distributed.get_distributed_dataloader(
-            dataloaders["val"], local_rank, world_size
+            dataloaders["val"], local_rank, world_size, shuffle=False
         )
-        dataloaders["test"] = distributed.get_distributed_dataloader(
-            dataloaders["test"], local_rank, world_size
+        dataloaders["test"] = (
+            distributed.get_distributed_dataloader(
+                dataloaders["test"], local_rank, world_size, shuffle=False
+            )
+            if dataloaders["test"] is not None
+            else None
         )
 
     return dataloaders["train"], dataloaders["val"], dataloaders["test"]
