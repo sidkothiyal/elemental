@@ -16,6 +16,7 @@ class DIV2KDataset(data.Dataset):
         self,
         root_dir: Union[str, pathlib.Path],
         target_shape: Optional[Tuple[int, int]] = None,
+        max_images: Optional[int] = None,
     ):
         """DIV2K dataset constructor.
 
@@ -23,10 +24,11 @@ class DIV2KDataset(data.Dataset):
             root_dir: Path to the root directory of the dataset.
             target_shape: Optional tuple of (height, width) for random cropping.
                          If None, images are not cropped.
+            max_images: Optional maximum number of images to load. If None, loads all images.
         """
         self.root_dir = pathlib.Path(root_dir)
         self.target_shape = target_shape
-
+        self.max_images = max_images
         # Find all PNG images in the directory
         self.images = list(self.root_dir.glob("*.png"))
         self.images.sort()  # Sort to ensure consistent ordering
@@ -39,8 +41,12 @@ class DIV2KDataset(data.Dataset):
             height, width = self.target_shape
             transform_list.append(transforms.RandomCrop((height, width)))
 
-        # Convert PIL image to tensor
+        # Convert PIL image to tensor (outputs [0, 1] range)
         transform_list.append(transforms.ToTensor())
+
+        # Normalize to [-1, 1] range for diffusion models
+        # ToTensor outputs [0, 1], so we do: (x - 0.5) / 0.5 = x * 2 - 1 = [-1, 1]
+        transform_list.append(transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]))
 
         self.transform = transforms.Compose(transform_list)
 
@@ -57,6 +63,10 @@ class DIV2KDataset(data.Dataset):
         Returns:
             Dictionary with 'input' and 'target' keys, both containing the same tensor.
         """
+        if self.max_images:
+            # Limiting the number of images while allowing indices to wrap around increases the
+            # number of steps per epoch, reducing the overhead of epoch transitions.
+            idx = idx % self.max_images
         image_path = self.images[idx]
 
         # Load image using PIL

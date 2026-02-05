@@ -19,7 +19,6 @@ class DiffusionDataset(data.Dataset):
         noise_schedule: str = "linear",
         beta_start: float = 0.0001,
         beta_end: float = 0.02,
-        device: str = "cpu",
         prediction_type: str = "epsilon",
     ):
         """DiffusionDataset constructor.
@@ -31,20 +30,19 @@ class DiffusionDataset(data.Dataset):
             noise_schedule: Type of noise schedule ("linear" or "cosine").
             beta_start: Starting beta value for noise schedule.
             beta_end: Ending beta value for noise schedule.
-            device: Device to store noise schedule tensors on.
             prediction_type: What the model predicts - "epsilon" (noise) or "x0" (clean image).
         """
         self.dataset = dataset
         self.num_timesteps = num_timesteps
         self.noise_schedule = noise_schedule
-        self.device = device
         self.prediction_type = prediction_type
 
-        # Generate noise schedule
+        # Generate noise schedule on CPU as ideally DataLoader workers should not use GPU
+        # This prevents OOM when multiple workers try to allocate GPU memory
         if noise_schedule == "linear":
-            self.betas = torch.linspace(beta_start, beta_end, num_timesteps, device=device)
+            self.betas = torch.linspace(beta_start, beta_end, num_timesteps)
         elif noise_schedule == "cosine":
-            self.betas = self._cosine_beta_schedule(num_timesteps, device=device)
+            self.betas = self._cosine_beta_schedule(num_timesteps)
         else:
             raise ValueError(f"Unknown noise schedule: {noise_schedule}")
 
@@ -54,22 +52,19 @@ class DiffusionDataset(data.Dataset):
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
 
-    def _cosine_beta_schedule(
-        self, timesteps: int, device: str = "cpu", s: float = 0.008
-    ) -> torch.Tensor:
+    def _cosine_beta_schedule(self, timesteps: int, s: float = 0.008) -> torch.Tensor:
         """
         Cosine beta schedule as proposed in "Improved Denoising Diffusion Probabilistic Models".
 
         Args:
             timesteps: Number of diffusion timesteps.
-            device: Device to create tensor on.
             s: Small offset to prevent beta from being too small near t=0.
 
         Returns:
             Beta values for each timestep.
         """
         steps = timesteps + 1
-        x = torch.linspace(0, timesteps, steps, device=device)
+        x = torch.linspace(0, timesteps, steps)
         alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
         alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
         betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
@@ -106,9 +101,11 @@ class DiffusionDataset(data.Dataset):
         if not isinstance(x0, torch.Tensor):
             raise ValueError(f"Image must be a tensor, got {type(x0)}")
 
-        x0 = x0.to(self.device)
+        # Keep operations on CPU as ideally DataLoader workers should not use GPU
+        # Tensors will be moved to GPU in the training loop
+        x0 = x0.cpu()
         # Sample a random timestep
-        t = torch.randint(0, self.num_timesteps, (1,), device=self.device).squeeze()
+        t = torch.randint(0, self.num_timesteps, (1,)).squeeze()
 
         # Generate random noise with same shape as x0
         noise = torch.randn_like(x0)
@@ -151,7 +148,6 @@ if __name__ == "__main__":
         dataset=base_dataset,
         num_timesteps=1000,
         noise_schedule="cosine",
-        device="cpu",
     )
     print(f"Diffusion dataset length: {len(diffusion_dataset)}")
 
