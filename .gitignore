@@ -13,6 +13,7 @@ models/
 *.pth
 
 # Logs / Temp files
+debug/
 outputs/
 results/
 logs/
