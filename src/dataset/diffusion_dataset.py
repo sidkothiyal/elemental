@@ -20,6 +20,8 @@ class DiffusionDataset(data.Dataset):
         beta_start: float = 0.0001,
         beta_end: float = 0.02,
         prediction_type: str = "epsilon",
+        min_timestep: int = 0,
+        timestep_bias: str = "none",
     ):
         """DiffusionDataset constructor.
 
@@ -31,11 +33,19 @@ class DiffusionDataset(data.Dataset):
             beta_start: Starting beta value for noise schedule.
             beta_end: Ending beta value for noise schedule.
             prediction_type: What the model predicts - "epsilon" (noise) or "x0" (clean image).
+            min_timestep: Minimum timestep to sample (default 0). Set higher to avoid
+                         training on very clean images.
+            timestep_bias: Bias strategy for timestep sampling:
+                          - "none": Uniform sampling (default)
+                          - "high": Bias toward high (noisy) timesteps using sqrt distribution
+                          - "low": Bias toward low (clean) timesteps
         """
         self.dataset = dataset
         self.num_timesteps = num_timesteps
         self.noise_schedule = noise_schedule
         self.prediction_type = prediction_type
+        self.min_timestep = min_timestep
+        self.timestep_bias = timestep_bias
 
         # Generate noise schedule on CPU as ideally DataLoader workers should not use GPU
         # This prevents OOM when multiple workers try to allocate GPU memory
@@ -69,6 +79,36 @@ class DiffusionDataset(data.Dataset):
         alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
         betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
         return torch.clip(betas, 0.0001, 0.9999)
+
+    def _sample_timestep(self) -> torch.Tensor:
+        """Sample a timestep based on the bias strategy.
+
+        Returns:
+            A single timestep tensor.
+        """
+        t_range = self.num_timesteps - self.min_timestep
+
+        if self.timestep_bias == "none":
+            # Uniform sampling
+            t = torch.randint(self.min_timestep, self.num_timesteps, (1,)).squeeze()
+        elif self.timestep_bias == "high":
+            # Bias toward high timesteps (more noisy) using sqrt distribution
+            # sqrt(uniform) gives higher probability to larger values
+            u = torch.rand(1).squeeze()
+            t = self.min_timestep + int(torch.sqrt(u) * t_range)
+            t = min(t, self.num_timesteps - 1)
+            t = torch.tensor(t)
+        elif self.timestep_bias == "low":
+            # Bias toward low timesteps (less noisy)
+            # 1 - sqrt(uniform) gives higher probability to smaller values
+            u = torch.rand(1).squeeze()
+            t = self.min_timestep + int((1 - torch.sqrt(1 - u)) * t_range)
+            t = min(t, self.num_timesteps - 1)
+            t = torch.tensor(t)
+        else:
+            raise ValueError(f"Unknown timestep_bias: {self.timestep_bias}")
+
+        return t
 
     def __len__(self):
         """Get the length of the dataset."""
@@ -104,8 +144,9 @@ class DiffusionDataset(data.Dataset):
         # Keep operations on CPU as ideally DataLoader workers should not use GPU
         # Tensors will be moved to GPU in the training loop
         x0 = x0.cpu()
-        # Sample a random timestep
-        t = torch.randint(0, self.num_timesteps, (1,)).squeeze()
+
+        # Sample a timestep based on bias strategy
+        t = self._sample_timestep()
 
         # Generate random noise with same shape as x0
         noise = torch.randn_like(x0)

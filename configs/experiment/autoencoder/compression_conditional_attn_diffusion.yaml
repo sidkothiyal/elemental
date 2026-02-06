@@ -16,6 +16,10 @@ defaults:
 experiment_name: compression_autoencoder_conditional_attn_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
+# load_checkpoint_path: results/autoencoder/compression_autoencoder_conditional_attn_diffusion_2026-01-28_00-44-50/last.pt
+# resume_training: true
+# strict: false
+
 mode: "autoencoder"
 
 # Custom dataset with 960 width for transformer patches
@@ -30,14 +34,14 @@ dataloader:
         _target_: dataset.div2k_dataset.DIV2KDataset
         root_dir: data/div2k/train
         target_shape: ${target_shape}
-      device: "cuda"
+      noise_schedule: "cosine"  # Better SNR distribution than linear
+      timestep_bias: "high"
       prediction_type: "x0"
     batch_size: ${batch_size}
     shuffle: true
     num_workers: 4
     persistent_workers: true
     drop_last: false
-    multiprocessing_context: "spawn"
   val:
     _target_: torch.utils.data.DataLoader
     dataset:
@@ -46,20 +50,33 @@ dataloader:
         _target_: dataset.div2k_dataset.DIV2KDataset
         root_dir: data/div2k/val
         target_shape: ${target_shape}
-      device: "cuda"
+      noise_schedule: "cosine"
       prediction_type: "x0"
     batch_size: ${batch_size}
     shuffle: false
     num_workers: 4
     persistent_workers: true
     drop_last: false
-    multiprocessing_context: "spawn"
-  test: null
+  test:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/val
+        target_shape: ${target_shape}
+      prediction_type: "x0"
+      noise_schedule: "cosine"
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
 
 # Training overrides
 lr: 0.00025
-num_epochs: 1000
-validation_interval: 100
+num_epochs: 5000
+validation_interval: 500
 batch_size: 2
 gradient_accumulation_steps: 4
 clip_grad_norm: 1.0
@@ -89,18 +106,30 @@ model:
         num_embeddings: 1000
         embedding_dim: 128
   prediction_type: "x0"
+  noise_schedule: "cosine"
+  data_normalized_minus1_1: true
+  # Inference parameters
+  inference_method: "ddim"
+  start_timestep: 999
+  num_denoising_steps: 100
+  denoising_delta: 0.001
+  # Debug settings
+  debug_dir: debug/compression_conditional_attn_diffusion/
+  debug_mode: true
+  debug_save_interval: 10  # Save every 10 timesteps to avoid filling disk
   conditional_model:
     _target_: torch.nn.Sequential
     _args_:
       - _target_: model.blocks.conv_block.ConvBlock
         in_channels: 3
-        channels: [8, 16, 32, 64, 128, 256]
-        kernel_sizes: [3, 3, 3, 3, 3, 3]
-        strides: [2, 2, 2, 2, 2, 2]
-        paddings: [1, 1, 1, 1, 1, 1]
-      - _target_: utils.torch_np_utils.Flatten
+        # 32x downsampling: 640/32=20, 960/32=30 → 20*30=600 spatial tokens
+        channels: [12, 24, 48, 96, 192]
+        kernel_sizes: [3, 3, 3, 3, 3]
+        strides: [2, 2, 2, 2, 2]  # 32x downsampling (5 stages)
+        paddings: [1, 1, 1, 1, 1]
+      - _target_: model.nn_modules.Flatten
         start_dim: 2
-      - _target_: utils.torch_np_utils.Permute
+      - _target_: model.nn_modules.Permute
         _args_: [0, 2, 1]
   model:
     _target_: model.conditional_autoencoder.ConditionalAutoencoder
@@ -110,12 +139,12 @@ model:
       model:
         _target_: model.blocks.conditional_conv_block.ConditionalConvStage
         in_channels: 3
-        channels: [16, 32, 64, 128, 256]
+        channels: [12, 24, 48, 96, 192]
         time_embed_dim: 128
-        cond_embed_dim: 256
-        num_groups: [1, 8, 8, 8, 8]
-        dropout: 0.1
-        use_cross_attn: False
+        cond_embed_dim: 192
+        num_groups: [1, 6, 6, 6, 6]
+        dropout: 0.2
+        use_cross_attn: [False, False, True, True, True]
         cross_attn_num_heads: [1, 4, 4, 4, 4]
         downsample: [False, True, True, True, True]
         upsample: [False, False, False, False, False]
@@ -124,13 +153,13 @@ model:
       pass_through_args: true
       model:
         _target_: model.blocks.conditional_conv_block.ConditionalConvStage
-        in_channels: 256
-        channels: [128, 64, 32, 16, 8, 8, 3]
+        in_channels: 192
+        channels: [96, 48, 24, 12, 6, 6, 3]
         time_embed_dim: 128
-        cond_embed_dim: 256
-        num_groups: [8, 8, 8, 8, 4, 4, 1]
-        dropout: 0.1
-        use_cross_attn: True
+        cond_embed_dim: 192
+        num_groups: [8, 8, 8, 6, 2, 2, 1]
+        dropout: 0.2
+        use_cross_attn: [True, True, True, False, False, False, False]
         cross_attn_num_heads: [4, 4, 4, 4, 2, 2, 1]
         downsample: [False, False, False, False, False, False, False]
         upsample: [True, True, True, True, False, False, False]

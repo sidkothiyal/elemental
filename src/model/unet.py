@@ -1,5 +1,6 @@
 """U-Net Architecture."""
 # Reference: https://paperswithcode.com/method/u-net
+import logging
 from typing import Callable, List, Literal
 
 import torch
@@ -7,6 +8,8 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 from model import blocks
+
+logger = logging.getLogger(__name__)
 
 
 class UNet(nn.Module):
@@ -37,6 +40,14 @@ class UNet(nn.Module):
         checkpoint_blocks: list[int] | Literal["all"] | None = None,
         checkpoint_modules: list[str] | Literal["all"] | None = None,
         checkpoint_use_reentrant: bool = False,
+        # Conditional block arguments
+        use_conditional_blocks: bool = False,
+        time_embed_dim: int | None = None,
+        cond_embed_dim: int | None = None,
+        num_groups: int | list[int] = 32,
+        dropout: float = 0.1,
+        use_cross_attn: bool | list[bool] = True,
+        cross_attn_num_heads: int | list[int] = 8,
     ):
         """Initialize the U-Net model.
 
@@ -51,6 +62,18 @@ class UNet(nn.Module):
                 "encoder", "bottleneck", "decoder". Use "all" or None to checkpoint all modules
                 when checkpoint_blocks is set.
             checkpoint_use_reentrant: Whether to use reentrant checkpointing.
+            use_conditional_blocks: Whether to use ConditionalConvBlock instead of regular blocks.
+            time_embed_dim: Dimension of the time embedding. Required if use_conditional_blocks.
+            cond_embed_dim: Dimension of the condition embedding. Required if
+                use_conditional_blocks.
+            num_groups: Number of groups for GroupNorm. Can be a single int or a list with
+                length equal to len(channels)-1 for per-level customization.
+            dropout: Dropout rate for conditional blocks.
+            use_cross_attn: Whether to use cross-attention in conditional blocks. Can be a
+                single bool or a list with length equal to len(channels)-1 for per-level
+                customization.
+            cross_attn_num_heads: Number of heads for cross-attention. Can be a single int or
+                a list with length equal to len(channels)-1 for per-level customization.
         """
         super().__init__()
         if channels is None or len(channels) == 0:
@@ -61,6 +84,21 @@ class UNet(nn.Module):
         self.skip_first_connection = skip_first_connection
         self.num_encoder_blocks = len(channels) - 1
         self.num_decoder_blocks = len(channels) - 1
+        self.use_conditional_blocks = use_conditional_blocks
+
+        # Validate conditional block arguments
+        if use_conditional_blocks:
+            if time_embed_dim is None or cond_embed_dim is None:
+                raise ValueError(
+                    "time_embed_dim and cond_embed_dim are required when "
+                    "use_conditional_blocks=True"
+                )
+        self.time_embed_dim = time_embed_dim
+        self.cond_embed_dim = cond_embed_dim
+        self.dropout = dropout
+
+        # Setup per-level conditional block parameters
+        self._setup_conditional_params(num_groups, use_cross_attn, cross_attn_num_heads)
 
         # Setup checkpointing configuration
         self._setup_checkpointing(checkpoint_blocks, checkpoint_modules, checkpoint_use_reentrant)
@@ -73,26 +111,120 @@ class UNet(nn.Module):
             block_input_channels = in_channels
             if channel_idx > 0:
                 block_input_channels = channels[channel_idx - 1]
-            self.encoder.append(self._create_down_block(block_input_channels, channel))
+            self.encoder.append(self._create_down_block(block_input_channels, channel, channel_idx))
             if skip_first_connection and channel_idx == 0:
                 continue
+            # Skip connection handling differs between standard and conditional modes:
+            # - Standard: skip saved BEFORE downsample (higher res), use block_input_channels
+            # - Conditional: skip saved AFTER block (lower res), use channel (output channels)
+            skip_connection_input_channels = (
+                channel if use_conditional_blocks else block_input_channels
+            )
             self.skip_connections[str(channel_idx)] = nn.Conv2d(
-                channel, channel, kernel_size=1, stride=1, padding=0
+                skip_connection_input_channels, channel, kernel_size=1, stride=1, padding=0
             )
 
-        self.bottleneck = blocks.ConvBlock(
-            in_channels=channels[-2],
-            channels=[channels[-1], channels[-1]],
-            kernel_sizes=[3, 3],
-            strides=[1, 1],
-            paddings=[1, 1],
-        )
+        if use_conditional_blocks:
+            # Use last encoder level's parameters for bottleneck
+            bottleneck_num_groups = self.num_groups_list[-1]
+            bottleneck_use_cross_attn = self.use_cross_attn_list[-1]
+            bottleneck_cross_attn_num_heads = self.cross_attn_num_heads_list[-1]
+            self.bottleneck = blocks.ConditionalConvBlock(
+                in_channels=channels[-2],
+                out_channels=channels[-1],
+                time_embed_dim=time_embed_dim,
+                cond_embed_dim=cond_embed_dim,
+                num_groups=bottleneck_num_groups,
+                dropout=dropout,
+                use_cross_attn=bottleneck_use_cross_attn,
+                cross_attn_num_heads=bottleneck_cross_attn_num_heads,
+            )
+        else:
+            self.bottleneck = blocks.ConvBlock(
+                in_channels=channels[-2],
+                channels=[channels[-1], channels[-1]],
+                kernel_sizes=[3, 3],
+                strides=[1, 1],
+                paddings=[1, 1],
+            )
 
         reversed_channels = channels[::-1]
         for channel_idx, channel in enumerate(reversed_channels[:-1]):
-            self.decoder.append(self._create_up_block(channel, reversed_channels[channel_idx + 1]))
+            # Map decoder index to encoder level (reversed)
+            encoder_level_idx = len(reversed_channels) - 2 - channel_idx
+            out_ch = reversed_channels[channel_idx + 1]
+            # For conditional blocks, account for skip concatenation in input channels
+            skip_ch = (
+                channels[encoder_level_idx]
+                if str(encoder_level_idx) in self.skip_connections
+                else 0
+            )
+            self.decoder.append(
+                self._create_up_block(channel, out_ch, encoder_level_idx, skip_channels=skip_ch)
+            )
 
         self.output_conv = nn.Conv2d(channels[0], out_channels, kernel_size=1, stride=1, padding=0)
+
+    def _setup_conditional_params(
+        self,
+        num_groups: int | list[int],
+        use_cross_attn: bool | list[bool],
+        cross_attn_num_heads: int | list[int],
+    ) -> None:
+        """Setup per-level conditional block parameters.
+
+        Args:
+            num_groups: Number of groups for GroupNorm.
+            use_cross_attn: Whether to use cross-attention.
+            cross_attn_num_heads: Number of heads for cross-attention.
+        """
+        if not self.use_conditional_blocks:
+            return
+        num_levels = self.num_encoder_blocks
+        self.num_groups_list = self._create_block_params(num_groups, num_levels, "num_groups")
+        if self.in_channels % self.num_groups_list[0] != 0:
+            logger.warning(
+                "In_channels %s is not divisible by num_groups %s, setting num_groups to 1",
+                self.in_channels,
+                self.num_groups_list[0],
+            )
+            self.num_groups_list[0] = 1
+        self.use_cross_attn_list = self._create_block_params(
+            use_cross_attn, num_levels, "use_cross_attn"
+        )
+        self.cross_attn_num_heads_list = self._create_block_params(
+            cross_attn_num_heads, num_levels, "cross_attn_num_heads"
+        )
+
+    def _create_block_params(
+        self, param: list[bool | int] | bool | int, num_blocks: int, param_name: str
+    ) -> list[bool | int]:
+        """Create a list of parameters for each block.
+
+        Args:
+            param: Parameter to create a list of for each block.
+                Can be a single number, a list of the same length as the number of blocks,
+                or a list of booleans.
+            num_blocks: Number of blocks.
+            param_name: Name of the parameter.
+
+        Returns:
+            List of parameters for each block.
+
+        Raises:
+            ValueError: If the parameter is not a single number or a list of the same length
+                as the number of blocks.
+        """
+        if isinstance(param, (bool, int)):
+            return [param] * num_blocks
+
+        param = list(param)
+        if len(param) != num_blocks:
+            raise ValueError(
+                f"{param_name} must be a single number, or a list of the same length "
+                f"as the number of blocks ({num_blocks}). Got {len(param)} for {param_name}."
+            )
+        return param
 
     def _setup_checkpointing(
         self,
@@ -175,27 +307,85 @@ class UNet(nn.Module):
             return checkpoint(fn, x, use_reentrant=self.checkpoint_use_reentrant)
         return fn(x)
 
-    def _create_down_block(self, in_channels, out_channels):
-        # TODO: Downsample and 2x channels on the same layer instead of two separate layers.
-        return nn.Sequential(
-            blocks.ConvBlock(
-                in_channels=in_channels,
-                channels=[out_channels, out_channels],
-                kernel_sizes=[3, 3],
-                strides=[1, 1],
-                paddings=[1, 1],
-            ),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, padding=1),
-        )
+    def _create_down_block(self, in_channels, out_channels, level_idx: int):
+        """Create a downsampling block.
 
-    def _create_up_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            blocks.ConvTransposeBNReLU(
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            level_idx: Index of the encoder level for per-level parameters.
+        """
+        if self.use_conditional_blocks:
+            return blocks.ConditionalConvBlock(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                kernel_size=2,
+                time_embed_dim=self.time_embed_dim,
+                cond_embed_dim=self.cond_embed_dim,
+                num_groups=self.num_groups_list[level_idx],
+                dropout=self.dropout,
+                use_cross_attn=self.use_cross_attn_list[level_idx],
+                cross_attn_num_heads=self.cross_attn_num_heads_list[level_idx],
+                downsample=True,
+            )
+        return nn.Sequential(
+            blocks.ConvNormAct(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=3,
                 stride=2,
-                padding=0,
+                padding=1,
+                norm=nn.BatchNorm2d,
+                act=nn.ReLU,
+            ),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
+        )
+
+    def _create_up_block(
+        self,
+        in_channels,
+        out_channels,
+        level_idx: int,
+        skip_channels: int = 0,
+        mode: str = "bilinear",
+    ):
+        """Create an upsampling block.
+
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            level_idx: Index of the encoder level for per-level parameters (decoder uses
+                symmetric/reversed parameters from encoder).
+            skip_channels: Number of channels from skip connection (used for conditional blocks).
+            mode: Mode of the upsampling.
+                Can be 'nearest' or 'bilinear'.
+                Bilinear is more expensive but better for image reconstruction.
+                Nearest is faster but less accurate.
+        """
+        if self.use_conditional_blocks:
+            # For conditional blocks, input includes concatenated skip connection
+            block_in_channels = in_channels + skip_channels
+            return blocks.ConditionalConvBlock(
+                in_channels=block_in_channels,
+                out_channels=out_channels,
+                time_embed_dim=self.time_embed_dim,
+                cond_embed_dim=self.cond_embed_dim,
+                num_groups=self.num_groups_list[level_idx],
+                dropout=self.dropout,
+                use_cross_attn=self.use_cross_attn_list[level_idx],
+                cross_attn_num_heads=self.cross_attn_num_heads_list[level_idx],
+                upsample=True,
+            )
+        return nn.Sequential(
+            blocks.UpsampleNormAct(
+                scale_factor=2.0,
+                mode=mode,
+                align_corners=True,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=3,
+                padding=1,
+                norm=nn.BatchNorm2d,
+                act=nn.ReLU,
             ),
             blocks.ConvBlock(
                 in_channels=in_channels,
@@ -206,14 +396,36 @@ class UNet(nn.Module):
             ),
         )
 
-    def forward(self, x):
-        """Forward pass of the U-Net model."""
+    def forward(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor | None = None,
+        aux_features: torch.Tensor | None = None,
+    ):
+        """Forward pass of the U-Net model.
+
+        Args:
+            x: Input tensor of shape (batch, channels, height, width).
+            t: Time embedding tensor of shape (batch, time_embed_dim).
+                Required if use_conditional_blocks=True.
+            aux_features: Condition embedding tensor of shape (batch, seq_len, cond_embed_dim).
+                Required if use_conditional_blocks=True.
+        """
+        if self.use_conditional_blocks:
+            if t is None or aux_features is None:
+                raise ValueError("t and aux_features are required when use_conditional_blocks=True")
+            return self._forward_conditional(x, t, aux_features)
+        return self._forward_standard(x)
+
+    def _forward_standard(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass for standard (non-conditional) U-Net."""
         skip_x = {}
         for idx, down in enumerate(self.encoder):
-            x = self._run_module(down[0], x, idx, "encoder")
+            # Save skip BEFORE downsampling to match decoder's upsampled resolution
             if str(idx) in self.skip_connections:
                 skip_x[idx] = self.skip_connections[str(idx)](x)
-            x = down[1](x)  # Downsampling conv - not checkpointed (small operation)
+            x = self._run_module(down[0], x, idx, "encoder")
+            x = down[1](x)  # Conv - not checkpointed (small operation)
 
         x = self._run_module(self.bottleneck, x, 0, "bottleneck")
 
@@ -228,6 +440,53 @@ class UNet(nn.Module):
 
         return self.output_conv(x)
 
+    def _forward_conditional(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        aux_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward pass for conditional U-Net with ConditionalConvBlocks.
+
+        For conditional mode, skip connections are saved AFTER encoder blocks
+        (at lower resolution) because ConditionalConvBlock does downsampling
+        at the end. Decoder concatenates with skip before processing.
+        """
+        skip_x = {}
+        for idx, down in enumerate(self.encoder):
+            if self._should_checkpoint(idx, "encoder"):
+                x = checkpoint(
+                    down, x, t, aux_features, use_reentrant=self.checkpoint_use_reentrant
+                )
+            else:
+                x = down(x, t, aux_features)
+            # Save skip AFTER the block (at lower resolution) for conditional mode
+            if str(idx) in self.skip_connections:
+                skip_x[idx] = self.skip_connections[str(idx)](x)
+
+        if self._should_checkpoint(0, "bottleneck"):
+            x = checkpoint(
+                self.bottleneck,
+                x,
+                t,
+                aux_features,
+                use_reentrant=self.checkpoint_use_reentrant,
+            )
+        else:
+            x = self.bottleneck(x, t, aux_features)
+
+        for idx, up in enumerate(self.decoder):
+            skip_idx = len(self.decoder) - idx - 1
+            # Concat with skip at same resolution, then up block upsamples at end
+            if str(skip_idx) in self.skip_connections:
+                x = torch.cat((x, skip_x[skip_idx]), dim=1)
+            if self._should_checkpoint(idx, "decoder"):
+                x = checkpoint(up, x, t, aux_features, use_reentrant=self.checkpoint_use_reentrant)
+            else:
+                x = up(x, t, aux_features)
+
+        return self.output_conv(x)
+
 
 if __name__ == "__main__":
     # No skip first connection
@@ -235,11 +494,48 @@ if __name__ == "__main__":
     model.to("cuda")
     input_x = torch.randn((2, 3, 256, 256)).to("cuda")
     output = model(input_x)
-    print(output.shape)
+    print(f"Standard UNet output shape: {output.shape}")
 
     # Skip first connection
     model = UNet(in_channels=3, out_channels=5, skip_first_connection=True)
     model.to("cuda")
     input_x = torch.randn((2, 3, 256, 256)).to("cuda")
     output = model(input_x)
-    print(output.shape)
+    print(f"Standard UNet (skip first) output shape: {output.shape}")
+
+    # Conditional UNet with single values for params
+    model = UNet(
+        in_channels=3,
+        out_channels=5,
+        use_conditional_blocks=True,
+        time_embed_dim=128,
+        cond_embed_dim=128,
+        num_groups=32,
+        use_cross_attn=True,
+        cross_attn_num_heads=8,
+    )
+    model.to("cuda")
+    input_x = torch.randn((2, 3, 256, 256)).to("cuda")
+    input_t = torch.randn((2, 128)).to("cuda")
+    input_aux_features = torch.randn((2, 256, 128)).to("cuda")
+    output = model(input_x, input_t, input_aux_features)
+    print(f"Conditional UNet output shape: {output.shape}")
+
+    # Conditional UNet with per-level customization
+    model = UNet(
+        in_channels=3,
+        out_channels=5,
+        channels=[64, 128, 256, 512, 1024],
+        use_conditional_blocks=True,
+        time_embed_dim=128,
+        cond_embed_dim=128,
+        num_groups=[1, 32, 32, 32],  # Different num_groups per level
+        use_cross_attn=[False, True, True, True],  # No cross-attn in first level
+        cross_attn_num_heads=[4, 8, 8, 8],  # Different heads per level
+    )
+    model.to("cuda")
+    input_x = torch.randn((2, 3, 256, 256)).to("cuda")
+    input_t = torch.randn((2, 128)).to("cuda")
+    input_aux_features = torch.randn((2, 256, 128)).to("cuda")
+    output = model(input_x, input_t, input_aux_features)
+    print(f"Conditional UNet (per-level config) output shape: {output.shape}")
