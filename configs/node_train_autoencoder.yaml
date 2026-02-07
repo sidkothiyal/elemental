@@ -106,7 +106,7 @@ execution_graph:
           # batch = batch.to(config.device)
           - _target_: nodes.executor.ExecuteFunction
             name: ToDevice
-            function: data.utils.move_to_device
+            function: data_processor.utils.move_to_device
             args: [node:batch, node:config.device]
             inputs: [node:batch, node:config]
             outputs: [batch_on_device]

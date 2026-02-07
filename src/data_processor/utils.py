@@ -1,4 +1,5 @@
-# Utility functions for data handling.
+"""Utility functions for data handling."""
+
 from typing import Any
 
 import torch

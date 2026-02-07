@@ -1,3 +1,5 @@
+"""Tiny Shakespeare dataset processor."""
+
 import pathlib
 
 import dill
@@ -18,21 +20,21 @@ if __name__ == "__main__":
     data_dir = pathlib.Path("data/tiny_shakespeare/data.txt")
 
     with open(data_dir, "r", encoding="utf-8") as f:
-        text = f.read()
+        text_data = f.read()
 
-    print(len(text))
-    print(text[:1000])
+    print(len(text_data))
+    print(text_data[:1000])
 
-    chars, vocab_size = get_vocab(text)
-    stoi = {ch: i for i, ch in enumerate(chars)}
-    itos = {i: ch for i, ch in enumerate(chars)}
+    text_chars, text_vocab_size = get_vocab(text_data)
+    stoi = dict(enumerate(text_chars))
+    itos = dict(enumerate(text_chars))
     encode = lambda string: [stoi[character] for character in string]
     decode = lambda letters: "".join([itos[letter.item()] for letter in letters])
 
     print(encode("hello there"))
     print(decode(encode("hello there")))
 
-    data = torch.tensor(encode(text), dtype=torch.long)
+    data = torch.tensor(encode(text_data), dtype=torch.long)
     print(data.shape, data.dtype)
     print(data[:100])
 
@@ -44,7 +46,7 @@ if __name__ == "__main__":
 
     # save the data
     with lz4.open("data/tiny_shakespeare/train_data.pkl.lz4", "wb") as f:
-        dill.dump((chars, stoi, itos, train_data), f)
+        dill.dump((text_chars, stoi, itos, train_data), f)
 
     with lz4.open("data/tiny_shakespeare/val_data.pkl.lz4", "wb") as f:
-        dill.dump((chars, stoi, itos, val_data), f)
+        dill.dump((text_chars, stoi, itos, val_data), f)

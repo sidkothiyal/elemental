@@ -1,0 +1,24 @@
+datasets:
+  cityscapes:
+    download_method: kaggle
+    kaggle_slug: sakshaymahna/cityscapes-depth-and-segmentation
+    post_download: reorganize_cityscapes
+
+  div2k:
+    download_method: kaggle
+    kaggle_slug: soumikrakshit/div2k-high-resolution-images
+    post_download: reorganize_div2k
+
+  # tiny_imagenet:
+  #   download_method: kaggle
+  #   kaggle_slug: akash2sharma/tiny-imagenet
+
+  # tiny_shakespeare:
+  #   download_method: url
+  #   url: https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+  #   filename: data.txt
+
+  # wikitext:
+  #   download_method: url
+  #   url: https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip
+  #   extract: true

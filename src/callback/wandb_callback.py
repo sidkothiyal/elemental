@@ -9,7 +9,7 @@ import wandb
 from torch.nn import functional as F
 
 from callback import callback
-from data.tokenizer import Tokenizer
+from data_processor.tokenizer import Tokenizer
 from utils import torch_np_utils
 
 # from transformers import AutoTokenizer
@@ -93,9 +93,7 @@ class WandbCallback(callback.Callback):
         """Update the config of the callback."""
         self._wandb_logger.config.update(*args, **kwargs)
 
-    def filter_label(
-        self, label: torch.Tensor | dict[str, torch.Tensor]
-    ) -> torch.Tensor | None:
+    def filter_label(self, label: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor | None:
         """Filter the label.
 
         Args:
