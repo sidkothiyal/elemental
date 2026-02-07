@@ -12,12 +12,11 @@ dependencies = [
   "black (>=25.1.0, <26.0.0)",
   "dill",
   "datasets",
-  "hydra-core",
-  "kaggle",
   "einops",
   "flash-attn; sys_platform == 'linux'",
   "fire (>=0.6.0, <1.0.0)",
   "hydra-core",
+  "kaggle",
   "lz4",
   "matplotlib (>=3.10.0, <4.0.0)", # Unused
   "mmcv",
@@ -27,11 +26,13 @@ dependencies = [
   "onnxscript (>=0.2, <0.3)", # Unused
   "osmnx (>=2.0.1, <3.0.0)", # Unused
   "pre-commit",
-  "pyyaml (>=6.0.2, <7.0.0)",
   "pytest",
   "pytorch-msssim",
-  "pyyaml (>=6.0.2, <7.0.0)", # Unused
+  "pyyaml (>=6.0.2, <7.0.0)",
   "scikit-learn (>=1.6.1, <2.0.0)", # Unused
+  "tensorflow[and-cuda]",
+  "tensorflow-datasets",
+  "tfrecord",
   "torch (>=2.9)",
   "torchmetrics (>=1.0.0, <2.0.0)",
   "torchvision",
