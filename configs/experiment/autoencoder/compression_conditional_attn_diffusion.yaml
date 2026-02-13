@@ -35,7 +35,12 @@ dataloader:
         root_dir: data/div2k/train
         target_shape: ${target_shape}
       noise_schedule: "cosine"  # Better SNR distribution than linear
-      timestep_bias: "high"
+      timestep_bias: "loss_aware"  # Sample timesteps proportional to per-timestep loss
+      timestep_loss:
+        _target_: torch.nn.L1Loss
+        reduction: "none"
+      loss_ema_decay: 0.99  # EMA smoothing for loss history
+      loss_aware_warmup: 500  # Uniform sampling for first N update calls
       prediction_type: "x0"
     batch_size: ${batch_size}
     shuffle: true
@@ -115,7 +120,7 @@ model:
   denoising_delta: 0.001
   # Debug settings
   debug_dir: debug/compression_conditional_attn_diffusion/
-  debug_mode: true
+  debug_mode: false
   debug_save_interval: 10  # Save every 10 timesteps to avoid filling disk
   conditional_model:
     _target_: torch.nn.Sequential

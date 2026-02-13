@@ -6,6 +6,7 @@ It handles the training loop, validation, testing, and model checkpointing.
 """
 
 import collections
+import inspect
 import logging
 import os
 import statistics
@@ -31,26 +32,67 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def collect_module_losses(model: nn.Module) -> dict[str, torch.Tensor]:
-    """Recursively collect losses from all submodules that have a 'losses' attribute.
+def collect_module_losses(
+    model: nn.Module,
+    dataset: object | None = None,
+    pred: torch.Tensor | None = None,
+    target: torch.Tensor | None = None,
+    model_input_args: dict[str, torch.Tensor] | None = None,
+) -> dict[str, torch.Tensor]:
+    """Trigger compute_losses hooks and collect losses from model submodules and dataset.
+
+    For each object (model submodules + dataset), this function:
+    1. Calls ``compute_losses()`` if present, passing whichever of ``pred``, ``target``,
+       and ``model_input_args`` values match its signature via introspection.
+    2. Collects entries from the ``losses`` dict attribute, if present.
 
     This allows nested modules (e.g., VQVAE inside PatcherUnpatcher) to contribute
-    their custom losses to the training loop.
+    their custom losses to the training loop, and allows datasets (e.g., DiffusionDataset)
+    to update internal state such as per-timestep loss histories.
 
     Args:
         model: The root model to collect losses from.
+        dataset: Optional dataset object (e.g., dataloader.dataset). If it exposes
+                ``compute_losses`` or ``losses``, they will be handled.
+        pred: Model predictions tensor, passed to ``compute_losses`` if in its signature.
+        target: Target tensor, passed to ``compute_losses`` if in its signature.
+        model_input_args: Dict of extra batch tensors (e.g. ``{"t": ..., "cond": ...}``).
+                         Values whose keys match ``compute_losses`` parameter names are passed.
 
     Returns:
         Dictionary mapping loss names to loss tensors. Names are prefixed with
         the module path to avoid collisions (e.g., "model/dictionary_loss").
     """
     all_losses = {}
-    for name, module in model.named_modules():
-        if hasattr(module, "losses") and module.losses:
-            for loss_name, loss_value in module.losses.items():
-                # Prefix with module path to avoid name collisions
+
+    # Build the pool of available kwargs for compute_losses calls
+    available_kwargs: dict[str, torch.Tensor] = {}
+    if pred is not None:
+        available_kwargs["pred"] = pred
+    if target is not None:
+        available_kwargs["target"] = target
+    if model_input_args:
+        available_kwargs.update(model_input_args)
+
+    # Collect all objects to inspect: model submodules + dataset
+    objects_to_check: list[tuple[str, object]] = list(model.named_modules())
+    if dataset is not None:
+        objects_to_check.append(("dataset", dataset))
+
+    for name, obj in objects_to_check:
+        # 1. Call compute_losses if available — triggers side-effects like loss
+        #    history updates in datasets, or populates a losses dict on modules.
+        if hasattr(obj, "compute_losses") and available_kwargs:
+            sig = inspect.signature(obj.compute_losses)
+            matched_kwargs = {k: v for k, v in available_kwargs.items() if k in sig.parameters}
+            obj.compute_losses(**matched_kwargs)
+
+        # 2. Collect losses from the 'losses' dict attribute
+        if hasattr(obj, "losses") and obj.losses:
+            for loss_name, loss_value in obj.losses.items():
                 full_name = f"{name}/{loss_name}" if name else loss_name
                 all_losses[full_name] = loss_value
+
     return all_losses
 
 
@@ -401,9 +443,16 @@ def batch_loop(
             # Call loss with epoch support for phased losses
             batch_loss = call_loss_with_epoch(loss, pred, batch["target"], epoch, **loss_args)
 
-            # Collect losses from all submodules (handles nested modules like VQVAE
-            # in PatcherUnpatcher)
-            module_losses = collect_module_losses(model)
+            # Collect losses from all submodules and trigger compute_losses hooks
+            # (handles nested module losses like VQVAE in PatcherUnpatcher, and
+            # dataset-side hooks like loss-aware timestep sampling in DiffusionDataset)
+            module_losses = collect_module_losses(
+                model,
+                dataset=dataloader.dataset if phase == "train" else None,
+                pred=pred,
+                target=batch["target"],
+                model_input_args=model_input_args,
+            )
             for key, value in module_losses.items():
                 running_loss[key] += value.detach().item()
                 batch_loss += value

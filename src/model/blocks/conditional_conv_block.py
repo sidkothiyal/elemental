@@ -212,6 +212,7 @@ class ConditionalConvStage(nn.Module):
         cross_attn_num_heads: list[int] | int = 8,
         downsample: list[bool] | bool = False,
         upsample: list[bool] | bool = False,
+        cond_level_mapping: dict[int, str] | None = None,
     ):
         """Conditional Convolutional Stage.
 
@@ -227,9 +228,15 @@ class ConditionalConvStage(nn.Module):
             cross_attn_num_heads: Number of heads in the cross-attention.
             downsample: List of booleans indicating whether to downsample the input.
             upsample: List of booleans indicating whether to upsample the input.
+            cond_level_mapping: Optional mapping from block index to condition key.
+                If provided, cond_embed should be a dict with keys matching the mapping values.
+                Block indices: 0 to len(channels)-1 for each block in the stage.
+                Example: {0: "low_level", 1: "high_level"} means
+                block 0 uses cond_embed["low_level"], block 1 uses cond_embed["high_level"].
         """
         super().__init__()
         self.block = nn.ModuleList()
+        self.cond_level_mapping = cond_level_mapping or {}
         block_in_channels = in_channels
         num_blocks = len(channels)
 
@@ -289,16 +296,48 @@ class ConditionalConvStage(nn.Module):
             )
         return param
 
-    def forward(self, x, time_embed, cond_embed):
+    def forward(
+        self,
+        x: torch.Tensor,
+        time_embed: torch.Tensor,
+        cond_embed: torch.Tensor | dict[str, torch.Tensor],
+    ):
         """Forward pass of the Conditional Convolutional Stage.
 
         Args:
             x: Input tensor of shape (batch, channels, height, width).
             time_embed: Time embedding tensor of shape (batch, time_embed_dim).
-            cond_embed: Condition embedding tensor of shape (batch, cond_embed_dim).
+            cond_embed: Condition embedding(s). Can be:
+                - torch.Tensor of shape (batch, seq_len, cond_embed_dim) for single condition
+                - dict[str, torch.Tensor] with condition keys when cond_level_mapping is provided
         """
-        for block in self.block:
-            x = block(x, time_embed, cond_embed)
+
+        # Helper function to get the right condition for a block
+        def get_cond_for_block(block_idx: int) -> torch.Tensor:
+            if isinstance(cond_embed, dict):
+                if block_idx in self.cond_level_mapping:
+                    cond_key = self.cond_level_mapping[block_idx]
+                    if cond_key not in cond_embed:
+                        raise KeyError(
+                            f"Condition key '{cond_key}' not found in cond_embed. "
+                            f"Available keys: {list(cond_embed.keys())}"
+                        )
+                    return cond_embed[cond_key]
+                # If no mapping for this block, use the first available condition
+                # or raise an error if dict is provided but mapping is incomplete
+                if self.cond_level_mapping:
+                    raise KeyError(
+                        f"No condition mapping found for block {block_idx}. "
+                        f"Available mappings: {self.cond_level_mapping}"
+                    )
+                # Fallback: use first value in dict
+                return next(iter(cond_embed.values()))
+            # Single tensor case
+            return cond_embed
+
+        for idx, block in enumerate(self.block):
+            cond = get_cond_for_block(idx)
+            x = block(x, time_embed, cond)
 
         return x
 

@@ -188,16 +188,35 @@ class Router(nn.Module):
             # Default: pass backbone output as first positional or as 'x'
             head_kwargs = {"x": context.get(self.backbone_output_key)}
 
+        # Check if head is a Sequential module (or similar) that only accepts positional args
+        # Sequential modules don't accept keyword arguments
+        if isinstance(head, nn.Sequential):
+            # Sequential only accepts positional arguments
+            # If we have a single argument, pass it positionally
+            if len(head_kwargs) == 1:
+                return head(next(iter(head_kwargs.values())))
+
+            raise ValueError(
+                f"Sequential head '{head_name}' received {len(head_kwargs)} arguments "
+                f"but Sequential only accepts a single positional argument. "
+                f"Received: {list(head_kwargs.keys())}"
+            )
+
+        # For other modules, try keyword arguments
         return head(**head_kwargs)
 
     def forward(
         self,
+        *args: Any,
         heads_to_run: list[str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Forward pass through backbone and selected heads.
 
         Args:
+            *args: Optional positional arguments. If a single argument is provided
+                and no kwargs are given, it will be treated as the main input and stored
+                under the key specified in rename_backbone_input (if available) or "x".
             heads_to_run: List of head names to run. If None, runs all heads.
             **kwargs: Input arguments that form the initial context.
 
@@ -206,6 +225,33 @@ class Router(nn.Module):
         """
         outputs: dict[str, Any] = {}
         context = dict(kwargs)  # Mutable copy of inputs
+
+        # Handle positional arguments: if a single positional arg is provided and no kwargs,
+        # treat it as the main input
+        if args and not kwargs:
+            if len(args) == 1:
+                # Single positional argument - determine the key to use
+                if self.rename_backbone_input:
+                    # Use the value (context key) from the first mapping entry
+                    # This is the key that the backbone expects to receive
+                    first_context_key = next(iter(self.rename_backbone_input.values()))
+                    context[first_context_key] = args[0]
+                else:
+                    # Default to "x" if no renaming is configured
+                    context["x"] = args[0]
+            else:
+                # Multiple positional args - this is an error
+                raise ValueError(
+                    f"Router received {len(args)} positional arguments but expects "
+                    f"either keyword arguments or a single positional argument. "
+                    f"Received: {args}"
+                )
+        elif args and kwargs:
+            # Both args and kwargs provided - this is ambiguous
+            raise ValueError(
+                "Router received both positional and keyword arguments. "
+                "Please use either positional OR keyword arguments, not both."
+            )
 
         # Run backbone
         _, context, backbone_outputs = self.forward_backbone(context)

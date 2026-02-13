@@ -48,6 +48,7 @@ class UNet(nn.Module):
         dropout: float = 0.1,
         use_cross_attn: bool | list[bool] = True,
         cross_attn_num_heads: int | list[int] = 8,
+        cond_level_mapping: dict[int, str] | None = None,
     ):
         """Initialize the U-Net model.
 
@@ -74,6 +75,12 @@ class UNet(nn.Module):
                 customization.
             cross_attn_num_heads: Number of heads for cross-attention. Can be a single int or
                 a list with length equal to len(channels)-1 for per-level customization.
+            cond_level_mapping: Optional mapping from block index to condition key.
+                If provided, aux_features should be a dict with keys matching the mapping values.
+                Block indices: 0 to num_encoder_blocks-1 for encoder, num_encoder_blocks for
+                bottleneck. Example: {0: "low_level", 1: "low_level", 2: "high_level"} means
+                encoder blocks 0 and 1 use aux_features["low_level"], bottleneck uses
+                aux_features["high_level"].
         """
         super().__init__()
         if channels is None or len(channels) == 0:
@@ -96,6 +103,7 @@ class UNet(nn.Module):
         self.time_embed_dim = time_embed_dim
         self.cond_embed_dim = cond_embed_dim
         self.dropout = dropout
+        self.cond_level_mapping = cond_level_mapping or {}
 
         # Setup per-level conditional block parameters
         self._setup_conditional_params(num_groups, use_cross_attn, cross_attn_num_heads)
@@ -400,7 +408,7 @@ class UNet(nn.Module):
         self,
         x: torch.Tensor,
         t: torch.Tensor | None = None,
-        aux_features: torch.Tensor | None = None,
+        aux_features: torch.Tensor | dict[str, torch.Tensor] | None = None,
     ):
         """Forward pass of the U-Net model.
 
@@ -408,7 +416,9 @@ class UNet(nn.Module):
             x: Input tensor of shape (batch, channels, height, width).
             t: Time embedding tensor of shape (batch, time_embed_dim).
                 Required if use_conditional_blocks=True.
-            aux_features: Condition embedding tensor of shape (batch, seq_len, cond_embed_dim).
+            aux_features: Condition embedding tensor(s). Can be:
+                - torch.Tensor of shape (batch, seq_len, cond_embed_dim) for single condition
+                - dict[str, torch.Tensor] with condition keys when cond_level_mapping is provided
                 Required if use_conditional_blocks=True.
         """
         if self.use_conditional_blocks:
@@ -444,46 +454,80 @@ class UNet(nn.Module):
         self,
         x: torch.Tensor,
         t: torch.Tensor,
-        aux_features: torch.Tensor,
+        aux_features: torch.Tensor | dict[str, torch.Tensor],
     ) -> torch.Tensor:
         """Forward pass for conditional U-Net with ConditionalConvBlocks.
 
         For conditional mode, skip connections are saved AFTER encoder blocks
         (at lower resolution) because ConditionalConvBlock does downsampling
         at the end. Decoder concatenates with skip before processing.
+
+        Args:
+            x: Input tensor.
+            t: Time embedding tensor.
+            aux_features: Condition embedding(s). Can be a single tensor or a dict
+                mapping condition keys to tensors (when cond_level_mapping is used).
         """
+
+        # Helper function to get the right condition for a block
+        def get_cond_for_block(block_idx: int) -> torch.Tensor:
+            if isinstance(aux_features, dict):
+                if block_idx in self.cond_level_mapping:
+                    cond_key = self.cond_level_mapping[block_idx]
+                    if cond_key not in aux_features:
+                        raise KeyError(
+                            f"Condition key '{cond_key}' not found in aux_features. "
+                            f"Available keys: {list(aux_features.keys())}"
+                        )
+                    return aux_features[cond_key]
+                # If no mapping for this block, use the first available condition
+                # or raise an error if dict is provided but mapping is incomplete
+                if self.cond_level_mapping:
+                    raise KeyError(
+                        f"No condition mapping found for block {block_idx}. "
+                        f"Available mappings: {self.cond_level_mapping}"
+                    )
+                # Fallback: use first value in dict
+                return next(iter(aux_features.values()))
+            # Single tensor case
+            return aux_features
+
         skip_x = {}
         for idx, down in enumerate(self.encoder):
+            cond = get_cond_for_block(idx)
             if self._should_checkpoint(idx, "encoder"):
-                x = checkpoint(
-                    down, x, t, aux_features, use_reentrant=self.checkpoint_use_reentrant
-                )
+                x = checkpoint(down, x, t, cond, use_reentrant=self.checkpoint_use_reentrant)
             else:
-                x = down(x, t, aux_features)
+                x = down(x, t, cond)
             # Save skip AFTER the block (at lower resolution) for conditional mode
             if str(idx) in self.skip_connections:
                 skip_x[idx] = self.skip_connections[str(idx)](x)
 
+        # Bottleneck uses the last encoder block's condition (or highest level)
+        bottleneck_idx = self.num_encoder_blocks
+        cond = get_cond_for_block(bottleneck_idx)
         if self._should_checkpoint(0, "bottleneck"):
             x = checkpoint(
                 self.bottleneck,
                 x,
                 t,
-                aux_features,
+                cond,
                 use_reentrant=self.checkpoint_use_reentrant,
             )
         else:
-            x = self.bottleneck(x, t, aux_features)
+            x = self.bottleneck(x, t, cond)
 
         for idx, up in enumerate(self.decoder):
             skip_idx = len(self.decoder) - idx - 1
             # Concat with skip at same resolution, then up block upsamples at end
             if str(skip_idx) in self.skip_connections:
                 x = torch.cat((x, skip_x[skip_idx]), dim=1)
+            # Decoder uses the same condition as the corresponding encoder block
+            cond = get_cond_for_block(skip_idx)
             if self._should_checkpoint(idx, "decoder"):
-                x = checkpoint(up, x, t, aux_features, use_reentrant=self.checkpoint_use_reentrant)
+                x = checkpoint(up, x, t, cond, use_reentrant=self.checkpoint_use_reentrant)
             else:
-                x = up(x, t, aux_features)
+                x = up(x, t, cond)
 
         return self.output_conv(x)
 

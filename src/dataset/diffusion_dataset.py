@@ -1,7 +1,12 @@
 """Diffusion dataset that generates noisy images on-the-fly."""
 
+import logging
+
 import torch
+from torch import nn
 from torch.utils import data
+
+logger = logging.getLogger(__name__)
 
 
 class DiffusionDataset(data.Dataset):
@@ -22,6 +27,9 @@ class DiffusionDataset(data.Dataset):
         prediction_type: str = "epsilon",
         min_timestep: int = 0,
         timestep_bias: str = "none",
+        timestep_loss: nn.Module | None = None,
+        loss_ema_decay: float = 0.99,
+        loss_aware_warmup: int = 1000,
     ):
         """DiffusionDataset constructor.
 
@@ -39,6 +47,19 @@ class DiffusionDataset(data.Dataset):
                           - "none": Uniform sampling (default)
                           - "high": Bias toward high (noisy) timesteps using sqrt distribution
                           - "low": Bias toward low (clean) timesteps
+                          - "loss_aware": Sample proportional to per-timestep loss history.
+                            The training loop calls compute_losses() automatically via
+                            collect_module_losses() to keep the history updated.
+            timestep_loss: Loss function used to compute per-timestep losses for loss-aware
+                          sampling. Must use reduction="none" so per-sample losses can be
+                          obtained. Only used when timestep_bias="loss_aware".
+                          Defaults to nn.L1Loss(reduction="none") if not provided.
+            loss_ema_decay: EMA decay factor for smoothing per-timestep loss history.
+                           Only used when timestep_bias="loss_aware". Higher values (e.g. 0.99)
+                           give smoother, more stable estimates. Default: 0.99.
+            loss_aware_warmup: Number of compute_losses() calls before switching from uniform
+                              sampling to loss-aware sampling. Ensures enough loss data is
+                              collected before biasing. Default: 1000.
         """
         self.dataset = dataset
         self.num_timesteps = num_timesteps
@@ -46,6 +67,18 @@ class DiffusionDataset(data.Dataset):
         self.prediction_type = prediction_type
         self.min_timestep = min_timestep
         self.timestep_bias = timestep_bias
+
+        # Loss-aware sampling state
+        # Uses share_memory_() so DataLoader worker processes can read values
+        # that the main training process writes via compute_losses()
+        if timestep_bias == "loss_aware":
+            self._timestep_loss = timestep_loss or nn.L1Loss(reduction="none")
+            self._loss_ema_decay = loss_ema_decay
+            self._loss_aware_warmup = loss_aware_warmup
+            # Initialize with uniform weights (ones) so warmup period uses uniform sampling
+            self._loss_history = torch.ones(num_timesteps).share_memory_()
+            # Track total update calls to know when warmup is complete
+            self._total_updates = torch.zeros(1, dtype=torch.long).share_memory_()
 
         # Generate noise schedule on CPU as ideally DataLoader workers should not use GPU
         # This prevents OOM when multiple workers try to allocate GPU memory
@@ -80,6 +113,41 @@ class DiffusionDataset(data.Dataset):
         betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
         return torch.clip(betas, 0.0001, 0.9999)
 
+    def compute_losses(self, pred: torch.Tensor, target: torch.Tensor, t: torch.Tensor) -> None:
+        """Compute per-timestep losses and update loss history for loss-aware sampling.
+
+        Called automatically by collect_module_losses() in the training loop.
+        Uses the configured timestep_loss function to compute per-sample losses,
+        then updates the EMA loss history per timestep.
+
+        Args:
+            pred: Model predictions, shape (B, ...).
+            target: Target values, shape (B, ...).
+            t: Timestep for each sample in the batch, shape (B,).
+        """
+        if self.timestep_bias != "loss_aware":
+            return
+
+        with torch.no_grad():
+            per_sample_loss = self._timestep_loss(pred.float(), target.float())
+            # Average over non-batch dims to get a single loss value per sample
+            if per_sample_loss.dim() > 1:
+                per_sample_loss = per_sample_loss.mean(dim=list(range(1, per_sample_loss.dim())))
+            self._update_losses(timesteps=t, losses=per_sample_loss)
+
+    def _update_losses(self, timesteps: torch.Tensor, losses: torch.Tensor) -> None:
+        """Update per-timestep loss history with EMA smoothing.
+
+        Args:
+            timesteps: Tensor of shape (B,) with the timestep for each sample.
+            losses: Tensor of shape (B,) with the per-sample loss values.
+        """
+        alpha = self._loss_ema_decay
+        for t_val, l_val in zip(timesteps.detach().cpu(), losses.detach().cpu()):
+            t_idx = int(t_val.item())
+            self._loss_history[t_idx] = alpha * self._loss_history[t_idx] + (1 - alpha) * l_val
+        self._total_updates[0] += 1
+
     def _sample_timestep(self) -> torch.Tensor:
         """Sample a timestep based on the bias strategy.
 
@@ -105,6 +173,18 @@ class DiffusionDataset(data.Dataset):
             t = self.min_timestep + int((1 - torch.sqrt(1 - u)) * t_range)
             t = min(t, self.num_timesteps - 1)
             t = torch.tensor(t)
+        elif self.timestep_bias == "loss_aware":
+            total = self._total_updates[0].item()
+            if total < self._loss_aware_warmup:
+                # Warmup phase: uniform sampling until enough loss data is collected
+                t = torch.randint(self.min_timestep, self.num_timesteps, (1,)).squeeze()
+            else:
+                # Sample proportional to per-timestep loss values
+                probs = self._loss_history[self.min_timestep : self.num_timesteps].clone()
+                # Clamp to avoid zero/negative probabilities
+                probs = torch.clamp(probs, min=1e-8)
+                probs = probs / probs.sum()
+                t = torch.multinomial(probs, 1).squeeze() + self.min_timestep
         else:
             raise ValueError(f"Unknown timestep_bias: {self.timestep_bias}")
 
