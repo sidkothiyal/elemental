@@ -30,11 +30,12 @@ __pycache__/
 # OS
 .DS_Store
 
-# Environment
-*.lock
-
 # Package
 src/elemental.egg-info/
 
 # Wandb
 wandb/
+
+# Run script artifacts
+.deps_hash
+.heavy-deps-hash

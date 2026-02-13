@@ -1,0 +1,6 @@
+# Only send pyproject.toml and uv.lock to the Docker build context.
+# Everything else is volume-mounted at runtime.
+*
+!pyproject.toml
+!uv.lock
+!.heavy-deps-hash
