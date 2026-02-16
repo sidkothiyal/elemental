@@ -2,12 +2,17 @@
 
 import logging
 import os
+import re
 from typing import Any
 
 import torch
 from torch import nn
 
 logger = logging.getLogger(__name__)
+
+# Regex matching the datetime stamp appended by Hydra's ${now:} resolver
+# Expected format: _YYYY-MM-DD_HH-MM-SS (at the end of the experiment name)
+_DATETIME_SUFFIX_RE = re.compile(r"_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
 
 
 def add_state_to_checkpoint(checkpoint: dict[str, Any], obj: Any, obj_type: str) -> None:
@@ -120,6 +125,8 @@ def save_checkpoint(
 
     # Save to disk
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
     torch.save(checkpoint, checkpoint_path)
     logger.info("Saved checkpoint: %s", checkpoint_path)
 
@@ -181,3 +188,139 @@ def load_checkpoint(
         "epoch": checkpoint.get("epoch"),
         "step": checkpoint.get("step"),
     }
+
+
+def _find_latest_numbered_checkpoint(run_dir: str, prefix: str) -> str | None:
+    """Find the checkpoint file with the highest number for a given prefix.
+
+    Looks for files matching ``<prefix>-<number>.pt`` (e.g. ``checkpoint-step-1234.pt``
+    or ``checkpoint-epoch-500.pt``) and returns the one with the largest number.
+
+    Args:
+        run_dir: Directory to search in.
+        prefix: Filename prefix before the number (e.g. ``"checkpoint-step"``).
+
+    Returns:
+        Absolute path to the latest numbered checkpoint, or ``None`` if none found.
+    """
+    pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)\.pt$")
+    best_num = -1
+    best_path: str | None = None
+
+    for entry in os.listdir(run_dir):
+        match = pattern.match(entry)
+        if match is None:
+            continue
+        path = os.path.join(run_dir, entry)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            continue
+        num = int(match.group(1))
+        if num > best_num:
+            best_num = num
+            best_path = path
+
+    return best_path
+
+
+def find_latest_checkpoint(
+    results_dir: str,
+    experiment_name: str,
+    checkpoint_preference: list[str] | None = None,
+) -> str:
+    """Find the latest checkpoint from previous runs of the same experiment.
+
+    Scans ``results_dir`` for run directories whose name matches the experiment
+    base name (i.e. ``experiment_name`` with the ``_YYYY-MM-DD_HH-MM-SS`` datetime
+    suffix stripped).  Among matching directories that contain at least one
+    checkpoint file, the most recent one (by embedded datetime) is selected.
+
+    Within each run directory the selection order is:
+
+    1. Preferred checkpoint files (``checkpoint_preference``, default
+       ``["last.pt", "best.pt"]``).
+    2. Step-level checkpoints (``checkpoint-step-<N>.pt``) — the file with
+       the highest step number is chosen.
+    3. Epoch-level checkpoints (``checkpoint-epoch-<N>.pt``) — the file with
+       the highest epoch number is chosen.
+
+    Args:
+        results_dir: Root results directory (e.g. ``results/autoencoder/``).
+        experiment_name: Current experiment name **with** the datetime stamp
+            (e.g. ``compression_autoencoder_..._2026-02-16_15-08-57``).
+        checkpoint_preference: Ordered list of checkpoint filenames to look for
+            first. The first file found in a run directory is returned.
+            Defaults to ``["last.pt", "best.pt"]``.
+
+    Returns:
+        Absolute path to the resolved checkpoint file.
+
+    Raises:
+        FileNotFoundError: If no matching run directory with a valid checkpoint
+            is found.
+    """
+    if checkpoint_preference is None:
+        checkpoint_preference = ["last.pt", "best.pt"]
+
+    # Strip the datetime suffix to get the base experiment name
+    base_name = _DATETIME_SUFFIX_RE.sub("", experiment_name)
+    logger.info(
+        "Searching for latest checkpoint with base name '%s' in '%s'",
+        base_name,
+        results_dir,
+    )
+
+    if not os.path.isdir(results_dir):
+        raise FileNotFoundError(f"Results directory does not exist: {results_dir}")
+
+    # Collect all matching run directories with their datetime stamps
+    matching_runs: list[tuple[str, str]] = []  # (datetime_str, full_path)
+    for entry in os.listdir(results_dir):
+        entry_path = os.path.join(results_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        # Check if this directory's name starts with the base experiment name
+        # followed by a datetime suffix
+        match = _DATETIME_SUFFIX_RE.search(entry)
+        if match is None:
+            continue
+        entry_base = entry[: match.start()]
+        if entry_base != base_name:
+            continue
+        # Use the datetime string for sorting (lexicographic sort works for ISO-like dates)
+        datetime_str = match.group()  # e.g. _2026-02-07_00-59-21
+        matching_runs.append((datetime_str, entry_path))
+
+    if not matching_runs:
+        raise FileNotFoundError(
+            f"No run directories found matching base name '{base_name}' in '{results_dir}'"
+        )
+
+    # Sort descending by datetime (most recent first)
+    matching_runs.sort(key=lambda x: x[0], reverse=True)
+
+    # Find the first run directory that contains a valid checkpoint
+    for _datetime_str, run_dir in matching_runs:
+        # 1. Try preferred checkpoint files (e.g. last.pt, best.pt)
+        for ckpt_name in checkpoint_preference:
+            ckpt_path = os.path.join(run_dir, ckpt_name)
+            if os.path.isfile(ckpt_path) and os.path.getsize(ckpt_path) > 0:
+                logger.info("Found latest checkpoint: %s", ckpt_path)
+                return ckpt_path
+
+        # 2. Fallback: latest step checkpoint (checkpoint-step-<N>.pt)
+        step_ckpt = _find_latest_numbered_checkpoint(run_dir, "checkpoint-step")
+        if step_ckpt is not None:
+            logger.info("Found latest step checkpoint: %s", step_ckpt)
+            return step_ckpt
+
+        # 3. Fallback: latest epoch checkpoint (checkpoint-epoch-<N>.pt)
+        epoch_ckpt = _find_latest_numbered_checkpoint(run_dir, "checkpoint-epoch")
+        if epoch_ckpt is not None:
+            logger.info("Found latest epoch checkpoint: %s", epoch_ckpt)
+            return epoch_ckpt
+
+    raise FileNotFoundError(
+        f"No valid checkpoint files found in any of the {len(matching_runs)} "
+        f"matching run directories for '{base_name}' in '{results_dir}'. "
+        f"Looked for: {checkpoint_preference}, checkpoint-step-*.pt, checkpoint-epoch-*.pt"
+    )

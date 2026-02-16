@@ -693,6 +693,8 @@ def run_train(
             load_keys=load_keys,
             resume_training=resume_training,
             strict=strict,
+            results_dir=config.results_dir,
+            experiment_name=config.experiment_name,
         )
 
     # Update callback config with model details
@@ -775,13 +777,13 @@ def run_train(
 
             # Call on_epoch_end for training phase (was previously missing!)
             callbacks.on_epoch_end(epoch, config.num_epochs, "train")
+            callbacks.on_phase_end("train")
 
             # Validation phase (every 2 epochs by default)
             validation_interval = config.get("validation_interval", 2)
             if epoch % validation_interval == 0:
                 cleanup_memory(model, optim, device)
 
-                callbacks.on_phase_end("train")
                 callbacks.on_phase_start("val")
 
                 model.eval()

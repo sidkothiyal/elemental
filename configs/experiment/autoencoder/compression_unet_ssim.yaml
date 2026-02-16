@@ -33,4 +33,4 @@ dtype:
 # Override checkpoint callback to save every epoch
 callbacks:
   checkpoint:
-    save_every_n_epochs: 1
+    save_every_n_epochs: 10

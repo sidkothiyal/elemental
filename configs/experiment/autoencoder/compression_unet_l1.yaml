@@ -34,4 +34,4 @@ callbacks:
   wandb:
     logging_interval: 100
   checkpoint:
-    save_every_n_epochs: 1
+    save_every_n_epochs: 10

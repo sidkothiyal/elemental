@@ -158,11 +158,15 @@ def load_from_checkpoint(
     resume_training: bool = False,
     strict: bool = True,
     weights_only: bool | None = None,
+    results_dir: str | None = None,
+    experiment_name: str | None = None,
 ) -> dict[str, Any]:
     """Load model, optimizer, loss, and lr scheduler from checkpoint.
 
     Args:
-        checkpoint_path: Path to the checkpoint file.
+        checkpoint_path: Path to the checkpoint file, or the string ``"latest"``
+            to automatically resolve the most recent checkpoint from a previous
+            run of the same experiment.
         model: Model to load state into.
         optimizer: Optimizer to load state into (optional).
         scheduler: Scheduler to load state into (optional).
@@ -176,13 +180,31 @@ def load_from_checkpoint(
         weights_only: If True, only load tensor weights (safer, prevents arbitrary
             code execution). If None (default), automatically set to True when only
             loading model weights, False otherwise. Recommended True for inference/testing.
+        results_dir: Root results directory (e.g. ``results/autoencoder/``).
+            Required when ``checkpoint_path`` is ``"latest"``.
+        experiment_name: Current experiment name including the datetime stamp.
+            Required when ``checkpoint_path`` is ``"latest"``.
 
     Returns:
         Dictionary containing checkpoint metadata (epoch, step, etc.).
 
     Raises:
-        ValueError: If both load_keys and resume_training are provided.
+        ValueError: If both load_keys and resume_training are provided, or if
+            ``checkpoint_path`` is ``"latest"`` but ``results_dir`` or
+            ``experiment_name`` are not provided.
     """
+    # Resolve "latest" to the most recent run's checkpoint
+    if str(checkpoint_path).lower() == "latest":
+        if results_dir is None or experiment_name is None:
+            raise ValueError(
+                "Both 'results_dir' and 'experiment_name' must be provided "
+                "when checkpoint_path is 'latest'."
+            )
+        checkpoint_path = checkpoint.find_latest_checkpoint(
+            results_dir=results_dir,
+            experiment_name=experiment_name,
+        )
+        logger.info("Resolved 'latest' checkpoint to: %s", checkpoint_path)
     # Validate that only one parameter is provided
     if load_keys is not None and resume_training:
         raise ValueError("Cannot provide both 'load_keys' and 'resume_training'. Use only one.")

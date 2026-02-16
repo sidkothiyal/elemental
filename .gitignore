@@ -36,6 +36,9 @@ src/elemental.egg-info/
 # Wandb
 wandb/
 
+# Deploy logs
+deploy/logs/
+
 # Run script artifacts
 .deps_hash
 .heavy-deps-hash
