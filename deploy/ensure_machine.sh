@@ -7,6 +7,8 @@
 # and a provider is specified, attempts to restart it. If no IP is given,
 # creates or starts a machine via the provider.
 #
+# RunPod operations use the REST API (curl + jq) — no runpodctl needed.
+#
 # Expects (env):
 #   REMOTE_IP       (optional) — IP/hostname of existing machine
 #   REMOTE_PORT     (optional) — SSH port, default 22
@@ -15,6 +17,7 @@
 #   PROVIDER        (optional) — "runpod" or "vast.ai"
 #   POD_ID          (optional) — existing pod/instance ID for restart
 #   POD_CONFIG      (optional) — path to pod config file
+#   RUNPOD_API_KEY  (required for provider=runpod)
 #
 # Sets (globals): REMOTE_IP, REMOTE_PORT, POD_ID (may be updated)
 #
@@ -27,119 +30,12 @@
 
 # ── RunPod helpers ──────────────────────────────────────────────────────────
 
-_runpod_require_cli() {
-    source "${DEPLOY_DIR}/runpod/check_cli.sh"
-    require_runpodctl || {
-        log_error "runpodctl is required for provider=runpod."
+_runpod_require_api() {
+    source "${DEPLOY_DIR}/runpod/api.sh"
+    require_runpod_api || {
+        log_error "RunPod REST API prerequisites not met (need curl, jq, RUNPOD_API_KEY)."
         return 1
     }
-}
-
-# Wait for a RunPod pod to reach "running" status.
-# Args: $1 = pod_id, $2 = max_wait (default 300s)
-_runpod_wait_ready() {
-    local pod_id="$1"
-    local max_wait="${2:-300}"
-    local elapsed=0
-    local interval=10
-
-    log_step "Waiting for pod ${pod_id} to become ready …"
-    while [[ $elapsed -lt $max_wait ]]; do
-        local info
-        info=$(runpodctl get pod "$pod_id" 2>&1 || true)
-        if echo "$info" | grep -qi "running"; then
-            log_done "Pod is running."
-            return 0
-        fi
-        echo -e "  Waiting … (${elapsed}s / ${max_wait}s)"
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
-    done
-    log_warn "Pod did not become ready within ${max_wait}s."
-    return 1
-}
-
-# Extract SSH connection info from runpodctl get pod --allfields output.
-# Polls until the public TCP port mapping appears (ports take ~60s after RUNNING).
-# Sets REMOTE_IP and REMOTE_PORT globals.
-# Args: $1 = pod_id, $2 = max_wait (default 120s)
-_runpod_get_ssh_info() {
-    local pod_id="$1"
-    local max_wait="${2:-120}"
-    local elapsed=0
-    local interval=10
-
-    log_step "Retrieving SSH connection info for pod ${pod_id} …"
-
-    while [[ $elapsed -lt $max_wait ]]; do
-        local info pod_line pub_tcp
-        info=$(runpodctl get pod --allfields 2>&1 || true)
-        # Sanitize: runpodctl outputs non-breaking spaces (U+00A0, \xc2\xa0) that break regex
-        info=$(printf '%s\n' "$info" | sed "s/$(printf '\xc2\xa0')/ /g")
-
-        # Find the line for our specific pod
-        pod_line=$(echo "$info" | grep "$pod_id" || true)
-
-        if [[ -n "$pod_line" ]]; then
-            # RunPod PORTS column format:
-            #   100.65.18.122:60119->19123 (prv,http),194.68.245.19:22113->22222 (pub,tcp)
-            # We want the (pub,tcp) entry: IP:EXTERNAL_PORT->INTERNAL_PORT (pub,tcp)
-            pub_tcp=$(echo "$pod_line" | grep -oP '\d+\.\d+\.\d+\.\d+:\d+->\d+\s*\(pub,tcp\)' || true)
-
-            if [[ -n "$pub_tcp" ]]; then
-                REMOTE_IP=$(echo "$pub_tcp" | grep -oP '^\d+\.\d+\.\d+\.\d+')
-                REMOTE_PORT=$(echo "$pub_tcp" | grep -oP '(?<=:)\d+(?=->)')
-
-                # Log what we found
-                mkdir -p "$DEPLOY_LOGS_DIR"
-                local log_file="${DEPLOY_LOGS_DIR}/pod_${pod_id}_$(date +%Y%m%d_%H%M%S).log"
-                {
-                    echo "# RunPod Pod Info"
-                    echo "# Timestamp: $(date -Iseconds)"
-                    echo "POD_ID=${pod_id}"
-                    echo "SSH_HOST=${REMOTE_IP}"
-                    echo "SSH_PORT=${REMOTE_PORT}"
-                    echo ""
-                    echo "# Raw output:"
-                    echo "$info"
-                } > "$log_file"
-
-                echo ""
-                echo -e "${BLUE}═══════════════════════════════════════════${NC}"
-                echo -e "${BLUE}  SSH Connection Details${NC}"
-                echo -e "${BLUE}═══════════════════════════════════════════${NC}"
-                echo -e "  ${GREEN}Host:${NC}    $REMOTE_IP"
-                echo -e "  ${GREEN}Port:${NC}    $REMOTE_PORT"
-                echo -e "  ${GREEN}Connect:${NC} ssh root@${REMOTE_IP} -p ${REMOTE_PORT}"
-                echo -e "${BLUE}═══════════════════════════════════════════${NC}"
-                echo -e "  ${GREEN}Log:${NC} $log_file"
-                return 0
-            fi
-        fi
-
-        echo -e "  Waiting for port info … (${elapsed}s / ${max_wait}s)"
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
-    done
-
-    # Fallback: log whatever we have
-    local info
-    info=$(runpodctl get pod --allfields 2>&1 || true)
-    info=$(printf '%s\n' "$info" | sed "s/$(printf '\xc2\xa0')/ /g")
-    mkdir -p "$DEPLOY_LOGS_DIR"
-    local log_file="${DEPLOY_LOGS_DIR}/pod_${pod_id}_$(date +%Y%m%d_%H%M%S).log"
-    {
-        echo "# RunPod Pod Info (ports not parsed)"
-        echo "# Timestamp: $(date -Iseconds)"
-        echo "POD_ID=${pod_id}"
-        echo ""
-        echo "# Raw output:"
-        echo "$info"
-    } > "$log_file"
-
-    log_warn "SSH port info not available after ${max_wait}s. Check log: $log_file"
-    log_info "You can check manually: runpodctl get pod --allfields"
-    return 1
 }
 
 # Start an existing RunPod pod.
@@ -147,14 +43,17 @@ _runpod_get_ssh_info() {
 _runpod_start() {
     local pod_id="$1"
     log_step "Starting RunPod pod ${pod_id} …"
+
     local output
-    output=$(runpodctl start pod "$pod_id" 2>&1) || {
-        log_error "Failed to start pod: $output"
+    output=$(runpod_start_pod "$pod_id")
+    _runpod_sync_http_code
+    if [[ "$RUNPOD_API_HTTP_CODE" != "200" && "$RUNPOD_API_HTTP_CODE" != "201" ]]; then
+        log_error "Failed to start pod (HTTP ${RUNPOD_API_HTTP_CODE}): $(echo "$output" | jq -r '.message // .error // empty' 2>/dev/null || echo "$output")"
         return 1
-    }
-    echo "$output"
-    _runpod_wait_ready "$pod_id"
-    _runpod_get_ssh_info "$pod_id"
+    fi
+    echo "$output" | jq . 2>/dev/null || echo "$output"
+    runpod_wait_ready "$pod_id"
+    runpod_wait_ssh_info "$pod_id"
 }
 
 # Create a new RunPod pod from config.
@@ -174,68 +73,35 @@ _runpod_create() {
     [[ -z "${POD_NAME:-}" ]] && { log_error "POD_NAME is required in config."; return 1; }
     [[ -z "${GPU_TYPE:-}" ]] && { log_error "GPU_TYPE is required in config."; return 1; }
 
+    # Build JSON payload
+    local payload
+    payload=$(build_pod_create_json)
 
-    # Build command
-    local cmd=(runpodctl create pod)
-    cmd+=(--name "$POD_NAME")
-    cmd+=(--gpuType "$GPU_TYPE")
-    cmd+=(--gpuCount "${GPU_COUNT:-1}")
-
-    case "${CLOUD_TIER:-community}" in
-        secure)    cmd+=(--secureCloud) ;;
-        community) cmd+=(--communityCloud) ;;
-        *) log_error "Invalid CLOUD_TIER: ${CLOUD_TIER}"; return 1 ;;
-    esac
-
-    [[ -n "${TEMPLATE_ID:-}" ]] && cmd+=(--templateId "$TEMPLATE_ID")
-    [[ -n "${IMAGE_NAME:-}" ]] && cmd+=(--imageName "$IMAGE_NAME")
-
-    cmd+=(--containerDiskSize "${CONTAINER_DISK_SIZE:-20}")
-    [[ -n "${VOLUME_SIZE:-}" ]] && cmd+=(--volumeSize "${VOLUME_SIZE}")
-    [[ -n "${VOLUME_PATH:-}" ]] && cmd+=(--volumePath "$VOLUME_PATH")
-    [[ -n "${NETWORK_VOLUME_ID:-}" ]] && cmd+=(--networkVolumeId "$NETWORK_VOLUME_ID")
-    cmd+=(--mem "${MIN_MEMORY_GB:-20}")
-    cmd+=(--vcpu "${MIN_VCPU:-1}")
-    [[ -n "${MAX_COST:-}" ]] && cmd+=(--cost "$MAX_COST")
-
-    if [[ -n "${PORTS:-}" ]]; then
-        for port in $PORTS; do
-            cmd+=(--ports "$port")
-        done
-    fi
-    if [[ -n "${ENV_VARS:-}" ]]; then
-        IFS=';' read -ra _env_arr <<< "$ENV_VARS"
-        for env_var in "${_env_arr[@]}"; do
-            env_var="$(printf '%s' "$env_var" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            # Interpret escape sequences (\n → newline, etc.)
-            [[ -n "$env_var" ]] && cmd+=(--env "$(printf '%b' "$env_var")")
-        done
-    fi
-    [[ -n "${CONTAINER_ARGS:-}" ]] && cmd+=(--args "$CONTAINER_ARGS")
-
-    # Create
     log_step "Creating RunPod pod …"
-    echo -e "  ${BLUE}Command:${NC} ${cmd[*]}"
-    local output
-    output=$("${cmd[@]}" 2>&1) || {
-        log_error "Failed to create pod: $output"
-        return 1
-    }
-    echo "$output"
+    echo -e "  ${BLUE}Payload:${NC}"
+    echo "$payload" | jq . 2>/dev/null
+    echo ""
 
-    # Extract pod ID: runpodctl outputs something like: pod "abc123" created for $X.XX / hr
-    POD_ID=$(echo "$output" | grep -oP '(?<=pod ")([^"]+)' | head -1 || true)
-    if [[ -z "$POD_ID" ]]; then
-        POD_ID=$(echo "$output" | grep -oP '[a-z0-9]{20,}' | head -1 || true)
+    local output
+    output=$(runpod_create_pod "$payload")
+    _runpod_sync_http_code
+
+    if [[ "$RUNPOD_API_HTTP_CODE" != "200" && "$RUNPOD_API_HTTP_CODE" != "201" ]]; then
+        log_error "Failed to create pod (HTTP ${RUNPOD_API_HTTP_CODE}): $(echo "$output" | jq -r '.message // .error // empty' 2>/dev/null || echo "$output")"
+        return 1
     fi
+
+    # Extract pod ID from response
+    POD_ID=$(echo "$output" | jq -r '.id // empty' 2>/dev/null)
     if [[ -z "$POD_ID" ]]; then
-        log_warn "Could not parse pod ID from output. Check output above."
+        log_warn "Could not parse pod ID from response. Check output above."
+        echo "$output" | jq . 2>/dev/null || echo "$output"
         return 1
     fi
 
     log_done "Pod created: ${POD_ID}"
-    _runpod_wait_ready "$POD_ID"
-    _runpod_get_ssh_info "$POD_ID"
+    runpod_wait_ready "$POD_ID"
+    runpod_wait_ssh_info "$POD_ID"
 }
 
 # ── SSH readiness check ────────────────────────────────────────────────────
@@ -281,7 +147,7 @@ ensure_machine() {
         # Try to restart via provider if available
         if [[ "${PROVIDER:-}" == "runpod" && -n "${POD_ID:-}" ]]; then
             log_info "Attempting to restart via RunPod …"
-            _runpod_require_cli || return 1
+            _runpod_require_api || return 1
             _runpod_start "$POD_ID" || return 1
             build_ssh_opts  # rebuild with new IP/port
             _wait_for_ssh || return 1
@@ -301,7 +167,7 @@ ensure_machine() {
     if [[ -n "${PROVIDER:-}" ]]; then
         case "$PROVIDER" in
             runpod)
-                _runpod_require_cli || return 1
+                _runpod_require_api || return 1
                 if [[ -n "${POD_ID:-}" ]]; then
                     # Start existing pod
                     _runpod_start "$POD_ID" || return 1

@@ -3,7 +3,7 @@
 # pulse.sh — Periodically check if a server/instance is active.
 #             Optionally auto-restart and re-deploy on failure.
 #
-# Supports multiple backends (RunPod via runpodctl, generic SSH) and logs
+# Supports multiple backends (RunPod via REST API, generic SSH) and logs
 # status over time. When --auto-restart is enabled and the server dies,
 # pulse will restart the machine, re-sync code/venv, and re-launch the
 # training session automatically.
@@ -162,18 +162,23 @@ _PULSE_SSH_OPTS=()
 [[ -n "$SSH_PORT" ]] && _PULSE_SSH_OPTS+=(-p "$SSH_PORT")
 [[ -n "$SSH_IDENTITY" ]] && _PULSE_SSH_OPTS+=(-i "$SSH_IDENTITY")
 
+# Source RunPod API if monitoring a pod
+if [[ -n "$POD_ID" ]]; then
+    source "${DEPLOY_DIR}/runpod/api.sh"
+    if [[ -z "${RUNPOD_API_KEY:-}" ]]; then
+        log_error "RUNPOD_API_KEY is required to monitor a RunPod pod."
+        log_info "Set it with: export RUNPOD_API_KEY=your_api_key_here"
+        exit 1
+    fi
+fi
+
 # ── Check functions ─────────────────────────────────────────────────────────
 
 check_runpod() {
     local pod_id="$1"
-    local info
-    info=$(runpodctl get pod "$pod_id" 2>&1) || { echo "error"; return; }
-    if echo "$info" | grep -qi "running"; then echo "running"
-    elif echo "$info" | grep -qi "exited"; then echo "exited"
-    elif echo "$info" | grep -qi "stopped"; then echo "stopped"
-    elif echo "$info" | grep -qi "starting"; then echo "starting"
-    elif echo "$info" | grep -qi "created"; then echo "created"
-    else echo "unknown"; fi
+    local status
+    status=$(runpod_get_pod_status "$pod_id")
+    echo "$status"
 }
 
 check_ssh_target() {

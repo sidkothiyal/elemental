@@ -46,6 +46,11 @@ export HOME="${REMOTE_HOME}"
 ${wandb_export}
 cd '${REMOTE_CODE_DIR}'
 
+# Expose Python headers so torch.compile / triton can find Python.h
+_py_include=\\\$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')
+export CFLAGS="-I\\\${_py_include} \\\${CFLAGS:-}"
+export CPATH="\\\${_py_include}\\\${CPATH:+:\\\$CPATH}"
+
 # Ensure logs dir exists as symlink or real dir
 mkdir -p '${REMOTE_LOGS_DIR}'
 [ -e logs ] || ln -sfn '${REMOTE_LOGS_DIR}' logs

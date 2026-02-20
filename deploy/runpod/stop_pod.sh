@@ -5,6 +5,10 @@
 # Stops compute on the pod. Persistent storage is retained but continues
 # to incur charges until the pod is removed.
 #
+# Uses the RunPod REST API (no runpodctl needed).
+#
+# Requires: curl, jq, RUNPOD_API_KEY env var
+#
 # Usage:
 #   ./deploy/runpod/stop_pod.sh <POD_ID>
 #
@@ -14,24 +18,17 @@
 
 set -euo pipefail
 
-# ── Colour helpers ──────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEPLOY_LOGS_DIR="${REPO_ROOT}/deploy/logs"
 
-# ── Ensure runpodctl is available ───────────────────────────────────────────
-source "${SCRIPT_DIR}/check_cli.sh"
-require_runpodctl
+# ── Source API helpers ───────────────────────────────────────────────────────
+source "${SCRIPT_DIR}/api.sh"
+require_runpod_api
 
 # ── Parse arguments ─────────────────────────────────────────────────────────
 if [[ $# -lt 1 ]]; then
-    echo -e "${RED}Error:${NC} Pod ID is required."
+    log_error "Pod ID is required."
     echo ""
     echo "Usage: $0 <POD_ID>"
     exit 1
@@ -40,17 +37,20 @@ fi
 POD_ID="$1"
 
 # ── Stop the pod ────────────────────────────────────────────────────────────
-echo -e "${YELLOW}⚙ Stopping pod ${POD_ID} …${NC}"
-echo -e "  ${BLUE}Command:${NC} runpodctl stop pod ${POD_ID}"
+log_step "Stopping pod ${POD_ID} …"
+echo -e "  ${BLUE}API:${NC} POST ${RUNPOD_API_BASE}/pods/${POD_ID}/stop"
 echo ""
 
-OUTPUT=$(runpodctl stop pod "$POD_ID" 2>&1) || {
-    echo -e "${RED}Error:${NC} Failed to stop pod."
-    echo "$OUTPUT"
-    exit 1
-}
+OUTPUT=$(runpod_stop_pod "$POD_ID")
+_runpod_sync_http_code
 
-echo "$OUTPUT"
+if [[ "$RUNPOD_API_HTTP_CODE" != "200" ]]; then
+    log_error "Failed to stop pod (HTTP ${RUNPOD_API_HTTP_CODE})."
+    echo "$OUTPUT" | jq . 2>/dev/null || echo "$OUTPUT"
+    exit 1
+fi
+
+echo "$OUTPUT" | jq . 2>/dev/null || echo "$OUTPUT"
 
 # ── Save to deploy logs ────────────────────────────────────────────────────
 mkdir -p "$DEPLOY_LOGS_DIR"
@@ -63,14 +63,14 @@ LOG_FILE="${DEPLOY_LOGS_DIR}/stop_${POD_ID}_${TIMESTAMP}.log"
     echo ""
     echo "POD_ID=${POD_ID}"
     echo ""
-    echo "# ── Stop Output ──"
-    echo "$OUTPUT"
+    echo "# ── API Response ──"
+    echo "$OUTPUT" | jq . 2>/dev/null || echo "$OUTPUT"
 } > "$LOG_FILE"
 
 echo ""
-echo -e "${GREEN}✔ Pod ${POD_ID} stopped.${NC}"
+log_done "Pod ${POD_ID} stopped."
 echo -e "${GREEN}Log:${NC} ${LOG_FILE}"
 echo ""
 echo -e "${YELLOW}Note:${NC} Persistent storage is retained and continues to incur charges."
 echo -e "  To restart: ./deploy/runpod/start_pod.sh ${POD_ID}"
-echo -e "  To remove:  runpodctl remove pod ${POD_ID}"
+echo -e "  To remove:  curl -X DELETE -H 'Authorization: Bearer \$RUNPOD_API_KEY' ${RUNPOD_API_BASE}/pods/${POD_ID}"

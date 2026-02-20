@@ -178,12 +178,52 @@ done
 # ════════════════════════════════════════════════════════════════════════════
 
 if [[ -z "$REMOTE_IP" && -z "$PROVIDER" ]]; then
+    cd "$REPO_ROOT"
+
+    # # ── Build Docker image + venv (same as remote pipeline) ──────────────
+    # log_success "▶ Building venv via Docker …"
+    # build_venv
+
+    # # ── Extract .venv from Docker to local .venv if needed ───────────────
+    # local_hash_file="${REPO_ROOT}/.venv/.deps_hash"
+    # local_hash=""
+    # [[ -f "$local_hash_file" ]] && local_hash=$(cat "$local_hash_file")
+
+    # if [[ "$DEPS_CHANGED" == true ]] || [[ "$local_hash" != "$CURRENT_HASH" ]]; then
+    #     log_step "Extracting .venv from Docker image to local .venv …"
+
+    #     container_id=$(docker create "${DOCKER_IMAGE}:latest" true)
+
+    #     rm -rf "${REPO_ROOT}/.venv"
+    #     mkdir -p "${REPO_ROOT}/.venv"
+
+    #     if ! docker cp "$container_id:/app/.venv" - | \
+    #             tar xf - -C "${REPO_ROOT}/.venv" --strip-components=1; then
+    #         docker rm "$container_id" >/dev/null 2>&1 || true
+    #         log_error "Failed to extract .venv from Docker image."
+    #         exit 1
+    #     fi
+
+    #     docker rm "$container_id" >/dev/null 2>&1 || true
+
+    #     echo "$CURRENT_HASH" > "${REPO_ROOT}/.venv/.deps_hash"
+    #     log_done "Local .venv updated from Docker."
+    # else
+    #     log_done "Local .venv is up-to-date — skipping extraction."
+    # fi
+
     if [[ ${#PYTHON_ARGS[@]} -eq 0 ]]; then
-        log_done "Nothing to do locally (no python args)."
+        log_done "Venv ready. Nothing to run (no python args)."
         exit 0
     fi
+
     log_success "▶ Running locally via uv …"
-    cd "$REPO_ROOT"
+
+    # Expose Python headers so torch.compile / triton can find Python.h
+    _py_include="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+    export CFLAGS="-I${_py_include} ${CFLAGS:-}"
+    export CPATH="${_py_include}${CPATH:+:$CPATH}"
+
     exec uv run python "${PYTHON_ARGS[@]}"
 fi
 
@@ -316,6 +356,6 @@ if [[ -n "${SESSION_NAME:-}" ]]; then
     echo -e "  ${BLUE}Logs:${NC}     ssh${SSH_DISPLAY} ${REMOTE_HOST} 'tail -f ${REMOTE_LOGS_DIR}/${SESSION_NAME}.log'"
     echo -e "  ${BLUE}Sessions:${NC} ssh${SSH_DISPLAY} ${REMOTE_HOST} 'tmux ls'"
 fi
-[[ -n "$POD_ID" ]] && echo -e "  ${BLUE}Pod:${NC}      runpodctl get pod ${POD_ID}"
+[[ -n "$POD_ID" ]] && echo -e "  ${BLUE}Pod:${NC}      curl -s -H 'Authorization: Bearer \$RUNPOD_API_KEY' https://rest.runpod.io/v1/pods/${POD_ID} | jq ."
 [[ -n "$POD_ID" ]] && echo -e "  ${BLUE}Stop pod:${NC} ./deploy/runpod/stop_pod.sh ${POD_ID}"
 echo ""

@@ -2,8 +2,10 @@
 #
 # create_pod.sh — Create a new RunPod pod using configuration from pod.conf.
 #
-# Reads pod configuration from a config file, creates the pod via runpodctl,
-# retrieves SSH connection details, and saves them to the deploy logs.
+# Reads pod configuration from a config file, creates the pod via the RunPod
+# REST API, retrieves SSH connection details, and saves them to the deploy logs.
+#
+# Requires: curl, jq, RUNPOD_API_KEY env var
 #
 # Usage:
 #   ./deploy/runpod/create_pod.sh [CONFIG_FILE]
@@ -18,26 +20,19 @@
 
 set -euo pipefail
 
-# ── Colour helpers ──────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEPLOY_LOGS_DIR="${REPO_ROOT}/deploy/logs"
 
-# ── Ensure runpodctl is available ───────────────────────────────────────────
-source "${SCRIPT_DIR}/check_cli.sh"
-require_runpodctl
+# ── Source API helpers ───────────────────────────────────────────────────────
+source "${SCRIPT_DIR}/api.sh"
+require_runpod_api
 
 # ── Load configuration ──────────────────────────────────────────────────────
 CONFIG_FILE="${1:-${SCRIPT_DIR}/pod.conf}"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo -e "${RED}Error:${NC} Config file not found: $CONFIG_FILE"
+    log_error "Config file not found: $CONFIG_FILE"
     exit 1
 fi
 
@@ -47,157 +42,54 @@ source "$CONFIG_FILE"
 
 # ── Validate required fields ────────────────────────────────────────────────
 if [[ -z "${POD_NAME:-}" ]]; then
-    echo -e "${RED}Error:${NC} POD_NAME is required in config file."
+    log_error "POD_NAME is required in config file."
     exit 1
 fi
 if [[ -z "${GPU_TYPE:-}" ]]; then
-    echo -e "${RED}Error:${NC} GPU_TYPE is required in config file."
+    log_error "GPU_TYPE is required in config file."
     exit 1
 fi
 
-# ── Build runpodctl command ─────────────────────────────────────────────────
-CMD=(runpodctl create pod)
-CMD+=(--name "$POD_NAME")
-CMD+=(--gpuType "$GPU_TYPE")
-CMD+=(--gpuCount "${GPU_COUNT:-1}")
+# ── Build JSON payload ──────────────────────────────────────────────────────
+PAYLOAD=$(build_pod_create_json)
 
-# Cloud tier
-case "${CLOUD_TIER:-community}" in
-    secure)  CMD+=(--secureCloud) ;;
-    community) CMD+=(--communityCloud) ;;
-    *) echo -e "${RED}Error:${NC} Invalid CLOUD_TIER: ${CLOUD_TIER}. Use 'secure' or 'community'."; exit 1 ;;
-esac
-
-# Image or template
-[[ -n "${TEMPLATE_ID:-}" ]] && CMD+=(--templateId "$TEMPLATE_ID")
-[[ -n "${IMAGE_NAME:-}" ]] && CMD+=(--imageName "$IMAGE_NAME")
-
-# Storage
-CMD+=(--containerDiskSize "${CONTAINER_DISK_SIZE:-20}")
-[[ -n "${VOLUME_SIZE:-}" ]] && CMD+=(--volumeSize "${VOLUME_SIZE}")
-[[ -n "${VOLUME_PATH:-}" ]] && CMD+=(--volumePath "$VOLUME_PATH")
-[[ -n "${NETWORK_VOLUME_ID:-}" ]] && CMD+=(--networkVolumeId "$NETWORK_VOLUME_ID")
-
-# System resources
-CMD+=(--mem "${MIN_MEMORY_GB:-20}")
-CMD+=(--vcpu "${MIN_VCPU:-1}")
-
-# Cost ceiling
-[[ -n "${MAX_COST:-}" ]] && CMD+=(--cost "$MAX_COST")
-
-# Ports
-if [[ -n "${PORTS:-}" ]]; then
-    for port in $PORTS; do
-        CMD+=(--ports "$port")
-    done
-fi
-
-# Environment variables (semicolon-separated KEY=VALUE pairs)
-if [[ -n "${ENV_VARS:-}" ]]; then
-    IFS=';' read -ra _env_arr <<< "$ENV_VARS"
-    for env_var in "${_env_arr[@]}"; do
-        env_var="$(printf '%s' "$env_var" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        # Interpret escape sequences (\n → newline, etc.)
-        [[ -n "$env_var" ]] && CMD+=(--env "$(printf '%b' "$env_var")")
-    done
-fi
-
-# Container arguments
-[[ -n "${CONTAINER_ARGS:-}" ]] && CMD+=(--args "$CONTAINER_ARGS")
+echo ""
+log_step "Creating RunPod pod …"
+echo -e "  ${BLUE}Payload:${NC}"
+echo "$PAYLOAD" | jq .
+echo ""
 
 # ── Create the pod ──────────────────────────────────────────────────────────
-echo ""
-echo -e "${YELLOW}⚙ Creating pod …${NC}"
-echo -e "  ${BLUE}Command:${NC} ${CMD[*]}"
-echo ""
+OUTPUT=$(runpod_create_pod "$PAYLOAD")
+_runpod_sync_http_code
 
-OUTPUT=$("${CMD[@]}" 2>&1) || {
-    echo -e "${RED}Error:${NC} Failed to create pod."
-    echo "$OUTPUT"
+if [[ "$RUNPOD_API_HTTP_CODE" != "200" && "$RUNPOD_API_HTTP_CODE" != "201" ]]; then
+    log_error "Failed to create pod (HTTP ${RUNPOD_API_HTTP_CODE})."
+    echo "$OUTPUT" | jq . 2>/dev/null || echo "$OUTPUT"
     exit 1
-}
-
-echo "$OUTPUT"
-
-# ── Extract pod ID from output ──────────────────────────────────────────────
-# runpodctl create pod typically outputs something like:
-#   pod "abc123xyz456" created for $X.XX / hr
-POD_ID=$(echo "$OUTPUT" | grep -oP '(?<=pod ")([^"]+)' | head -1 || true)
-
-if [[ -z "$POD_ID" ]]; then
-    # Try alternative parsing (some versions output differently)
-    POD_ID=$(echo "$OUTPUT" | grep -oP '[a-z0-9]{20,}' | head -1 || true)
 fi
 
+# ── Extract pod ID from response ────────────────────────────────────────────
+POD_ID=$(echo "$OUTPUT" | jq -r '.id // empty' 2>/dev/null)
+
 if [[ -z "$POD_ID" ]]; then
-    echo -e "${YELLOW}⚠ Could not parse pod ID from output.${NC}"
-    echo -e "  Check the output above and note down the pod ID manually."
-    exit 0
+    log_warn "Could not parse pod ID from response."
+    echo "$OUTPUT" | jq . 2>/dev/null || echo "$OUTPUT"
+    exit 1
 fi
 
 echo ""
-echo -e "${GREEN}✔ Pod created:${NC} ${POD_ID}"
+log_done "Pod created: ${POD_ID}"
 
 # ── Wait for pod to be ready ─────────────────────────────────────────────────
 echo ""
-echo -e "${YELLOW}⚙ Waiting for pod to become ready …${NC}"
+runpod_wait_ready "$POD_ID" 300
 
-MAX_WAIT=300  # 5 minutes
-ELAPSED=0
-INTERVAL=10
-
-while [[ $ELAPSED -lt $MAX_WAIT ]]; do
-    POD_INFO=$(runpodctl get pod "$POD_ID" 2>&1 || true)
-
-    # Check if the pod is running
-    if echo "$POD_INFO" | grep -qi "running"; then
-        echo -e "${GREEN}✔ Pod is running.${NC}"
-        break
-    fi
-
-    echo -e "  Waiting … (${ELAPSED}s / ${MAX_WAIT}s)"
-    sleep "$INTERVAL"
-    ELAPSED=$((ELAPSED + INTERVAL))
-done
-
-if [[ $ELAPSED -ge $MAX_WAIT ]]; then
-    echo -e "${YELLOW}⚠ Pod did not become ready within ${MAX_WAIT}s.${NC}"
-    echo -e "  Pod ID: ${POD_ID}"
-    echo -e "  Check status with: runpodctl get pod ${POD_ID}"
-fi
-
-# ── Wait for SSH port info to become available ──────────────────────────────
-# RunPod exposes SSH via a proxied host/port in the PORTS column.
-# Ports take ~45-60s after the pod reaches RUNNING to be assigned.
-# Format: IP:EXTERNAL_PORT->INTERNAL_PORT (pub,tcp)
+# ── Wait for SSH port info ───────────────────────────────────────────────────
 echo ""
-echo -e "${YELLOW}⚙ Waiting for SSH port info …${NC}"
-
-SSH_HOST=""
-SSH_PORT=""
-PORT_WAIT=120  # up to 2 minutes for port info
-PORT_ELAPSED=0
-
-while [[ $PORT_ELAPSED -lt $PORT_WAIT ]]; do
-    ALL_INFO=$(runpodctl get pod --allfields 2>&1 || true)
-    # Sanitize: runpodctl outputs non-breaking spaces (U+00A0, \xc2\xa0) that break regex
-    ALL_INFO=$(printf '%s\n' "$ALL_INFO" | sed "s/$(printf '\xc2\xa0')/ /g")
-    POD_LINE=$(echo "$ALL_INFO" | grep "$POD_ID" || true)
-
-    if [[ -n "$POD_LINE" ]]; then
-        PUB_TCP=$(echo "$POD_LINE" | grep -oP '\d+\.\d+\.\d+\.\d+:\d+->\d+\s*\(pub,tcp\)' || true)
-        if [[ -n "$PUB_TCP" ]]; then
-            SSH_HOST=$(echo "$PUB_TCP" | grep -oP '^\d+\.\d+\.\d+\.\d+')
-            SSH_PORT=$(echo "$PUB_TCP" | grep -oP '(?<=:)\d+(?=->)')
-            echo -e "${GREEN}✔ SSH port info received.${NC}"
-            break
-        fi
-    fi
-
-    echo -e "  Waiting for port info … (${PORT_ELAPSED}s / ${PORT_WAIT}s)"
-    sleep "$INTERVAL"
-    PORT_ELAPSED=$((PORT_ELAPSED + INTERVAL))
-done
+runpod_wait_ssh_info "$POD_ID" 120
+SSH_HOST="${REMOTE_IP:-}"
+SSH_PORT="${REMOTE_PORT:-}"
 
 # ── Save pod info to deploy logs ────────────────────────────────────────────
 mkdir -p "$DEPLOY_LOGS_DIR"
@@ -217,36 +109,28 @@ LOG_FILE="${DEPLOY_LOGS_DIR}/pod_${POD_ID}_${TIMESTAMP}.log"
     [[ -n "$SSH_HOST" ]] && echo "SSH_HOST=${SSH_HOST}"
     [[ -n "$SSH_PORT" ]] && echo "SSH_PORT=${SSH_PORT}"
     echo ""
-    echo "# ── Creation Output ──"
-    echo "$OUTPUT"
+    echo "# ── Creation Payload ──"
+    echo "$PAYLOAD" | jq . 2>/dev/null || echo "$PAYLOAD"
     echo ""
-    echo "# ── Pod Info (allfields) ──"
-    echo "${ALL_INFO:-}"
+    echo "# ── API Response ──"
+    echo "$OUTPUT" | jq . 2>/dev/null || echo "$OUTPUT"
 } > "$LOG_FILE"
 
 echo ""
-echo -e "${GREEN}✔ Pod info saved to:${NC} $LOG_FILE"
+log_done "Pod info saved to: $LOG_FILE"
 
-# ── Display SSH connection info ─────────────────────────────────────────────
-echo ""
-echo -e "${BLUE}═══════════════════════════════════════════${NC}"
-echo -e "${BLUE}  SSH Connection Details${NC}"
-echo -e "${BLUE}═══════════════════════════════════════════${NC}"
-if [[ -n "$SSH_HOST" && -n "$SSH_PORT" ]]; then
-    echo -e "  ${GREEN}Host:${NC} $SSH_HOST"
-    echo -e "  ${GREEN}Port:${NC} $SSH_PORT"
-    echo -e "  ${GREEN}Connect:${NC} ssh root@${SSH_HOST} -p ${SSH_PORT}"
-else
-    echo -e "  ${YELLOW}SSH details not yet available.${NC}"
-    echo -e "  Run: runpodctl get pod --allfields"
+# ── Display connection info ──────────────────────────────────────────────────
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" ]]; then
+    echo ""
+    echo -e "${YELLOW}SSH details not yet available.${NC}"
+    echo -e "  Check with: curl -s -H 'Authorization: Bearer \$RUNPOD_API_KEY' ${RUNPOD_API_BASE}/pods/${POD_ID} | jq '.publicIp, .portMappings'"
 fi
-echo -e "${BLUE}═══════════════════════════════════════════${NC}"
 
 echo ""
 echo -e "${GREEN}Pod ID:${NC} ${POD_ID}"
 echo -e "${GREEN}Log:${NC}    ${LOG_FILE}"
-echo -e ""
+echo ""
 echo -e "Useful commands:"
-echo -e "  ${BLUE}Status:${NC}  runpodctl get pod ${POD_ID}"
+echo -e "  ${BLUE}Status:${NC}  curl -s -H 'Authorization: Bearer \$RUNPOD_API_KEY' ${RUNPOD_API_BASE}/pods/${POD_ID} | jq .desiredStatus"
 echo -e "  ${BLUE}Stop:${NC}    ./deploy/runpod/stop_pod.sh ${POD_ID}"
 echo -e "  ${BLUE}Start:${NC}   ./deploy/runpod/start_pod.sh ${POD_ID}"
