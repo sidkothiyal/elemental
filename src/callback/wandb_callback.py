@@ -6,12 +6,12 @@ import random
 
 import numpy as np
 import torch
-import wandb
 from torch.nn import functional as F
 
+import wandb
 from callback import callback
 from data_processor.tokenizer import Tokenizer
-from utils import torch_np_utils
+from utils import checkpoint as ckpt_utils, torch_np_utils
 
 # from transformers import AutoTokenizer
 
@@ -19,6 +19,72 @@ from utils import torch_np_utils
 logger = logging.getLogger(__name__)
 
 os.environ["WANDB_SILENT"] = "True"
+
+# Filename for storing wandb run id
+WANDB_RUN_ID_FILENAME = "wandb_run_id.txt"
+
+
+def _find_wandb_run_id_for_resume(
+    results_dir: str,
+    experiment_name: str,
+    load_checkpoint_path: str | None = None,
+) -> str | None:
+    """Find wandb run ID from a previous run for resumption.
+
+    If ``load_checkpoint_path`` is ``"latest"``, uses ``find_latest_checkpoint``
+    to locate the most recent checkpoint and reads the wandb run ID from its
+    directory. If a specific checkpoint path is provided, uses that directory.
+
+    Args:
+        results_dir: Root results directory (e.g. ``results/autoencoder/``).
+        experiment_name: Current experiment name with datetime stamp.
+        load_checkpoint_path: Path to checkpoint file or ``"latest"``.
+
+    Returns:
+        The wandb run ID if found, otherwise ``None``.
+    """
+    checkpoint_dir: str | None = None
+
+    # Resolve checkpoint path to get the directory containing wandb_run_id.txt
+    if load_checkpoint_path:
+        if str(load_checkpoint_path).lower() == "latest":
+            # Use find_latest_checkpoint to locate the most recent checkpoint
+            try:
+                resolved_path = ckpt_utils.find_latest_checkpoint(
+                    results_dir=results_dir,
+                    experiment_name=experiment_name,
+                )
+                checkpoint_dir = os.path.dirname(resolved_path)
+                logger.info("Resolved 'latest' checkpoint to directory: %s", checkpoint_dir)
+            except FileNotFoundError as e:
+                logger.info("Could not find latest checkpoint for wandb resume: %s", e)
+                return None
+        else:
+            # Use the directory of the specified checkpoint path
+            checkpoint_dir = os.path.dirname(load_checkpoint_path)
+            logger.info("Using checkpoint directory: %s", checkpoint_dir)
+
+    if checkpoint_dir is None:
+        logger.info("No checkpoint path provided, cannot find wandb run ID")
+        return None
+
+    # Look for wandb run ID file in the checkpoint directory
+    run_id_path = os.path.join(checkpoint_dir, WANDB_RUN_ID_FILENAME)
+    if not os.path.isfile(run_id_path):
+        logger.info("No wandb run ID file found at: %s", run_id_path)
+        return None
+
+    # Read the run ID from the file
+    try:
+        with open(run_id_path, "r") as f:
+            run_id = f.read().strip()
+        if run_id:
+            logger.info("Loaded wandb run ID for resumption: %s", run_id)
+            return run_id
+    except Exception as e:
+        logger.warning("Failed to read wandb run ID file: %s", e)
+
+    return None
 
 
 class WandbCallback(callback.Callback):
@@ -36,6 +102,9 @@ class WandbCallback(callback.Callback):
         mode: str | None = None,
         log_text_data: bool = False,
         tokenizer: str | None = None,
+        results_dir: str | None = None,
+        resume_training: bool = False,
+        load_checkpoint_path: str | None = None,
     ):
         """Initialize the callback.
 
@@ -50,6 +119,13 @@ class WandbCallback(callback.Callback):
             mode: The mode of training.
             log_text_data: Whether to log text data.
             tokenizer: The tokenizer to use for text logging.
+            results_dir: Directory where results and checkpoints are saved.
+                Required for resume_training to find previous wandb run ID.
+            resume_training: Whether to resume training from a checkpoint.
+                If True, will attempt to resume the wandb run from the previous
+                training session.
+            load_checkpoint_path: Path to the checkpoint file or "latest".
+                Used to locate the wandb run ID file when resuming.
         """
         logger.info(
             "Initializing WandbCallback with project: %s, entity: %s, exp_name: %s",
@@ -61,6 +137,8 @@ class WandbCallback(callback.Callback):
         self._num_samples_to_log = num_samples_to_log
         self._mode = mode
         self._log_text_data = log_text_data
+        self._results_dir = results_dir
+        self._exp_name = exp_name
         if self._num_samples_to_log != 1:
             raise NotImplementedError(
                 f"num_samples_to_log is not 1, but {self._num_samples_to_log}"
@@ -84,11 +162,59 @@ class WandbCallback(callback.Callback):
             self._log_table = wandb.Table(columns=["step", "phase", "tag", "text"])
             self._tokenizer = Tokenizer("data/tiny_shakespeare/")
             # self._tokenizer = AutoTokenizer.from_pretrained(tokenizer)
-        self._wandb_logger = wandb.init(
-            project=project,
-            entity=entity,
-            name=exp_name,
-        )
+
+        # Determine wandb init parameters for resume
+        wandb_init_kwargs: dict = {
+            "project": project,
+            "entity": entity,
+            "name": exp_name,
+        }
+
+        # Attempt to resume wandb run if resume_training is enabled
+        if resume_training and results_dir:
+            run_id = _find_wandb_run_id_for_resume(
+                results_dir=results_dir,
+                experiment_name=exp_name,
+                load_checkpoint_path=load_checkpoint_path,
+            )
+            if run_id:
+                wandb_init_kwargs["id"] = run_id
+                wandb_init_kwargs["resume"] = "allow"
+                logger.info("Resuming wandb run with ID: %s", run_id)
+            else:
+                logger.info("No previous wandb run found, starting new run")
+        elif resume_training and not results_dir:
+            logger.warning(
+                "resume_training is True but results_dir is not provided. "
+                "Cannot resume wandb run without results_dir."
+            )
+
+        self._wandb_logger = wandb.init(**wandb_init_kwargs)
+
+        # Save wandb run ID to results directory for future resumption
+        self._save_wandb_run_id()
+
+    def _save_wandb_run_id(self) -> None:
+        """Save the wandb run ID to the results directory for future resumption."""
+        if self._results_dir is None:
+            logger.debug("results_dir not set, skipping wandb run ID save")
+            return
+
+        if self._wandb_logger is None or self._wandb_logger.id is None:
+            logger.warning("wandb logger not initialized, cannot save run ID")
+            return
+
+        # Construct the full results path (results_dir + experiment_name)
+        full_results_dir = os.path.join(self._results_dir, self._exp_name)
+        os.makedirs(full_results_dir, exist_ok=True)
+
+        run_id_path = os.path.join(full_results_dir, WANDB_RUN_ID_FILENAME)
+        try:
+            with open(run_id_path, "w") as f:
+                f.write(self._wandb_logger.id)
+            logger.info("Saved wandb run ID to: %s", run_id_path)
+        except Exception as e:
+            logger.warning("Failed to save wandb run ID: %s", e)
 
     def update_config(self, config: dict, *args, **kwargs):
         """Update the config of the callback.
@@ -96,7 +222,9 @@ class WandbCallback(callback.Callback):
         Args:
             config: The config to update.
         """
-        self._wandb_logger.config.update(config)
+        # allow_val_change=True is needed when resuming a run, as the config
+        # may already be set from the previous run
+        self._wandb_logger.config.update(config, allow_val_change=True)
 
     def filter_label(self, label: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor | None:
         """Filter the label.

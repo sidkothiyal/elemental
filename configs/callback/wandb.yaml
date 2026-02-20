@@ -6,3 +6,7 @@ entity: "elemental-ai"
 num_samples_to_log: 1
 logging_interval: 50
 mode: ${mode}
+# Resume training support
+results_dir: ${results_dir}
+resume_training: ${oc.select:resume_training,false}
+load_checkpoint_path: ${oc.select:load_checkpoint_path,null}
