@@ -11,6 +11,7 @@ defaults:
   - /optimizer: adam
   - /scheduler: step_lr
   - /callback: default
+  - /torch_compile
   - _self_
 
 experiment_name: masked_autoencoder_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}

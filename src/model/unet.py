@@ -49,6 +49,7 @@ class UNet(nn.Module):
         use_cross_attn: bool | list[bool] = True,
         cross_attn_num_heads: int | list[int] = 8,
         cond_level_mapping: dict[int, str] | None = None,
+        conditioning_mode: str = "cross_attn",
     ):
         """Initialize the U-Net model.
 
@@ -72,15 +73,20 @@ class UNet(nn.Module):
             dropout: Dropout rate for conditional blocks.
             use_cross_attn: Whether to use cross-attention in conditional blocks. Can be a
                 single bool or a list with length equal to len(channels)-1 for per-level
-                customization.
+                customization. Only used when conditioning_mode="cross_attn".
             cross_attn_num_heads: Number of heads for cross-attention. Can be a single int or
                 a list with length equal to len(channels)-1 for per-level customization.
+                Only used when conditioning_mode="cross_attn".
             cond_level_mapping: Optional mapping from block index to condition key.
                 If provided, aux_features should be a dict with keys matching the mapping values.
                 Block indices: 0 to num_encoder_blocks-1 for encoder, num_encoder_blocks for
                 bottleneck. Example: {0: "low_level", 1: "low_level", 2: "high_level"} means
                 encoder blocks 0 and 1 use aux_features["low_level"], bottleneck uses
                 aux_features["high_level"].
+            conditioning_mode: How to condition on aux_features. Options:
+                - "cross_attn": Use cross-attention (aux_features: batch, seq_len, cond_embed_dim)
+                - "concat": Concatenate spatial features (aux_features: batch, cond_embed_dim, h, w)
+                - "add": Add spatial features (aux_features: batch, cond_embed_dim, h, w)
         """
         super().__init__()
         if channels is None or len(channels) == 0:
@@ -104,6 +110,7 @@ class UNet(nn.Module):
         self.cond_embed_dim = cond_embed_dim
         self.dropout = dropout
         self.cond_level_mapping = cond_level_mapping or {}
+        self.conditioning_mode = conditioning_mode
 
         # Setup per-level conditional block parameters
         self._setup_conditional_params(num_groups, use_cross_attn, cross_attn_num_heads)
@@ -146,6 +153,7 @@ class UNet(nn.Module):
                 dropout=dropout,
                 use_cross_attn=bottleneck_use_cross_attn,
                 cross_attn_num_heads=bottleneck_cross_attn_num_heads,
+                conditioning_mode=conditioning_mode,
             )
         else:
             self.bottleneck = blocks.ConvBlock(
@@ -334,6 +342,7 @@ class UNet(nn.Module):
                 use_cross_attn=self.use_cross_attn_list[level_idx],
                 cross_attn_num_heads=self.cross_attn_num_heads_list[level_idx],
                 downsample=True,
+                conditioning_mode=self.conditioning_mode,
             )
         return nn.Sequential(
             blocks.ConvNormAct(
@@ -382,6 +391,7 @@ class UNet(nn.Module):
                 use_cross_attn=self.use_cross_attn_list[level_idx],
                 cross_attn_num_heads=self.cross_attn_num_heads_list[level_idx],
                 upsample=True,
+                conditioning_mode=self.conditioning_mode,
             )
         return nn.Sequential(
             blocks.UpsampleNormAct(
@@ -583,3 +593,38 @@ if __name__ == "__main__":
     input_aux_features = torch.randn((2, 256, 128)).to("cuda")
     output = model(input_x, input_t, input_aux_features)
     print(f"Conditional UNet (per-level config) output shape: {output.shape}")
+
+    # Conditional UNet with spatial conditioning (concat mode)
+    print("\nTesting spatial conditioning modes...")
+    model = UNet(
+        in_channels=3,
+        out_channels=5,
+        channels=[64, 128, 256, 512, 1024],
+        use_conditional_blocks=True,
+        time_embed_dim=128,
+        cond_embed_dim=128,  # Channel dim for spatial features
+        num_groups=[1, 32, 32, 32],
+        conditioning_mode="concat",  # Spatial concatenation
+    )
+    model.to("cuda")
+    input_x = torch.randn((2, 3, 256, 256)).to("cuda")
+    input_t = torch.randn((2, 128)).to("cuda")
+    # Spatial features: (batch, cond_channels, height, width)
+    input_aux_features_spatial = torch.randn((2, 128, 256, 256)).to("cuda")
+    output = model(input_x, input_t, input_aux_features_spatial)
+    print(f"Conditional UNet (concat mode) output shape: {output.shape}")
+
+    # Conditional UNet with spatial conditioning (add mode)
+    model = UNet(
+        in_channels=3,
+        out_channels=5,
+        channels=[64, 128, 256, 512, 1024],
+        use_conditional_blocks=True,
+        time_embed_dim=128,
+        cond_embed_dim=128,
+        num_groups=[1, 32, 32, 32],
+        conditioning_mode="add",  # Spatial addition
+    )
+    model.to("cuda")
+    output = model(input_x, input_t, input_aux_features_spatial)
+    print(f"Conditional UNet (add mode) output shape: {output.shape}")

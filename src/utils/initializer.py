@@ -147,6 +147,87 @@ def get_num_parameters(model: nn.Module) -> tuple[int, int, int]:
     return num_parameters, num_trainable_parameters, num_non_trainable_parameters
 
 
+def compile_model_and_optimizer_step(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
+    compile_config: DictConfig | dict | None = None,
+) -> nn.Module:
+    """Compile model and optimizer for training using torch.compile.
+
+    Args:
+        model: The model to compile.
+        optimizer: The optimizer or dict of optimizers. If provided and
+            compile_optimizer_step is enabled, optimizer.step will be compiled in-place.
+        compile_config: Configuration dict for torch.compile with the following options:
+            - enabled (bool): Whether to enable compilation. Default: False.
+            - mode (str): Compilation mode. Options: "default", "reduce-overhead",
+              "max-autotune", "max-autotune-no-cudagraphs". Default: "default".
+            - backend (str): Backend to use. Default: "inductor".
+            - fullgraph (bool): Whether to require full graph compilation. Default: False.
+            - dynamic (bool): Whether to use dynamic shapes. Default: None.
+            - disable (bool): Whether to disable dynamo tracing. Default: False.
+            - compile_optimizer_step (bool): Whether to compile optimizer.step. Default: False.
+
+    Returns:
+        The compiled model if enabled, otherwise the original model.
+        Note: optimizer.step is modified in-place if compile_optimizer_step is enabled.
+    """
+    if compile_config is None:
+        return model
+
+    # Convert DictConfig to dict if needed
+    if isinstance(compile_config, DictConfig):
+        compile_config = dict(compile_config)
+
+    enabled = compile_config.get("enabled", False)
+    if not enabled:
+        logger.info("torch.compile is disabled")
+        return model
+
+    # Extract compile options
+    mode = compile_config.get("mode", "default")
+    backend = compile_config.get("backend", "inductor")
+    fullgraph = compile_config.get("fullgraph", False)
+    dynamic = compile_config.get("dynamic", None)
+    disable = compile_config.get("disable", False)
+    compile_optim_step = compile_config.get("compile_optimizer_step", False)
+
+    # Compile model
+    logger.info(
+        "Compiling model with torch.compile (mode=%s, backend=%s, fullgraph=%s, dynamic=%s)",
+        mode,
+        backend,
+        fullgraph,
+        dynamic,
+    )
+
+    compiled_model = torch.compile(
+        model,
+        mode=mode,
+        backend=backend,
+        fullgraph=fullgraph,
+        dynamic=dynamic,
+        disable=disable,
+    )
+    logger.info("Model compiled successfully")
+
+    # Compile optimizer.step in-place if requested
+    if compile_optim_step and optimizer is not None:
+        logger.info(
+            "Compiling optimizer.step with torch.compile (mode=%s, backend=%s)", mode, backend
+        )
+
+        if isinstance(optimizer, dict):
+            for name, opt in optimizer.items():
+                opt.step = torch.compile(opt.step, mode=mode, backend=backend)
+                logger.info("Compiled optimizer.step for '%s'", name)
+        else:
+            optimizer.step = torch.compile(optimizer.step, mode=mode, backend=backend)
+            logger.info("Compiled optimizer.step successfully")
+
+    return compiled_model
+
+
 def load_from_checkpoint(
     checkpoint_path: str,
     model: nn.Module | nn.ModuleDict,

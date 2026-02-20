@@ -1,0 +1,9 @@
+# @package _global_
+# torch.compile configuration for model optimization
+torch_compile:
+  enabled: false
+  mode: "default"  # Options: "default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"
+  backend: "inductor"  # Options: "inductor", "cudagraphs", "eager", "aot_eager", etc.
+  fullgraph: false  # Whether to require full graph compilation (stricter but faster)
+  dynamic: null  # null = auto, true = dynamic shapes, false = static shapes
+  compile_optimizer_step: true  # Whether to compile optimizer.step()

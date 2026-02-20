@@ -11,6 +11,7 @@ defaults:
   - /optimizer: adam
   - /scheduler: step_lr
   - /callback: default
+  - /torch_compile
   - _self_
 
 experiment_name: classification_imagenet_${now:%Y-%m-%d}_${now:%H-%M-%S}

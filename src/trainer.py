@@ -601,7 +601,8 @@ def run_train(
     # Initialize model
     model = hy_utils.instantiate(config.model)
     model.to(device)
-    # Wrap model with DDP if distributed training is enabled``
+
+    # Wrap model with DDP if distributed training is enabled
     if use_distributed:
         find_unused = config.get("find_unused_parameters", False)
         model = distributed.wrap_model_ddp(model, device, find_unused_parameters=find_unused)
@@ -696,6 +697,10 @@ def run_train(
             results_dir=config.results_dir,
             experiment_name=config.experiment_name,
         )
+
+    # Get compile config, and compile model and optimizer.step with torch.compile if configured
+    compile_config = config.get("torch_compile", None)
+    model = initializer.compile_model_and_optimizer_step(model, optim, compile_config)
 
     # Update callback config with model details
     callbacks.update_config(
