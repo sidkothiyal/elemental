@@ -23,8 +23,8 @@
 #   --pod-config FILE     Pod configuration file (default: deploy/runpod/pod.conf)
 #   --remote-project-dir PATH   Remote workspace root (default: /workspace)
 #   --remote-home PATH          Remote home directory (default: /root)
-#   --pulse INTERVAL      Enable pulse monitoring with auto-restart
-#                         Supports: 30s, 5m, 1h (default interval if flag only: 5m)
+#   --pulse INTERVAL      Install pulse cron job for monitoring + auto-restart
+#                         Supports: 1m, 5m, 1h (minimum: 1m, cron-based)
 #   --help                Show this help
 #
 # Examples:
@@ -102,7 +102,7 @@ Options:
   --pod-config FILE     Pod config file (default: deploy/runpod/pod.conf)
   --remote-project-dir PATH   Remote workspace root (default: /workspace)
   --remote-home PATH          Remote home directory (default: /root)
-  --pulse INTERVAL      Enable pulse monitoring + auto-restart (e.g. 5m, 1h)
+  --pulse INTERVAL      Install pulse cron job for monitoring + auto-restart (e.g. 5m, 1h)
   --help                Show this help
 
 Examples:
@@ -314,14 +314,23 @@ run_remote
 # ── Save session state (for pulse auto-restart) ────────────────────────────
 save_session_state
 
-# ── Launch pulse monitoring if requested ────────────────────────────────────
+# ── Install pulse cron job if requested ─────────────────────────────────────
 if [[ -n "$PULSE_INTERVAL" && ${#PYTHON_ARGS[@]} -gt 0 ]]; then
+    # Warn if we have a RunPod provider but no pod ID (happens when the user
+    # provides --ip manually, bypassing pod creation).  Without a pod ID,
+    # pulse can only do SSH-based monitoring and cannot restart via the API.
+    if [[ -z "$POD_ID" && "$PROVIDER" == "runpod" ]]; then
+        log_warn "No pod ID available — pulse will use SSH monitoring only (cannot restart via RunPod API)."
+        log_info "Hint: pass --pod-id <ID>, or omit --ip to let the script create the pod automatically."
+    fi
+
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}  Launching Pulse monitor (auto-restart enabled)${NC}"
+    echo -e "${CYAN}  Installing Pulse cron job (auto-restart enabled)${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     PULSE_CMD=("${DEPLOY_DIR}/pulse.sh"
+        --install-cron
         --session-file "$SESSION_STATE_FILE"
         --interval "$PULSE_INTERVAL"
         --auto-restart
@@ -334,16 +343,7 @@ if [[ -n "$PULSE_INTERVAL" && ${#PYTHON_ARGS[@]} -gt 0 ]]; then
     [[ -n "$REMOTE_PORT" ]] && PULSE_CMD+=(-p "$REMOTE_PORT")
     [[ -n "$SSH_IDENTITY" ]] && PULSE_CMD+=(-i "$SSH_IDENTITY")
 
-    echo -e "  ${BLUE}Command:${NC} ${PULSE_CMD[*]}"
-    echo ""
-
-    # Launch pulse in the background
-    "${PULSE_CMD[@]}" &
-    PULSE_PID=$!
-
-    echo -e "  ${GREEN}Pulse started (PID: ${PULSE_PID}).${NC}"
-    echo -e "  ${BLUE}Pulse log:${NC} ${DEPLOY_LOGS_DIR}/pulse_*.log"
-    echo -e "  ${BLUE}Stop pulse:${NC} kill ${PULSE_PID}"
+    "${PULSE_CMD[@]}"
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────
@@ -358,4 +358,5 @@ if [[ -n "${SESSION_NAME:-}" ]]; then
 fi
 [[ -n "$POD_ID" ]] && echo -e "  ${BLUE}Pod:${NC}      curl -s -H 'Authorization: Bearer \$RUNPOD_API_KEY' https://rest.runpod.io/v1/pods/${POD_ID} | jq ."
 [[ -n "$POD_ID" ]] && echo -e "  ${BLUE}Stop pod:${NC} ./deploy/runpod/stop_pod.sh ${POD_ID}"
+[[ -n "$PULSE_INTERVAL" ]] && echo -e "  ${BLUE}Stop pulse:${NC} ./deploy/pulse.sh --uninstall-cron"
 echo ""

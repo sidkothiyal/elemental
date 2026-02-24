@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 #
-# pulse.sh — Periodically check if a server/instance is active.
-#             Optionally auto-restart and re-deploy on failure.
+# pulse.sh — Check if a server/instance is active, optionally auto-restart.
+#             Designed to be run as a cron job for periodic monitoring.
 #
-# Supports multiple backends (RunPod via REST API, generic SSH) and logs
-# status over time. When --auto-restart is enabled and the server dies,
-# pulse will restart the machine, re-sync code/venv, and re-launch the
-# training session automatically.
+# Single-check mode (default): performs one status check and exits.
+# When --auto-restart is enabled and the server is down, pulse will
+# restart the machine, re-sync code/venv, and re-launch the session.
+#
+# Use --install-cron / --uninstall-cron to manage scheduled monitoring.
 #
 # Usage:
 #   ./deploy/pulse.sh [OPTIONS]
+#
+# Commands:
+#   --install-cron        Install a cron job for periodic monitoring
+#   --uninstall-cron      Remove the pulse cron job
+#   (default)             Run a single health check
 #
 # Options:
 #   --session-file FILE   Session state file (written by run.sh)
@@ -17,22 +23,25 @@
 #   --ssh USER@HOST       Monitor a generic server via SSH
 #   -p PORT               SSH port (default: 22)
 #   -i IDENTITY_FILE      SSH identity file
-#   --interval DURATION   Check interval (default: 60s)
+#   --interval DURATION   Cron check interval (for --install-cron, default: 5m)
 #                         Supports suffixes: s (seconds), m (minutes), h (hours)
-#   --count N             Number of checks (default: unlimited)
-#   --quiet               Only print on status change
+#                         Minimum for cron: 1m
 #   --auto-restart        Auto-restart and re-deploy on failure
+#   --max-retries N       Max consecutive restart attempts before disabling (default: 5)
 #   --help                Show this help
 #
 # Examples:
-#   # Basic monitoring
-#   ./deploy/pulse.sh --pod abc123xyz456 --interval 5m
-#   ./deploy/pulse.sh --ssh root@192.168.1.100 -p 2222 --interval 30s
+#   # Install cron-based monitoring (every 5 minutes):
+#   ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --install-cron
 #
-#   # Auto-restart (reads session state from run.sh)
-#   ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart
+#   # Single manual check:
+#   ./deploy/pulse.sh --session-file deploy/logs/.session_state --auto-restart
+#
+#   # Remove cron job:
+#   ./deploy/pulse.sh --uninstall-cron
 #
 
+# Only use set -e during setup phase, NOT in the check section.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,19 +52,26 @@ POD_ID=""
 SSH_TARGET=""
 SSH_PORT=""
 SSH_IDENTITY=""
-INTERVAL="60"
-MAX_COUNT=0
-QUIET=false
+INTERVAL="300"  # 5 minutes default (for cron scheduling)
 AUTO_RESTART=false
 SESSION_FILE=""
+MAX_RETRIES=5
+INSTALL_CRON=false
+UNINSTALL_CRON=false
+CRON_TAG="elemental_pulse"
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 usage() {
     cat <<'USAGE'
 Usage: ./deploy/pulse.sh [OPTIONS]
 
-Periodically check if a server/instance is active and reachable.
-Optionally auto-restart and re-deploy on failure.
+Check if a server/instance is active and optionally auto-restart on failure.
+Designed to be run as a cron job for periodic monitoring.
+
+Commands:
+  --install-cron        Install a cron job for periodic monitoring
+  --uninstall-cron      Remove the pulse cron job
+  (default)             Run a single health check
 
 Options:
   --session-file FILE   Session state file (from run.sh, enables auto-restart)
@@ -63,16 +79,15 @@ Options:
   --ssh USER@HOST       Monitor a generic server via SSH
   -p PORT               SSH port (default: 22)
   -i IDENTITY_FILE      SSH identity file
-  --interval DURATION   Check interval (default: 60s, supports: 30s, 5m, 1h)
-  --count N             Number of checks (default: unlimited)
-  --quiet               Only print on status change
+  --interval DURATION   Cron interval (default: 5m, supports: 1m, 5m, 1h)
   --auto-restart        Auto-restart + re-deploy on failure
+  --max-retries N       Max consecutive restart attempts (default: 5)
   --help                Show this help
 
 Examples:
-  ./deploy/pulse.sh --pod abc123xyz456 --interval 5m
-  ./deploy/pulse.sh --ssh root@gpu-server -p 2222 --interval 30s
-  ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart
+  ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --install-cron
+  ./deploy/pulse.sh --session-file deploy/logs/.session_state --auto-restart
+  ./deploy/pulse.sh --uninstall-cron
 USAGE
     exit 0
 }
@@ -102,6 +117,29 @@ format_interval() {
     fi
 }
 
+# ── Convert seconds to cron expression ──────────────────────────────────────
+seconds_to_cron() {
+    local secs="$1"
+    if [[ $secs -lt 60 ]]; then
+        log_warn "Cron minimum interval is 1 minute. Rounding up to 1m."
+        echo "* * * * *"
+    elif [[ $secs -lt 3600 ]]; then
+        local mins=$((secs / 60))
+        if [[ $mins -eq 1 ]]; then
+            echo "* * * * *"
+        else
+            echo "*/${mins} * * * *"
+        fi
+    else
+        local hours=$((secs / 3600))
+        if [[ $hours -eq 1 ]]; then
+            echo "0 * * * *"
+        else
+            echo "0 */${hours} * * *"
+        fi
+    fi
+}
+
 # ── Parse arguments ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -123,15 +161,98 @@ while [[ $# -gt 0 ]]; do
         --interval)
             [[ $# -lt 2 ]] && { log_error "--interval requires DURATION."; exit 1; }
             INTERVAL=$(parse_duration "$2"); shift 2 ;;
-        --count)
-            [[ $# -lt 2 ]] && { log_error "--count requires N."; exit 1; }
-            MAX_COUNT="$2"; shift 2 ;;
-        --quiet)     QUIET=true; shift ;;
+        --max-retries)
+            [[ $# -lt 2 ]] && { log_error "--max-retries requires N."; exit 1; }
+            MAX_RETRIES="$2"; shift 2 ;;
         --auto-restart) AUTO_RESTART=true; shift ;;
+        --install-cron) INSTALL_CRON=true; shift ;;
+        --uninstall-cron) UNINSTALL_CRON=true; shift ;;
         --help|-h)   usage ;;
         *)           log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# ── Cron management ─────────────────────────────────────────────────────────
+
+uninstall_cron() {
+    local existing filtered
+    existing=$(crontab -l 2>/dev/null) || existing=""
+    filtered=$(echo "$existing" | grep -v "# ${CRON_TAG}$" || true)
+    # Clean up empty lines that might accumulate
+    filtered=$(echo "$filtered" | sed '/^[[:space:]]*$/d')
+    if [[ -z "$filtered" ]]; then
+        crontab -r 2>/dev/null || true
+    else
+        echo "$filtered" | crontab -
+    fi
+    # Clean up failure counter
+    rm -f "${DEPLOY_LOGS_DIR}/.pulse_failures" 2>/dev/null || true
+    log_done "Pulse cron job removed."
+}
+
+install_cron() {
+    local cron_expr
+    cron_expr=$(seconds_to_cron "$INTERVAL")
+
+    # Resolve session file to absolute path
+    local abs_session_file="$SESSION_FILE"
+    if [[ -n "$abs_session_file" && "${abs_session_file:0:1}" != "/" ]]; then
+        abs_session_file="$(cd "$(dirname "$SESSION_FILE")" && pwd)/$(basename "$SESSION_FILE")"
+    fi
+
+    # Resolve SSH identity to absolute path
+    local abs_ssh_identity="$SSH_IDENTITY"
+    if [[ -n "$abs_ssh_identity" && "${abs_ssh_identity:0:1}" != "/" ]]; then
+        abs_ssh_identity="$(cd "$(dirname "$SSH_IDENTITY")" && pwd)/$(basename "$SSH_IDENTITY")"
+    fi
+
+    # Build the pulse command args
+    local pulse_args=""
+    [[ -n "$abs_session_file" ]] && pulse_args+=" --session-file ${abs_session_file}"
+    [[ -n "$POD_ID" ]] && pulse_args+=" --pod ${POD_ID}"
+    [[ -n "$SSH_TARGET" ]] && pulse_args+=" --ssh ${SSH_TARGET}"
+    [[ -n "$SSH_PORT" ]] && pulse_args+=" -p ${SSH_PORT}"
+    [[ -n "$abs_ssh_identity" ]] && pulse_args+=" -i ${abs_ssh_identity}"
+    [[ "$AUTO_RESTART" == true ]] && pulse_args+=" --auto-restart"
+    pulse_args+=" --max-retries ${MAX_RETRIES}"
+
+    local log_file="${DEPLOY_LOGS_DIR}/pulse_cron.log"
+    mkdir -p "$DEPLOY_LOGS_DIR"
+
+    # Build env vars that cron needs (cron has a minimal environment)
+    local env_prefix="PATH=${PATH} HOME=${HOME} "
+    [[ -n "${RUNPOD_API_KEY:-}" ]] && env_prefix+="RUNPOD_API_KEY=${RUNPOD_API_KEY} "
+
+    local cron_line="${cron_expr} ${env_prefix}cd ${REPO_ROOT} && ${SCRIPT_DIR}/pulse.sh${pulse_args} >> ${log_file} 2>&1 # ${CRON_TAG}"
+
+    # Remove existing pulse entries, then add the new one
+    local existing filtered
+    existing=$(crontab -l 2>/dev/null) || existing=""
+    filtered=$(echo "$existing" | grep -v "# ${CRON_TAG}$" || true)
+    filtered=$(echo "$filtered" | sed '/^[[:space:]]*$/d')
+
+    if [[ -n "$filtered" ]]; then
+        printf '%s\n%s\n' "$filtered" "$cron_line" | crontab -
+    else
+        echo "$cron_line" | crontab -
+    fi
+
+    # Reset failure counter on fresh install
+    echo 0 > "${DEPLOY_LOGS_DIR}/.pulse_failures"
+
+    echo ""
+    log_done "Pulse cron job installed."
+    log_info "  Schedule:  ${cron_expr} (every $(format_interval "$INTERVAL"))"
+    log_info "  Log file:  ${log_file}"
+    log_info "  Uninstall: ./deploy/pulse.sh --uninstall-cron"
+    echo ""
+}
+
+# Handle --uninstall-cron early
+if [[ "$UNINSTALL_CRON" == true ]]; then
+    uninstall_cron
+    exit 0
+fi
 
 # ── Load session state if provided ──────────────────────────────────────────
 if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
@@ -142,6 +263,14 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     [[ -z "$SSH_TARGET" && -n "${SESSION_IP:-}" ]] && SSH_TARGET="${SESSION_USER:-root}@${SESSION_IP}"
     [[ -z "$SSH_PORT" && -n "${SESSION_PORT:-}" ]] && SSH_PORT="$SESSION_PORT"
     [[ -z "$SSH_IDENTITY" && -n "${SESSION_SSH_IDENTITY:-}" ]] && SSH_IDENTITY="$SESSION_SSH_IDENTITY"
+    # Pick up API key from session state
+    [[ -z "${RUNPOD_API_KEY:-}" && -n "${SESSION_RUNPOD_API_KEY:-}" ]] && export RUNPOD_API_KEY="$SESSION_RUNPOD_API_KEY"
+fi
+
+# Handle --install-cron after loading session (so we have all target info)
+if [[ "$INSTALL_CRON" == true ]]; then
+    install_cron
+    exit 0
 fi
 
 # ── Validate ────────────────────────────────────────────────────────────────
@@ -172,15 +301,60 @@ if [[ -n "$POD_ID" ]]; then
     fi
 fi
 
+# ── Lock file (prevent concurrent runs from cron overlap) ───────────────────
+mkdir -p "$DEPLOY_LOGS_DIR"
+LOCK_FILE="${DEPLOY_LOGS_DIR}/.pulse.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Skipped — another pulse instance is running."
+    exit 0
+fi
+
+# ── Disable set -e for the check and restart phases ─────────────────────────
+# The health check MUST be resilient to transient errors (network blips,
+# API timeouts, etc.).  We handle errors explicitly from here on.
+set +e
+
 # ── Check functions ─────────────────────────────────────────────────────────
 
+# Check RunPod pod status via the REST API.
+# Returns a status string.  On transient API errors, returns "api_error"
+# instead of crashing the whole script.
 check_runpod() {
     local pod_id="$1"
-    local status
-    status=$(runpod_get_pod_status "$pod_id")
-    echo "$status"
+    local info status
+
+    info=$(runpod_get_pod "$pod_id" 2>/dev/null)
+    _runpod_sync_http_code
+
+    if [[ "$RUNPOD_API_HTTP_CODE" != "200" ]]; then
+        echo "api_error"
+        return 0
+    fi
+
+    # ── Check actual runtime status first ────────────────────────────────
+    # desiredStatus is what was *requested* (e.g. RUNNING), but if the
+    # container has crashed, the runtime object reflects the real state.
+    local runtime_status
+    runtime_status=$(echo "$info" | jq -r '(.runtime // {}).status // empty' 2>/dev/null)
+
+    if [[ -n "$runtime_status" ]]; then
+        echo "$runtime_status" | tr '[:upper:]' '[:lower:]'
+        return 0
+    fi
+
+    # Fall back to desiredStatus
+    status=$(echo "$info" | jq -r '.desiredStatus // empty' 2>/dev/null)
+    if [[ -n "$status" ]]; then
+        echo "$status" | tr '[:upper:]' '[:lower:]'
+        return 0
+    fi
+
+    echo "unknown"
 }
 
+# Check SSH reachability.  Returns "reachable" or "unreachable".
+# Never crashes on error — always returns a status string.
 check_ssh_target() {
     local target="$1"
     if ssh "${_PULSE_SSH_OPTS[@]}" -o ConnectTimeout=10 -o BatchMode=yes \
@@ -193,10 +367,16 @@ check_ssh_target() {
 
 # ── Auto-restart pipeline ──────────────────────────────────────────────────
 # Sources all pipeline scripts and re-runs the full setup + launch.
+# Runs with set +e so individual step failures don't kill pulse.
 do_auto_restart() {
     log_warn "Auto-restart triggered — re-provisioning and re-deploying …"
 
     # Load session state
+    if [[ ! -f "$SESSION_FILE" ]]; then
+        log_error "Session file not found: $SESSION_FILE"
+        return 1
+    fi
+
     # shellcheck source=/dev/null
     source "$SESSION_FILE"
 
@@ -233,25 +413,43 @@ do_auto_restart() {
     setup_remote_paths
 
     # Step 2: Build venv locally
-    build_venv
+    if ! build_venv; then
+        log_error "Failed to build venv. Will retry on next pulse."
+        return 1
+    fi
 
     # Step 3: Transfer venv
-    sync_venv
+    if ! sync_venv; then
+        log_error "Failed to sync venv. Will retry on next pulse."
+        return 1
+    fi
 
     # Step 4: Sync code
-    sync_code
+    if ! sync_code; then
+        log_error "Failed to sync code. Will retry on next pulse."
+        return 1
+    fi
 
     # Step 5: Setup credentials
-    setup_creds
+    if ! setup_creds; then
+        log_error "Failed to setup credentials. Will retry on next pulse."
+        return 1
+    fi
 
     # Step 6: Setup uv
-    setup_uv
+    if ! setup_uv; then
+        log_error "Failed to setup uv. Will retry on next pulse."
+        return 1
+    fi
 
     # Step 7: Launch training in tmux
-    run_remote
+    if ! run_remote; then
+        log_error "Failed to launch remote session. Will retry on next pulse."
+        return 1
+    fi
 
     # Step 8: Save updated session state
-    save_session_state
+    save_session_state || true
 
     # Update pulse monitoring targets with new connection info
     if [[ -n "${SESSION_POD_ID:-}" ]]; then
@@ -263,108 +461,70 @@ do_auto_restart() {
     [[ -n "$SSH_PORT" ]] && _PULSE_SSH_OPTS+=(-p "$SSH_PORT")
     [[ -n "$SSH_IDENTITY" ]] && _PULSE_SSH_OPTS+=(-i "$SSH_IDENTITY")
 
-    log_done "Auto-restart complete. Resuming monitoring."
+    log_done "Auto-restart complete."
     return 0
 }
 
-# ── Setup logging ───────────────────────────────────────────────────────────
-mkdir -p "$DEPLOY_LOGS_DIR"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+# ── Failure tracking ────────────────────────────────────────────────────────
+FAILURE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_failures"
+CONSECUTIVE_FAILURES=0
+[[ -f "$FAILURE_COUNT_FILE" ]] && CONSECUTIVE_FAILURES=$(cat "$FAILURE_COUNT_FILE" 2>/dev/null || echo 0)
 
+# ── Determine target label ──────────────────────────────────────────────────
+TARGET_LABEL=""
+[[ -n "$POD_ID" ]] && TARGET_LABEL="pod:${POD_ID}"
+[[ -z "$TARGET_LABEL" && -n "$SSH_TARGET" ]] && TARGET_LABEL="ssh:${SSH_TARGET}"
+
+# ── Perform single health check ────────────────────────────────────────────
+NOW=$(date '+%Y-%m-%d %H:%M:%S')
+
+STATUS=""
 if [[ -n "$POD_ID" ]]; then
-    TARGET_LABEL="pod:${POD_ID}"
-    LOG_FILE="${DEPLOY_LOGS_DIR}/pulse_pod_${POD_ID}_${TIMESTAMP}.log"
+    STATUS=$(check_runpod "$POD_ID" 2>/dev/null) || STATUS="check_error"
 else
-    SAFE_TARGET=$(echo "$SSH_TARGET" | tr '@:.' '_')
-    TARGET_LABEL="ssh:${SSH_TARGET}"
-    LOG_FILE="${DEPLOY_LOGS_DIR}/pulse_ssh_${SAFE_TARGET}_${TIMESTAMP}.log"
+    STATUS=$(check_ssh_target "$SSH_TARGET" 2>/dev/null) || STATUS="check_error"
 fi
+[[ -z "$STATUS" ]] && STATUS="check_error"
 
-{
-    echo "# Pulse Monitor Log"
-    echo "# Started: $(date -Iseconds)"
-    echo "# Target:  ${TARGET_LABEL}"
-    echo "# Interval: $(format_interval "$INTERVAL")"
-    echo "# Auto-restart: ${AUTO_RESTART}"
-    [[ $MAX_COUNT -gt 0 ]] && echo "# Max checks: ${MAX_COUNT}"
-    echo ""
-} > "$LOG_FILE"
+# Status icon for log readability
+case "$STATUS" in
+    running|reachable)      STATUS_ICON="✔" ;;
+    starting|created)       STATUS_ICON="…" ;;
+    api_error|check_error)  STATUS_ICON="?" ;;
+    *)                      STATUS_ICON="✘" ;;
+esac
 
-# ── Print header ────────────────────────────────────────────────────────────
-echo -e "${CYAN}╔═══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  Pulse Monitor                                ║${NC}"
-echo -e "${CYAN}╠═══════════════════════════════════════════════╣${NC}"
-echo -e "${CYAN}║${NC}  Target:       ${GREEN}${TARGET_LABEL}${NC}"
-echo -e "${CYAN}║${NC}  Interval:     ${GREEN}$(format_interval "$INTERVAL")${NC}"
-echo -e "${CYAN}║${NC}  Auto-restart: ${GREEN}${AUTO_RESTART}${NC}"
-[[ $MAX_COUNT -gt 0 ]] && echo -e "${CYAN}║${NC}  Checks:       ${GREEN}${MAX_COUNT}${NC}"
-echo -e "${CYAN}║${NC}  Log:          ${GREEN}${LOG_FILE}${NC}"
-echo -e "${CYAN}╚═══════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${YELLOW}Press Ctrl+C to stop monitoring.${NC}"
-echo ""
+echo "[${NOW}] ${STATUS_ICON} ${TARGET_LABEL} status=${STATUS}"
 
-# ── Main monitoring loop ────────────────────────────────────────────────────
-PREV_STATUS=""
-CHECK_NUM=0
+# ── Handle status ───────────────────────────────────────────────────────────
+case "$STATUS" in
+    running|reachable)
+        # All good — reset failure counter
+        echo 0 > "$FAILURE_COUNT_FILE"
+        ;;
+    stopped|exited|unreachable|error)
+        CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+        echo "$CONSECUTIVE_FAILURES" > "$FAILURE_COUNT_FILE"
 
-trap 'echo -e "\n${YELLOW}Pulse stopped.${NC}"; echo "# Stopped: $(date -Iseconds)" >> "$LOG_FILE"; exit 0' INT TERM
-
-while true; do
-    CHECK_NUM=$((CHECK_NUM + 1))
-    NOW=$(date '+%Y-%m-%d %H:%M:%S')
-
-    # Perform check
-    if [[ -n "$POD_ID" ]]; then
-        STATUS=$(check_runpod "$POD_ID")
-    else
-        STATUS=$(check_ssh_target "$SSH_TARGET")
-    fi
-
-    # Determine status colour
-    case "$STATUS" in
-        running|reachable)  STATUS_COLOR="${GREEN}" ;;
-        starting|created)   STATUS_COLOR="${YELLOW}" ;;
-        stopped|exited|unreachable|error) STATUS_COLOR="${RED}" ;;
-        *)                  STATUS_COLOR="${YELLOW}" ;;
-    esac
-
-    # Log the check
-    echo "[${NOW}] #${CHECK_NUM} status=${STATUS}" >> "$LOG_FILE"
-
-    # Print (respect --quiet: only print on change)
-    if [[ "$QUIET" == false ]] || [[ "$STATUS" != "$PREV_STATUS" ]]; then
-        if [[ "$STATUS" != "$PREV_STATUS" && -n "$PREV_STATUS" ]]; then
-            echo -e "  ${YELLOW}⚡ Status changed: ${PREV_STATUS} → ${STATUS}${NC}"
-        fi
-        echo -e "  [${NOW}] ${BLUE}#${CHECK_NUM}${NC}  ${STATUS_COLOR}${STATUS}${NC}"
-    fi
-
-    # Auto-restart if server is down
-    if [[ "$AUTO_RESTART" == true ]]; then
-        case "$STATUS" in
-            stopped|exited|unreachable|error)
-                echo "[${NOW}] AUTO-RESTART triggered (status=${STATUS})" >> "$LOG_FILE"
+        if [[ "$AUTO_RESTART" == true ]]; then
+            if [[ $CONSECUTIVE_FAILURES -ge $MAX_RETRIES ]]; then
+                echo "[${NOW}] Giving up after ${MAX_RETRIES} consecutive failures. Removing cron job."
+                log_error "Auto-restart failed ${MAX_RETRIES} times consecutively. Removing cron job — manual intervention needed."
+                log_info "Re-install with: ./deploy/pulse.sh --install-cron --session-file <FILE> --interval <INTERVAL> --auto-restart"
+                uninstall_cron
+            else
+                echo "[${NOW}] AUTO-RESTART triggered (attempt ${CONSECUTIVE_FAILURES}/${MAX_RETRIES})"
                 if do_auto_restart; then
-                    echo "[${NOW}] AUTO-RESTART succeeded" >> "$LOG_FILE"
-                    STATUS="restarted"
+                    echo "[${NOW}] AUTO-RESTART succeeded"
+                    echo 0 > "$FAILURE_COUNT_FILE"
                 else
-                    echo "[${NOW}] AUTO-RESTART failed — will retry" >> "$LOG_FILE"
-                    log_warn "Auto-restart failed. Will retry on next pulse."
+                    echo "[${NOW}] AUTO-RESTART failed (attempt ${CONSECUTIVE_FAILURES}/${MAX_RETRIES}) — will retry next check"
                 fi
-                ;;
-        esac
-    fi
-
-    PREV_STATUS="$STATUS"
-
-    # Check if we've reached the limit
-    if [[ $MAX_COUNT -gt 0 && $CHECK_NUM -ge $MAX_COUNT ]]; then
-        echo ""
-        log_done "Completed ${MAX_COUNT} checks."
-        echo "# Completed: $(date -Iseconds) (${MAX_COUNT} checks)" >> "$LOG_FILE"
-        break
-    fi
-
-    sleep "$INTERVAL"
-done
+            fi
+        fi
+        ;;
+    api_error|check_error)
+        # Transient error — don't count as a failure, don't restart
+        echo "[${NOW}] Transient error (${STATUS}) — will retry next check"
+        ;;
+esac

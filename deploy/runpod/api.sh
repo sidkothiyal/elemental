@@ -120,7 +120,11 @@ runpod_get_pod() {
     runpod_api GET "/pods/${pod_id}"
 }
 
-# Get pod status string (RUNNING, EXITED, STOPPED, etc.).
+# Get pod status string (running, exited, stopped, etc.).
+# Checks runtime.status first (actual container state), then falls back
+# to desiredStatus (the requested state).  This distinction matters: a
+# pod whose container crashed may still have desiredStatus=RUNNING while
+# its runtime.status is DEAD/EXITED.
 # Usage: runpod_get_pod_status POD_ID
 runpod_get_pod_status() {
     local pod_id="$1"
@@ -133,11 +137,18 @@ runpod_get_pod_status() {
         return
     fi
 
-    # Try desiredStatus first, fall back to lastStatusChange keywords
+    # Prefer actual runtime status over desired status
+    local runtime_status
+    runtime_status=$(echo "$info" | jq -r '(.runtime // {}).status // empty' 2>/dev/null)
+    if [[ -n "$runtime_status" ]]; then
+        echo "$runtime_status" | tr '[:upper:]' '[:lower:]'
+        return
+    fi
+
+    # Fall back to desiredStatus (the requested state)
     local status
     status=$(echo "$info" | jq -r '.desiredStatus // empty' 2>/dev/null)
     if [[ -n "$status" ]]; then
-        # Normalise to lowercase for consistent checks
         echo "$status" | tr '[:upper:]' '[:lower:]'
         return
     fi
