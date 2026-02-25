@@ -336,12 +336,10 @@ if [[ -n "$PULSE_INTERVAL" && ${#PYTHON_ARGS[@]} -gt 0 ]]; then
         --auto-restart
     )
 
-    # Add pod-specific monitoring if we have a pod ID
-    [[ -n "$POD_ID" ]] && PULSE_CMD+=(--pod "$POD_ID")
-    # Otherwise use SSH monitoring
-    [[ -z "$POD_ID" ]] && PULSE_CMD+=(--ssh "${REMOTE_HOST}")
-    [[ -n "$REMOTE_PORT" ]] && PULSE_CMD+=(-p "$REMOTE_PORT")
-    [[ -n "$SSH_IDENTITY" ]] && PULSE_CMD+=(-i "$SSH_IDENTITY")
+    # Target info (pod ID, SSH host, port) is read from the session file at
+    # each cron invocation, not baked into the cron entry.  This is essential
+    # for RECOVERY_POLICY="new" where auto-restart creates a fresh pod with
+    # a new ID/IP each time.
 
     "${PULSE_CMD[@]}"
 fi

@@ -131,6 +131,12 @@ _wait_for_ssh() {
 # ── Main function ───────────────────────────────────────────────────────────
 
 ensure_machine() {
+    # Load pod config to pick up RECOVERY_POLICY (and other settings)
+    if [[ "${PROVIDER:-}" == "runpod" && -z "${RECOVERY_POLICY:-}" ]]; then
+        local _conf="${POD_CONFIG:-${DEPLOY_DIR}/runpod/pod.conf}"
+        [[ -f "$_conf" ]] && source "$_conf"
+    fi
+
     # Case 1: IP + port provided → check if reachable
     if [[ -n "${REMOTE_IP:-}" ]]; then
         REMOTE_PORT="${REMOTE_PORT:-22}"
@@ -144,11 +150,23 @@ ensure_machine() {
 
         log_warn "Machine at ${REMOTE_IP}:${REMOTE_PORT} is unreachable."
 
-        # Try to restart via provider if available
+        # Try to recover via provider if available
         if [[ "${PROVIDER:-}" == "runpod" && -n "${POD_ID:-}" ]]; then
-            log_info "Attempting to restart via RunPod …"
             _runpod_require_api || return 1
+
+            if [[ "${RECOVERY_POLICY:-restart}" == "new" ]]; then
+                log_info "Recovery policy is 'new' — creating a fresh pod …"
+                # Best-effort stop of the old pod (avoid charges on stale pods)
+                log_step "Stopping old pod ${POD_ID} …"
+                runpod_stop_pod "$POD_ID" 2>/dev/null || true
+                # Clear stale connection info so _runpod_create gets fresh values
+                REMOTE_IP=""
+                _runpod_create || return 1
+            else
+                log_info "Attempting to restart existing pod via RunPod …"
             _runpod_start "$POD_ID" || return 1
+            fi
+
             build_ssh_opts  # rebuild with new IP/port
             _wait_for_ssh || return 1
             return 0
@@ -168,7 +186,7 @@ ensure_machine() {
         case "$PROVIDER" in
             runpod)
                 _runpod_require_api || return 1
-                if [[ -n "${POD_ID:-}" ]]; then
+                if [[ -n "${POD_ID:-}" && "${RECOVERY_POLICY:-restart}" != "new" ]]; then
                     # Start existing pod
                     _runpod_start "$POD_ID" || return 1
                 else

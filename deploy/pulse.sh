@@ -207,12 +207,19 @@ install_cron() {
     fi
 
     # Build the pulse command args
+    # When --session-file is provided, target info (pod ID, SSH host, port)
+    # is read from the session file at each invocation — NOT baked into the
+    # cron entry.  This is critical for RECOVERY_POLICY="new" where auto-
+    # restart creates a fresh pod with a new ID/IP.
     local pulse_args=""
     [[ -n "$abs_session_file" ]] && pulse_args+=" --session-file ${abs_session_file}"
-    [[ -n "$POD_ID" ]] && pulse_args+=" --pod ${POD_ID}"
-    [[ -n "$SSH_TARGET" ]] && pulse_args+=" --ssh ${SSH_TARGET}"
-    [[ -n "$SSH_PORT" ]] && pulse_args+=" -p ${SSH_PORT}"
-    [[ -n "$abs_ssh_identity" ]] && pulse_args+=" -i ${abs_ssh_identity}"
+    if [[ -z "$abs_session_file" ]]; then
+        # No session file — must bake target info into the cron entry
+        [[ -n "$POD_ID" ]] && pulse_args+=" --pod ${POD_ID}"
+        [[ -n "$SSH_TARGET" ]] && pulse_args+=" --ssh ${SSH_TARGET}"
+        [[ -n "$SSH_PORT" ]] && pulse_args+=" -p ${SSH_PORT}"
+        [[ -n "$abs_ssh_identity" ]] && pulse_args+=" -i ${abs_ssh_identity}"
+    fi
     [[ "$AUTO_RESTART" == true ]] && pulse_args+=" --auto-restart"
     pulse_args+=" --max-retries ${MAX_RETRIES}"
 
@@ -390,6 +397,11 @@ do_auto_restart() {
     POD_CONFIG="${SESSION_POD_CONFIG:-}"
     REMOTE_PROJECT_DIR="${SESSION_REMOTE_PROJECT_DIR:-/workspace}"
     REMOTE_HOME="${SESSION_REMOTE_HOME:-/root}"
+    RECOVERY_POLICY="${SESSION_RECOVERY_POLICY:-restart}"
+
+    # Restore API keys that cron's minimal environment doesn't have
+    [[ -n "${SESSION_WANDB_API_KEY:-}" ]] && export WANDB_API_KEY="$SESSION_WANDB_API_KEY"
+    [[ -n "${SESSION_RUNPOD_API_KEY:-}" ]] && export RUNPOD_API_KEY="$SESSION_RUNPOD_API_KEY"
 
     # Reconstruct PYTHON_ARGS from the saved string
     eval "PYTHON_ARGS=( ${SESSION_PYTHON_ARGS:-} )"
@@ -452,9 +464,7 @@ do_auto_restart() {
     save_session_state || true
 
     # Update pulse monitoring targets with new connection info
-    if [[ -n "${SESSION_POD_ID:-}" ]]; then
-        POD_ID="$SESSION_POD_ID"
-    fi
+    # (POD_ID may have been updated by _runpod_create if RECOVERY_POLICY="new")
     SSH_TARGET="${REMOTE_USER}@${REMOTE_IP}"
     SSH_PORT="$REMOTE_PORT"
     _PULSE_SSH_OPTS=()
@@ -476,55 +486,55 @@ TARGET_LABEL=""
 [[ -z "$TARGET_LABEL" && -n "$SSH_TARGET" ]] && TARGET_LABEL="ssh:${SSH_TARGET}"
 
 # ── Perform single health check ────────────────────────────────────────────
-NOW=$(date '+%Y-%m-%d %H:%M:%S')
+    NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
-STATUS=""
-if [[ -n "$POD_ID" ]]; then
-    STATUS=$(check_runpod "$POD_ID" 2>/dev/null) || STATUS="check_error"
-else
-    STATUS=$(check_ssh_target "$SSH_TARGET" 2>/dev/null) || STATUS="check_error"
-fi
-[[ -z "$STATUS" ]] && STATUS="check_error"
+    STATUS=""
+    if [[ -n "$POD_ID" ]]; then
+        STATUS=$(check_runpod "$POD_ID" 2>/dev/null) || STATUS="check_error"
+    else
+        STATUS=$(check_ssh_target "$SSH_TARGET" 2>/dev/null) || STATUS="check_error"
+    fi
+    [[ -z "$STATUS" ]] && STATUS="check_error"
 
 # Status icon for log readability
-case "$STATUS" in
+    case "$STATUS" in
     running|reachable)      STATUS_ICON="✔" ;;
     starting|created)       STATUS_ICON="…" ;;
     api_error|check_error)  STATUS_ICON="?" ;;
     *)                      STATUS_ICON="✘" ;;
-esac
+    esac
 
 echo "[${NOW}] ${STATUS_ICON} ${TARGET_LABEL} status=${STATUS}"
 
 # ── Handle status ───────────────────────────────────────────────────────────
-case "$STATUS" in
+        case "$STATUS" in
     running|reachable)
         # All good — reset failure counter
         echo 0 > "$FAILURE_COUNT_FILE"
         ;;
-    stopped|exited|unreachable|error)
-        CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+            stopped|exited|unreachable|error)
+                CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
         echo "$CONSECUTIVE_FAILURES" > "$FAILURE_COUNT_FILE"
 
         if [[ "$AUTO_RESTART" == true ]]; then
-            if [[ $CONSECUTIVE_FAILURES -ge $MAX_RETRIES ]]; then
+                if [[ $CONSECUTIVE_FAILURES -ge $MAX_RETRIES ]]; then
                 echo "[${NOW}] Giving up after ${MAX_RETRIES} consecutive failures. Removing cron job."
                 log_error "Auto-restart failed ${MAX_RETRIES} times consecutively. Removing cron job — manual intervention needed."
                 log_info "Re-install with: ./deploy/pulse.sh --install-cron --session-file <FILE> --interval <INTERVAL> --auto-restart"
                 uninstall_cron
-            else
+                else
                 echo "[${NOW}] AUTO-RESTART triggered (attempt ${CONSECUTIVE_FAILURES}/${MAX_RETRIES})"
-                if do_auto_restart; then
+                    if do_auto_restart; then
                     echo "[${NOW}] AUTO-RESTART succeeded"
                     echo 0 > "$FAILURE_COUNT_FILE"
-                else
+                    else
                     echo "[${NOW}] AUTO-RESTART failed (attempt ${CONSECUTIVE_FAILURES}/${MAX_RETRIES}) — will retry next check"
                 fi
-            fi
-        fi
-        ;;
-    api_error|check_error)
+                    fi
+                fi
+                ;;
+            api_error|check_error)
         # Transient error — don't count as a failure, don't restart
         echo "[${NOW}] Transient error (${STATUS}) — will retry next check"
-        ;;
-esac
+                ;;
+        esac
