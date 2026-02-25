@@ -28,11 +28,16 @@
 #                         Minimum for cron: 1m
 #   --auto-restart        Auto-restart and re-deploy on failure
 #   --max-retries N       Max consecutive restart attempts before disabling (default: 5)
+#   --idle-stop           Stop pod and remove cron if GPU usage stays below 5% for
+#                         3 consecutive checks (requires SSH access to the machine)
 #   --help                Show this help
 #
 # Examples:
 #   # Install cron-based monitoring (every 5 minutes):
 #   ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --install-cron
+#
+#   # Install with idle-stop (shuts down pod when GPU goes idle for 3 checks):
+#   ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --idle-stop --install-cron
 #
 #   # Single manual check:
 #   ./deploy/pulse.sh --session-file deploy/logs/.session_state --auto-restart
@@ -59,6 +64,9 @@ MAX_RETRIES=5
 INSTALL_CRON=false
 UNINSTALL_CRON=false
 CRON_TAG="elemental_pulse"
+IDLE_STOP=false
+GPU_IDLE_THRESHOLD=5      # percent — below this is considered idle
+GPU_IDLE_MAX_STRIKES=3    # consecutive idle checks before auto-stop
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 usage() {
@@ -82,10 +90,12 @@ Options:
   --interval DURATION   Cron interval (default: 5m, supports: 1m, 5m, 1h)
   --auto-restart        Auto-restart + re-deploy on failure
   --max-retries N       Max consecutive restart attempts (default: 5)
+  --idle-stop           Stop pod and remove cron if GPU stays below 5% for 3 checks
   --help                Show this help
 
 Examples:
   ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --install-cron
+  ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --idle-stop --install-cron
   ./deploy/pulse.sh --session-file deploy/logs/.session_state --auto-restart
   ./deploy/pulse.sh --uninstall-cron
 USAGE
@@ -165,6 +175,7 @@ while [[ $# -gt 0 ]]; do
             [[ $# -lt 2 ]] && { log_error "--max-retries requires N."; exit 1; }
             MAX_RETRIES="$2"; shift 2 ;;
         --auto-restart) AUTO_RESTART=true; shift ;;
+        --idle-stop)    IDLE_STOP=true; shift ;;
         --install-cron) INSTALL_CRON=true; shift ;;
         --uninstall-cron) UNINSTALL_CRON=true; shift ;;
         --help|-h)   usage ;;
@@ -185,8 +196,9 @@ uninstall_cron() {
     else
         echo "$filtered" | crontab -
     fi
-    # Clean up failure counter
+    # Clean up state files
     rm -f "${DEPLOY_LOGS_DIR}/.pulse_failures" 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}/.pulse_low_gpu" 2>/dev/null || true
     log_done "Pulse cron job removed."
 }
 
@@ -222,6 +234,7 @@ install_cron() {
     fi
     [[ "$AUTO_RESTART" == true ]] && pulse_args+=" --auto-restart"
     pulse_args+=" --max-retries ${MAX_RETRIES}"
+    [[ "$IDLE_STOP" == true ]] && pulse_args+=" --idle-stop"
 
     local log_file="${DEPLOY_LOGS_DIR}/pulse_cron.log"
     mkdir -p "$DEPLOY_LOGS_DIR"
@@ -480,6 +493,68 @@ FAILURE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_failures"
 CONSECUTIVE_FAILURES=0
 [[ -f "$FAILURE_COUNT_FILE" ]] && CONSECUTIVE_FAILURES=$(cat "$FAILURE_COUNT_FILE" 2>/dev/null || echo 0)
 
+# ── GPU idle tracking ────────────────────────────────────────────────────────
+GPU_IDLE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_low_gpu"
+GPU_IDLE_STRIKES=0
+[[ -f "$GPU_IDLE_COUNT_FILE" ]] && GPU_IDLE_STRIKES=$(cat "$GPU_IDLE_COUNT_FILE" 2>/dev/null || echo 0)
+
+# Query peak GPU utilisation across all GPUs on a remote host via SSH.
+# Returns an integer (0–100) on stdout, or -1 if nvidia-smi is unavailable
+# or the SSH connection fails.  Never crashes.
+check_gpu_usage() {
+    local target="$1"
+    local output max_util util
+
+    output=$(ssh "${_PULSE_SSH_OPTS[@]}" \
+        -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no \
+        "$target" \
+        "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null" \
+        2>/dev/null)
+
+    if [[ $? -ne 0 || -z "$output" ]]; then
+        echo -1
+        return 0
+    fi
+
+    max_util=0
+    while IFS= read -r line; do
+        util=$(echo "$line" | tr -d '[:space:]')
+        [[ "$util" =~ ^[0-9]+$ ]] || continue
+        [[ $util -gt $max_util ]] && max_util=$util
+    done <<< "$output"
+
+    echo "$max_util"
+}
+
+# Stop the monitored machine and remove the cron job.
+# For RunPod pods: calls the stop API.
+# For SSH-only targets: issues a remote shutdown.
+do_idle_stop() {
+    local now
+    now=$(date '+%Y-%m-%d %H:%M:%S')
+
+    echo "[${now}] GPU has been idle (<${GPU_IDLE_THRESHOLD}%) for ${GPU_IDLE_MAX_STRIKES} consecutive checks."
+    log_warn "Idle-stop triggered — stopping machine and removing cron job."
+
+    if [[ -n "$POD_ID" ]]; then
+        local result
+        result=$(runpod_stop_pod "$POD_ID" 2>/dev/null)
+        _runpod_sync_http_code
+        if [[ "$RUNPOD_API_HTTP_CODE" == "200" ]]; then
+            echo "[${now}] Pod ${POD_ID} stopped successfully."
+        else
+            echo "[${now}] Warning: stop API returned HTTP ${RUNPOD_API_HTTP_CODE} — pod may already be stopped."
+        fi
+    elif [[ -n "$SSH_TARGET" ]]; then
+        ssh "${_PULSE_SSH_OPTS[@]}" \
+            -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no \
+            "$SSH_TARGET" "sudo shutdown -h now" &>/dev/null || true
+        echo "[${now}] Shutdown command sent to ${SSH_TARGET}."
+    fi
+
+    uninstall_cron
+}
+
 # ── Determine target label ──────────────────────────────────────────────────
 TARGET_LABEL=""
 [[ -n "$POD_ID" ]] && TARGET_LABEL="pod:${POD_ID}"
@@ -511,6 +586,25 @@ echo "[${NOW}] ${STATUS_ICON} ${TARGET_LABEL} status=${STATUS}"
     running|reachable)
         # All good — reset failure counter
         echo 0 > "$FAILURE_COUNT_FILE"
+
+        # ── GPU idle check (only when --idle-stop is enabled) ────────────
+        if [[ "$IDLE_STOP" == true && -n "$SSH_TARGET" ]]; then
+            GPU_UTIL=$(check_gpu_usage "$SSH_TARGET" 2>/dev/null)
+            if [[ "$GPU_UTIL" -lt 0 ]]; then
+                echo "[${NOW}] GPU check skipped (nvidia-smi unavailable or SSH error)"
+                echo 0 > "$GPU_IDLE_COUNT_FILE"
+            elif [[ "$GPU_UTIL" -lt "$GPU_IDLE_THRESHOLD" ]]; then
+                GPU_IDLE_STRIKES=$((GPU_IDLE_STRIKES + 1))
+                echo "$GPU_IDLE_STRIKES" > "$GPU_IDLE_COUNT_FILE"
+                echo "[${NOW}] GPU idle — util=${GPU_UTIL}% (strike ${GPU_IDLE_STRIKES}/${GPU_IDLE_MAX_STRIKES})"
+                if [[ $GPU_IDLE_STRIKES -ge $GPU_IDLE_MAX_STRIKES ]]; then
+                    do_idle_stop
+                fi
+            else
+                echo "[${NOW}] GPU active — util=${GPU_UTIL}% (idle strikes reset)"
+                echo 0 > "$GPU_IDLE_COUNT_FILE"
+            fi
+        fi
         ;;
             stopped|exited|unreachable|error)
                 CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
@@ -527,6 +621,7 @@ echo "[${NOW}] ${STATUS_ICON} ${TARGET_LABEL} status=${STATUS}"
                     if do_auto_restart; then
                     echo "[${NOW}] AUTO-RESTART succeeded"
                     echo 0 > "$FAILURE_COUNT_FILE"
+                    echo 0 > "$GPU_IDLE_COUNT_FILE"
                     else
                     echo "[${NOW}] AUTO-RESTART failed (attempt ${CONSECUTIVE_FAILURES}/${MAX_RETRIES}) — will retry next check"
                 fi

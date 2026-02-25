@@ -45,6 +45,20 @@ setup_remote_paths() {
 }
 
 # ── SSH utilities ───────────────────────────────────────────────────────────
+# Remove host from known_hosts so re-used IPs (e.g. new pod, same IP) don't trigger
+# "Remote Host Identification has changed". Call after REMOTE_IP (and REMOTE_PORT) are set.
+ssh_remove_from_known_hosts() {
+    [[ -z "${REMOTE_IP:-}" ]] && return 0
+    local known_hosts="${HOME:-/root}/.ssh/known_hosts"
+    [[ ! -f "$known_hosts" ]] && return 0
+
+    # Remove [IP]:port (non-default port) and bare IP so SSH will accept the new key
+    if [[ -n "${REMOTE_PORT:-}" && "${REMOTE_PORT}" != "22" ]]; then
+        ssh-keygen -R "[${REMOTE_IP}]:${REMOTE_PORT}" -f "$known_hosts" 2>/dev/null || true
+    fi
+    ssh-keygen -R "$REMOTE_IP" -f "$known_hosts" 2>/dev/null || true
+}
+
 # Call build_ssh_opts after setting REMOTE_USER, REMOTE_IP, REMOTE_PORT, SSH_IDENTITY.
 build_ssh_opts() {
     REMOTE_USER="${REMOTE_USER:-root}"
@@ -53,6 +67,8 @@ build_ssh_opts() {
     SSH_OPTS=()
     [[ -n "${REMOTE_PORT:-}" ]] && SSH_OPTS+=(-p "$REMOTE_PORT")
     [[ -n "${SSH_IDENTITY:-}" ]] && SSH_OPTS+=(-i "$SSH_IDENTITY")
+    # Accept new host keys (e.g. after removing old key for re-used IP) without prompt
+    SSH_OPTS+=(-o StrictHostKeyChecking=accept-new)
 
     RSYNC_SSH="ssh"
     [[ -n "${REMOTE_PORT:-}" ]] && RSYNC_SSH="$RSYNC_SSH -p $REMOTE_PORT"
@@ -73,7 +89,7 @@ ssh_cmd() {
 # Check if remote is reachable via SSH (returns 0 if reachable).
 ssh_check() {
     ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 -o BatchMode=yes \
-        -o StrictHostKeyChecking=no "$REMOTE_HOST" "echo ok" &>/dev/null
+        "$REMOTE_HOST" "echo ok" &>/dev/null
 }
 
 # ── Session state ───────────────────────────────────────────────────────────

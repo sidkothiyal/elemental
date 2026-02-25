@@ -141,6 +141,7 @@ ensure_machine() {
     if [[ -n "${REMOTE_IP:-}" ]]; then
         REMOTE_PORT="${REMOTE_PORT:-22}"
         build_ssh_opts
+        ssh_remove_from_known_hosts
 
         log_step "Checking if ${REMOTE_IP}:${REMOTE_PORT} is reachable …"
         if ssh_check; then
@@ -168,6 +169,7 @@ ensure_machine() {
             fi
 
             build_ssh_opts  # rebuild with new IP/port
+            ssh_remove_from_known_hosts
             _wait_for_ssh || return 1
             return 0
         elif [[ "${PROVIDER:-}" == "vast.ai" ]]; then
@@ -194,6 +196,7 @@ ensure_machine() {
                     _runpod_create || return 1
                 fi
                 build_ssh_opts  # rebuild with new IP/port
+                ssh_remove_from_known_hosts
                 _wait_for_ssh || return 1
                 return 0
                 ;;

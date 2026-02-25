@@ -25,6 +25,8 @@
 #   --remote-home PATH          Remote home directory (default: /root)
 #   --pulse INTERVAL      Install pulse cron job for monitoring + auto-restart
 #                         Supports: 1m, 5m, 1h (minimum: 1m, cron-based)
+#   --pulse-idle-stop     Stop pod and remove cron if GPU stays below 5% for 3
+#                         consecutive pulse checks (requires --pulse)
 #   --help                Show this help
 #
 # Examples:
@@ -42,6 +44,9 @@
 #
 #   # Remote — with pulse auto-restart monitoring:
 #   ./run.sh --ip 1.2.3.4 -p 22222 --provider runpod --pod-id abc123 --pulse 5m -- -m src.train
+#
+#   # Remote — with pulse + idle-stop (shuts down when GPU goes idle):
+#   ./run.sh --provider runpod --pulse 5m --pulse-idle-stop -- -m src.train
 #
 #   # Remote — setup only (no python args = no execution):
 #   ./run.sh --ip 1.2.3.4 -p 22222
@@ -79,6 +84,7 @@ POD_CONFIG=""
 REMOTE_PROJECT_DIR="/workspace"
 REMOTE_HOME="/root"
 PULSE_INTERVAL=""
+PULSE_IDLE_STOP=false
 PYTHON_ARGS=()
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -103,6 +109,7 @@ Options:
   --remote-project-dir PATH   Remote workspace root (default: /workspace)
   --remote-home PATH          Remote home directory (default: /root)
   --pulse INTERVAL      Install pulse cron job for monitoring + auto-restart (e.g. 5m, 1h)
+  --pulse-idle-stop     Stop pod and remove cron if GPU idle <5% for 3 checks (requires --pulse)
   --help                Show this help
 
 Examples:
@@ -117,6 +124,9 @@ Examples:
 
   # Remote (restart existing pod + pulse monitoring):
   ./run.sh --provider runpod --pod-id abc123 --pulse 5m -- -m src.train
+
+  # Remote (pulse + idle-stop):
+  ./run.sh --provider runpod --pulse 5m --pulse-idle-stop -- -m src.train
 
   # Remote (setup only):
   ./run.sh --ip 1.2.3.4 -p 22222
@@ -160,6 +170,8 @@ while [[ $# -gt 0 ]]; do
         --pulse)
             [[ $# -lt 2 ]] && { log_error "--pulse requires INTERVAL argument."; exit 1; }
             PULSE_INTERVAL="$2"; shift 2 ;;
+        --pulse-idle-stop)
+            PULSE_IDLE_STOP=true; shift ;;
         --help|-h)
             usage ;;
         --)
@@ -315,6 +327,10 @@ run_remote
 save_session_state
 
 # ── Install pulse cron job if requested ─────────────────────────────────────
+if [[ "$PULSE_IDLE_STOP" == true && -z "$PULSE_INTERVAL" ]]; then
+    log_warn "--pulse-idle-stop has no effect without --pulse. Ignoring."
+fi
+
 if [[ -n "$PULSE_INTERVAL" && ${#PYTHON_ARGS[@]} -gt 0 ]]; then
     # Warn if we have a RunPod provider but no pod ID (happens when the user
     # provides --ip manually, bypassing pod creation).  Without a pod ID,
@@ -335,6 +351,7 @@ if [[ -n "$PULSE_INTERVAL" && ${#PYTHON_ARGS[@]} -gt 0 ]]; then
         --interval "$PULSE_INTERVAL"
         --auto-restart
     )
+    [[ "$PULSE_IDLE_STOP" == true ]] && PULSE_CMD+=(--idle-stop)
 
     # Target info (pod ID, SSH host, port) is read from the session file at
     # each cron invocation, not baked into the cron entry.  This is essential

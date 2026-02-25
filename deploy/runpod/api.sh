@@ -245,6 +245,20 @@ runpod_wait_ready() {
     return 1
 }
 
+# Remove host from ~/.ssh/known_hosts so re-used IPs don't trigger
+# "Remote Host Identification has changed". Args: $1 = IP, $2 = port (default 22)
+_runpod_ssh_remove_known_hosts() {
+    local ip="$1"
+    local port="${2:-22}"
+    [[ -z "$ip" ]] && return 0
+    local known_hosts="${HOME:-/root}/.ssh/known_hosts"
+    [[ ! -f "$known_hosts" ]] && return 0
+    if [[ -n "$port" && "$port" != "22" ]]; then
+        ssh-keygen -R "[${ip}]:${port}" -f "$known_hosts" 2>/dev/null || true
+    fi
+    ssh-keygen -R "$ip" -f "$known_hosts" 2>/dev/null || true
+}
+
 # Poll until SSH connection info (publicIp + portMappings) is available.
 # Ports can take ~60s after RUNNING to be assigned.
 # Args: $1 = pod_id, $2 = max_wait (default 120s)
@@ -287,6 +301,9 @@ runpod_wait_ssh_info() {
             echo -e "  ${GREEN}Connect:${NC} ssh root@${REMOTE_IP} -p ${REMOTE_PORT}"
             echo -e "${BLUE}═══════════════════════════════════════════${NC}"
             echo -e "  ${GREEN}Log:${NC} $log_file"
+            # Remove old host key so re-used IPs (e.g. new pod, same IP) don't trigger
+            # "Remote Host Identification has changed" when user runs the printed ssh command
+            _runpod_ssh_remove_known_hosts "$REMOTE_IP" "${REMOTE_PORT:-22}"
             return 0
         fi
 
