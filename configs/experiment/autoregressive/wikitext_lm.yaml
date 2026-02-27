@@ -12,6 +12,7 @@ defaults:
   - /scheduler: step_lr
   - /callback: default
   - /torch_compile
+  - /remote_backup: wandb
   - _self_
 
 experiment_name: autoregressive_lm_wikitext_${now:%Y-%m-%d}_${now:%H-%M-%S}

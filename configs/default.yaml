@@ -27,3 +27,6 @@ load_checkpoint_path: null
 load_keys: null
 strict: true
 resume_training: false
+
+# Remote backup strategy (null disables remote backup)
+remote_backup: null

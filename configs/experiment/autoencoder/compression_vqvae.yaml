@@ -12,6 +12,7 @@ defaults:
   - /scheduler: cosine_annealing
   - /callback: default
   - /torch_compile
+  - /remote_backup: wandb
   - _self_
 
 experiment_name: compression_autoencoder_vq_vae_${now:%Y-%m-%d}_${now:%H-%M-%S}

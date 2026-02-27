@@ -12,6 +12,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from utils import checkpoint, distributed
+from utils.remote_backup.base import RemoteBackupStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,52 @@ def compile_model_and_optimizer_step(
             logger.info("Compiled optimizer.step successfully")
 
     return compiled_model
+
+
+def initialize_remote_backup(
+    config: DictConfig,
+    results_dir: str,
+) -> RemoteBackupStrategy | None:
+    """Instantiate the remote backup strategy and download a checkpoint if needed.
+
+    This must be called **before** callback initialization so that any
+    downloaded ``wandb_run_id.txt`` is available when ``WandbCallback``
+    starts.
+
+    Args:
+        config: Full Hydra config.  Reads ``remote_backup``,
+            ``load_checkpoint_path``, and ``resume_training`` keys.
+        results_dir: Fully-qualified results directory for the current run
+            (e.g. ``results/autoencoder/exp_name_2026-02-27_12-00-00``).
+
+    Returns:
+        The instantiated :class:`RemoteBackupStrategy`, or ``None`` if
+        remote backup is not configured.
+    """
+    if not config.get("remote_backup"):
+        return None
+
+    remote_backup: RemoteBackupStrategy = hy_utils.instantiate(config.remote_backup)
+    logger.info("Remote backup strategy: %s", type(remote_backup).__name__)
+
+    checkpoint_path_cfg = config.get("load_checkpoint_path")
+    if (
+        checkpoint_path_cfg
+        and str(checkpoint_path_cfg).lower() == "latest"
+        and config.get("resume_training", False)
+        and distributed.is_main_process()
+    ):
+        try:
+            checkpoint.find_latest_checkpoint(config.results_dir, config.experiment_name)
+            logger.info("Local checkpoint found, skipping remote download")
+        except FileNotFoundError:
+            logger.info("No local checkpoint found, attempting remote download...")
+            try:
+                remote_backup.download_latest(results_dir)
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.warning("Remote backup download failed", exc_info=True)
+
+    return remote_backup
 
 
 def load_from_checkpoint(

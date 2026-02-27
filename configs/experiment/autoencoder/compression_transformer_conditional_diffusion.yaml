@@ -12,6 +12,7 @@ defaults:
   - /callback: default
   - /callback/image_reconstruction_metrics@callbacks.metrics
   - /torch_compile
+  - /remote_backup: wandb
   - _self_
 
 experiment_name: compression_autoencoder_transformer_conditional_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}

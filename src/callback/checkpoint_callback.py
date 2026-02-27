@@ -68,6 +68,9 @@ class CheckpointCallback(callback.Callback):
         self.periodic_checkpoints: deque[str] = deque()
         self.total_checkpoints_saved = 0
 
+        # Remote backup strategy (set via update_config)
+        self.remote_backup = None
+
         # Create save directory
         os.makedirs(save_dir, exist_ok=True)
         logger.info(
@@ -76,7 +79,7 @@ class CheckpointCallback(callback.Callback):
             max_checkpoints_saved if max_checkpoints_saved else "unlimited",
         )
 
-    def update_config(self, config: dict, *args, **kwargs):
+    def update_config(self, config: dict, *args, **kwargs):  # pylint: disable=unused-argument
         """Update the config of the callback.
 
         Args:
@@ -92,6 +95,7 @@ class CheckpointCallback(callback.Callback):
         self.scheduler = config.get("scheduler", self.scheduler)
         self.criterion = config.get("criterion", self.criterion)
         self.training_mode = config.get("mode", self.training_mode)
+        self.remote_backup = config.get("remote_backup", self.remote_backup)
 
         logger.info("CheckpointCallback config updated")
 
@@ -148,7 +152,16 @@ class CheckpointCallback(callback.Callback):
                             self.max_checkpoints_saved,
                         )
 
-    def on_epoch_start(self, epoch: int, total_epochs: int, phase: str):
+        # Upload to remote backup if the strategy is configured for this name
+        if self.remote_backup and self.remote_backup.should_backup(name):
+            try:
+                self.remote_backup.upload(checkpoint_path, name)
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.warning("Remote backup upload failed for %s", name, exc_info=True)
+
+    def on_epoch_start(
+        self, epoch: int, total_epochs: int, phase: str  # pylint: disable=unused-argument
+    ):
         """Called when the epoch starts.
 
         Args:
@@ -167,7 +180,9 @@ class CheckpointCallback(callback.Callback):
                         f"checkpoint-epoch-{epoch}", epoch=epoch - 1, is_periodic=True
                     )
 
-    def on_epoch_end(self, epoch: int, total_epochs: int, phase: str):
+    def on_epoch_end(
+        self, epoch: int, total_epochs: int, phase: str  # pylint: disable=unused-argument
+    ):
         """Called when the epoch ends.
 
         Args:
@@ -199,9 +214,9 @@ class CheckpointCallback(callback.Callback):
         self,
         step: int,
         phase: str,
-        input_data: torch.Tensor | dict[str, torch.Tensor],
-        target_data: torch.Tensor | dict[str, torch.Tensor],
-        pred_data: torch.Tensor | dict[str, torch.Tensor],
+        input_data: torch.Tensor | dict[str, torch.Tensor],  # pylint: disable=unused-argument
+        target_data: torch.Tensor | dict[str, torch.Tensor],  # pylint: disable=unused-argument
+        pred_data: torch.Tensor | dict[str, torch.Tensor],  # pylint: disable=unused-argument
     ):
         """Called when the batch ends.
 
@@ -219,7 +234,9 @@ class CheckpointCallback(callback.Callback):
                     f"checkpoint-step-{step}", epoch=self.current_epoch, step=step, is_periodic=True
                 )
 
-    def log_metrics(self, step: int, phase: str, metrics: dict[str, float]):
+    def log_metrics(
+        self, step: int, phase: str, metrics: dict[str, float]  # pylint: disable=unused-argument
+    ):
         """Store validation metrics for best model tracking.
 
         Args:

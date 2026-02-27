@@ -18,7 +18,8 @@ import torch
 import tqdm
 from omegaconf import DictConfig
 from torch import nn
-from torch.nn import functional as F
+
+# from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from callback import callback
@@ -582,6 +583,10 @@ def run_train(
         os.makedirs(results_dir, exist_ok=True)
         logger.info("Results will be saved to: %s", results_dir)
 
+    # Instantiate remote backup strategy and attempt remote download if needed.
+    # Must happen BEFORE callback init so WandbCallback finds downloaded run ID.
+    remote_backup = initializer.initialize_remote_backup(config, results_dir)
+
     # Initialize callbacks (handle both list and dict configs)
     callbacks = hy_utils.instantiate(config.callbacks)
     if isinstance(callbacks, (dict, DictConfig)):
@@ -716,6 +721,7 @@ def run_train(
             "optimizer": optim,
             "device": device,
             "mode": mode,
+            "remote_backup": remote_backup,
         }
     )
     # # TODO: check if watch is time consuming and if we should log only the
