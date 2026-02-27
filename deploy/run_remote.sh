@@ -43,6 +43,9 @@ cat > '${REMOTE_CODE_DIR}/.run_session.sh' <<INNER_EOF
 #!/bin/bash
 export PATH="${REMOTE_HOME}/.local/bin:\\\$PATH"
 export HOME="${REMOTE_HOME}"
+# Use copy mode so uv does not try to hardlink from cache (fails when cache and
+# workspace are on different filesystems, e.g. overlayfs or NFS).
+export UV_LINK_MODE=copy
 ${wandb_export}
 cd '${REMOTE_CODE_DIR}'
 

@@ -20,7 +20,9 @@
 #   --user USER           SSH user (default: root)
 #   --provider NAME       Cloud provider: runpod, vast.ai
 #   --pod-id ID           Existing pod/instance ID (for restart)
-#   --pod-config FILE     Pod configuration file (default: deploy/runpod/pod.conf)
+#   --pod-config FILE     Pod configuration file (default: deploy/runpod/pod_a40.conf)
+#                         If omitted, deploy/runpod/pod_configs.list is used to try
+#                         configs in order until one succeeds (fallback on create failure).
 #   --remote-project-dir PATH   Remote workspace root (default: /workspace)
 #   --remote-home PATH          Remote home directory (default: /root)
 #   --pulse INTERVAL      Install pulse cron job for monitoring + auto-restart
@@ -105,7 +107,9 @@ Options:
   --user USER           SSH user (default: root)
   --provider NAME       Cloud provider: runpod, vast.ai
   --pod-id ID           Existing pod/instance ID (for restart)
-  --pod-config FILE     Pod config file (default: deploy/runpod/pod.conf)
+  --pod-config FILE     Pod config file (default: deploy/runpod/pod_a40.conf).
+                        If omitted, deploy/runpod/pod_configs.list is used to try
+                        configs in order until pod creation succeeds (fallbacks).
   --remote-project-dir PATH   Remote workspace root (default: /workspace)
   --remote-home PATH          Remote home directory (default: /root)
   --pulse INTERVAL      Install pulse cron job for monitoring + auto-restart (e.g. 5m, 1h)
@@ -246,6 +250,11 @@ fi
 if [[ ${#PYTHON_ARGS[@]} -eq 0 ]]; then
     log_warn "Note: No python arguments provided — will sync/setup only (no remote execution)."
 fi
+
+# SSH retry and timeout for transient "Network is unreachable" and slow pod bring-up
+export SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-20}"
+export SSH_RETRY_ATTEMPTS="${SSH_RETRY_ATTEMPTS:-5}"
+export SSH_RETRY_INTERVAL="${SSH_RETRY_INTERVAL:-10}"
 
 # ════════════════════════════════════════════════════════════════════════════
 # ── Deployment pipeline ──────────────────────────────────────────────────

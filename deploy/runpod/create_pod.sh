@@ -11,11 +11,11 @@
 #   ./deploy/runpod/create_pod.sh [CONFIG_FILE]
 #
 # Arguments:
-#   CONFIG_FILE   Path to pod config file (default: deploy/runpod/pod.conf)
+#   CONFIG_FILE   Path to pod config file (default: deploy/runpod/pod_a40.conf)
 #
 # Examples:
 #   ./deploy/runpod/create_pod.sh
-#   ./deploy/runpod/create_pod.sh deploy/runpod/my_custom_pod.conf
+#   ./deploy/runpod/create_pod.sh deploy/runpod/pod_l40s.conf
 #
 
 set -euo pipefail
@@ -29,7 +29,7 @@ source "${SCRIPT_DIR}/api.sh"
 require_runpod_api
 
 # ── Load configuration ──────────────────────────────────────────────────────
-CONFIG_FILE="${1:-${SCRIPT_DIR}/pod.conf}"
+CONFIG_FILE="${1:-${SCRIPT_DIR}/pod_a40.conf}"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
     log_error "Config file not found: $CONFIG_FILE"
@@ -37,7 +37,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 echo -e "${BLUE}Loading config:${NC} $CONFIG_FILE"
-# shellcheck source=pod.conf
+# shellcheck source=pod_a40.conf
 source "$CONFIG_FILE"
 
 # ── Validate required fields ────────────────────────────────────────────────

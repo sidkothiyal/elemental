@@ -16,7 +16,10 @@
 #   SSH_IDENTITY    (optional) — SSH identity file
 #   PROVIDER        (optional) — "runpod" or "vast.ai"
 #   POD_ID          (optional) — existing pod/instance ID for restart
-#   POD_CONFIG      (optional) — path to pod config file
+#   POD_CONFIG      (optional) — path to pod config file; if unset, fallbacks from
+#                   deploy/runpod/pod_configs.list are tried in order on create failure
+#   POD_FALLBACK_PAUSE_SECONDS (optional) — seconds to wait after a create failure
+#                   before trying the next config (default: 15)
 #   RUNPOD_API_KEY  (required for provider=runpod)
 #
 # Sets (globals): REMOTE_IP, REMOTE_PORT, POD_ID (may be updated)
@@ -57,9 +60,11 @@ _runpod_start() {
 }
 
 # Create a new RunPod pod from config.
-# Uses POD_CONFIG or default deploy/runpod/pod.conf
+# Uses POD_CONFIG or default deploy/runpod/pod_a40.conf
+# When POD_CONFIG is unset, reads deploy/runpod/pod_configs.list and tries each
+# config in order until one succeeds (fallback on create failure).
 _runpod_create() {
-    local config_file="${POD_CONFIG:-${DEPLOY_DIR}/runpod/pod.conf}"
+    local config_file="${POD_CONFIG:-${DEPLOY_DIR}/runpod/pod_a40.conf}"
     if [[ ! -f "$config_file" ]]; then
         log_error "Pod config not found: $config_file"
         return 1
@@ -104,15 +109,66 @@ _runpod_create() {
     runpod_wait_ssh_info "$POD_ID"
 }
 
+# Try to create a pod using primary config, then fallbacks from pod_configs.list.
+# When POD_CONFIG is set (e.g. --pod-config), uses only that config.
+# When unset, reads deploy/runpod/pod_configs.list and tries each line until one succeeds.
+_runpod_create_with_fallbacks() {
+    local runpod_dir="${DEPLOY_DIR}/runpod"
+    local list_file="${runpod_dir}/pod_configs.list"
+
+    if [[ -n "${POD_CONFIG:-}" ]]; then
+        _runpod_create
+        return $?
+    fi
+
+    if [[ ! -f "$list_file" ]]; then
+        POD_CONFIG="${runpod_dir}/pod_a40.conf"
+        _runpod_create
+        return $?
+    fi
+
+    local tried=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line=$(echo "$line" | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+        [[ -z "$line" ]] && continue
+        local config_file="${runpod_dir}/${line}"
+        if [[ ! -f "$config_file" ]]; then
+            log_warn "Pod config from list not found: $config_file (skipping)"
+            continue
+        fi
+        POD_CONFIG="$config_file"
+        tried+=("$config_file")
+        if _runpod_create; then
+            return 0
+        fi
+        log_warn "Pod creation failed with config $config_file, trying next fallback …"
+        local pause_sec="${POD_FALLBACK_PAUSE_SECONDS:-15}"
+        if [[ $pause_sec -gt 0 ]]; then
+            log_step "Waiting ${pause_sec}s before trying next config …"
+            sleep "$pause_sec"
+        fi
+    done < "$list_file"
+
+    log_error "All pod configs failed (tried: ${tried[*]})."
+    return 1
+}
+
 # ── SSH readiness check ────────────────────────────────────────────────────
-# After a pod is created/restarted and IP/port are known, sshd inside the
-# container may take additional seconds to start.  This helper polls until
-# an SSH connection succeeds.
-# Args: $1 = max_wait (default 90s)
+# After a pod is created/restarted and IP/port are known, the network path may
+# not be routable yet ("Network is unreachable") and sshd may need extra time.
+# This helper optionally waits an initial delay, then polls until SSH succeeds.
+# Args: $1 = max_wait (default 180s), $2 = initial_delay (default 15s, 0 to skip)
 _wait_for_ssh() {
-    local max_wait="${1:-90}"
+    local max_wait="${1:-180}"
+    local initial_delay="${2:-15}"
     local elapsed=0
-    local interval=5
+    local interval=10
+
+    if [[ "$initial_delay" -gt 0 ]]; then
+        log_step "Waiting ${initial_delay}s for pod network to become routable …"
+        sleep "$initial_delay"
+        elapsed=$initial_delay
+    fi
 
     log_step "Verifying SSH connectivity to ${REMOTE_HOST} …"
     while [[ $elapsed -lt $max_wait ]]; do
@@ -133,23 +189,30 @@ _wait_for_ssh() {
 ensure_machine() {
     # Load pod config to pick up RECOVERY_POLICY (and other settings)
     if [[ "${PROVIDER:-}" == "runpod" && -z "${RECOVERY_POLICY:-}" ]]; then
-        local _conf="${POD_CONFIG:-${DEPLOY_DIR}/runpod/pod.conf}"
+        local _conf="${POD_CONFIG:-${DEPLOY_DIR}/runpod/pod_a40.conf}"
         [[ -f "$_conf" ]] && source "$_conf"
     fi
 
-    # Case 1: IP + port provided → check if reachable
+    # Case 1: IP + port provided → check if reachable (with brief retries for transient unreachable)
     if [[ -n "${REMOTE_IP:-}" ]]; then
         REMOTE_PORT="${REMOTE_PORT:-22}"
         build_ssh_opts
         ssh_remove_from_known_hosts
 
         log_step "Checking if ${REMOTE_IP}:${REMOTE_PORT} is reachable …"
-        if ssh_check; then
-            log_done "Machine is reachable at ${REMOTE_IP}:${REMOTE_PORT}."
-            return 0
-        fi
+        local check_attempt=1
+        local check_max=3
+        local check_interval=10
+        while [[ $check_attempt -le $check_max ]]; do
+            if ssh_check; then
+                log_done "Machine is reachable at ${REMOTE_IP}:${REMOTE_PORT}."
+                return 0
+            fi
+            [[ $check_attempt -lt $check_max ]] && { echo -e "  Retrying in ${check_interval}s … (${check_attempt}/${check_max})"; sleep "$check_interval"; }
+            check_attempt=$((check_attempt + 1))
+        done
 
-        log_warn "Machine at ${REMOTE_IP}:${REMOTE_PORT} is unreachable."
+        log_warn "Machine at ${REMOTE_IP}:${REMOTE_PORT} is unreachable after ${check_max} attempts."
 
         # Try to recover via provider if available
         if [[ "${PROVIDER:-}" == "runpod" && -n "${POD_ID:-}" ]]; then
@@ -162,7 +225,7 @@ ensure_machine() {
                 runpod_stop_pod "$POD_ID" 2>/dev/null || true
                 # Clear stale connection info so _runpod_create gets fresh values
                 REMOTE_IP=""
-                _runpod_create || return 1
+                _runpod_create_with_fallbacks || return 1
             else
                 log_info "Attempting to restart existing pod via RunPod …"
             _runpod_start "$POD_ID" || return 1
@@ -192,8 +255,8 @@ ensure_machine() {
                     # Start existing pod
                     _runpod_start "$POD_ID" || return 1
                 else
-                    # Create new pod
-                    _runpod_create || return 1
+                    # Create new pod (tries fallbacks from pod_configs.list when POD_CONFIG unset)
+                    _runpod_create_with_fallbacks || return 1
                 fi
                 build_ssh_opts  # rebuild with new IP/port
                 ssh_remove_from_known_hosts

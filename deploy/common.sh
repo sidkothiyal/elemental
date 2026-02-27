@@ -45,6 +45,12 @@ setup_remote_paths() {
 }
 
 # ── SSH utilities ───────────────────────────────────────────────────────────
+# Timeout for SSH connect (seconds). Avoids long hangs on "Network is unreachable".
+SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-20}"
+# Retries for transient failures (e.g. pod network not ready). Set to 1 to disable.
+SSH_RETRY_ATTEMPTS="${SSH_RETRY_ATTEMPTS:-5}"
+SSH_RETRY_INTERVAL="${SSH_RETRY_INTERVAL:-10}"
+
 # Remove host from known_hosts so re-used IPs (e.g. new pod, same IP) don't trigger
 # "Remote Host Identification has changed". Call after REMOTE_IP (and REMOTE_PORT) are set.
 ssh_remove_from_known_hosts() {
@@ -69,8 +75,9 @@ build_ssh_opts() {
     [[ -n "${SSH_IDENTITY:-}" ]] && SSH_OPTS+=(-i "$SSH_IDENTITY")
     # Accept new host keys (e.g. after removing old key for re-used IP) without prompt
     SSH_OPTS+=(-o StrictHostKeyChecking=accept-new)
+    SSH_OPTS+=(-o ConnectTimeout="${SSH_CONNECT_TIMEOUT}")
 
-    RSYNC_SSH="ssh"
+    RSYNC_SSH="ssh -o ConnectTimeout=${SSH_CONNECT_TIMEOUT}"
     [[ -n "${REMOTE_PORT:-}" ]] && RSYNC_SSH="$RSYNC_SSH -p $REMOTE_PORT"
     [[ -n "${SSH_IDENTITY:-}" ]] && RSYNC_SSH="$RSYNC_SSH -i $SSH_IDENTITY"
 
@@ -81,14 +88,30 @@ build_ssh_opts() {
     return 0  # Guard: last [[ ]] && ... returns 1 when false, which trips set -e
 }
 
-# Run a command on the remote via SSH.
+# Run a command on the remote via SSH. Retries on failure when SSH_RETRY_ATTEMPTS > 1
+# (handles transient "Network is unreachable" and connection timeouts).
 ssh_cmd() {
-    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$@"
+    local attempt=1
+    local max_attempts="${SSH_RETRY_ATTEMPTS:-1}"
+    local interval="${SSH_RETRY_INTERVAL:-10}"
+
+    while true; do
+        if ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$@"; then
+            return 0
+        fi
+        local ret=$?
+        if [[ $attempt -ge "$max_attempts" ]]; then
+            return $ret
+        fi
+        log_warn "SSH command failed (attempt ${attempt}/${max_attempts}), retrying in ${interval}s …"
+        sleep "$interval"
+        attempt=$((attempt + 1))
+    done
 }
 
-# Check if remote is reachable via SSH (returns 0 if reachable).
+# Check if remote is reachable via SSH (returns 0 if reachable). Uses same timeout as SSH_OPTS.
 ssh_check() {
-    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 -o BatchMode=yes \
+    ssh "${SSH_OPTS[@]}" -o BatchMode=yes \
         "$REMOTE_HOST" "echo ok" &>/dev/null
 }
 

@@ -21,6 +21,11 @@ else
     echo 'Installing uv …'
     curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
+# Ensure UV_LINK_MODE=copy for interactive/manual uv run (avoids hardlink warning
+# when cache and workspace are on different filesystems, e.g. overlayfs/NFS).
+if [[ -f "\${HOME}/.bashrc" ]] && ! grep -q UV_LINK_MODE "\${HOME}/.bashrc" 2>/dev/null; then
+    echo 'export UV_LINK_MODE=copy' >> "\${HOME}/.bashrc"
+fi
 UV_EOF
     log_done "uv ready."
 }

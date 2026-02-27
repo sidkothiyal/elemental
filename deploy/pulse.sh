@@ -374,15 +374,24 @@ check_runpod() {
 }
 
 # Check SSH reachability.  Returns "reachable" or "unreachable".
+# Retries up to 3 times with 5s interval to avoid false "unreachable" on transient network blips.
 # Never crashes on error — always returns a status string.
 check_ssh_target() {
     local target="$1"
-    if ssh "${_PULSE_SSH_OPTS[@]}" -o ConnectTimeout=10 -o BatchMode=yes \
-           -o StrictHostKeyChecking=no "$target" "echo ok" &>/dev/null; then
-        echo "reachable"
-    else
-        echo "unreachable"
-    fi
+    local attempt=1
+    local max_attempts=3
+    local interval=5
+
+    while [[ $attempt -le $max_attempts ]]; do
+        if ssh "${_PULSE_SSH_OPTS[@]}" -o ConnectTimeout=10 -o BatchMode=yes \
+               -o StrictHostKeyChecking=no "$target" "echo ok" &>/dev/null; then
+            echo "reachable"
+            return 0
+        fi
+        [[ $attempt -lt $max_attempts ]] && sleep "$interval"
+        attempt=$((attempt + 1))
+    done
+    echo "unreachable"
 }
 
 # ── Auto-restart pipeline ──────────────────────────────────────────────────
@@ -498,25 +507,61 @@ GPU_IDLE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_low_gpu"
 GPU_IDLE_STRIKES=0
 [[ -f "$GPU_IDLE_COUNT_FILE" ]] && GPU_IDLE_STRIKES=$(cat "$GPU_IDLE_COUNT_FILE" 2>/dev/null || echo 0)
 
-# Query peak GPU utilisation across all GPUs on a remote host via SSH.
+# Query GPU activity on a remote host via SSH.
 # Returns an integer (0–100) on stdout, or -1 if nvidia-smi is unavailable
 # or the SSH connection fails.  Never crashes.
+#
+# Strategy (most-to-least reliable):
+#   1. Active compute-process check — if any PID is attached to the GPU,
+#      training is running regardless of what utilisation.gpu reads.
+#      Returns 100 immediately (avoids sampling noise entirely).
+#   2. Multi-sample peak utilisation — take N rapid samples and return
+#      the MAX.  A single nvidia-smi reading is an instantaneous snapshot
+#      that lands at 0 between CUDA kernel launches even under heavy load.
+GPU_IDLE_SAMPLES=5        # number of utilisation samples to take
+GPU_IDLE_SAMPLE_INTERVAL=2  # seconds between samples
 check_gpu_usage() {
     local target="$1"
-    local output max_util util
-
-    output=$(ssh "${_PULSE_SSH_OPTS[@]}" \
+    local ssh_cmd="ssh ${_PULSE_SSH_OPTS[*]+"${_PULSE_SSH_OPTS[*]}"} \
         -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no \
-        "$target" \
-        "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null" \
-        2>/dev/null)
+        $target"
 
-    if [[ $? -ne 0 || -z "$output" ]]; then
+    # ── 1. Check for active compute processes ────────────────────────────
+    # If any PID is using the GPU, training is running — no need to sample.
+    local compute_procs
+    compute_procs=$(${ssh_cmd} \
+        "nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
+         | grep -c '^[0-9]' || echo 0" 2>/dev/null)
+
+    if [[ $? -ne 0 ]]; then
+        # SSH itself failed — nvidia-smi may not exist or host is unreachable
         echo -1
         return 0
     fi
 
-    max_util=0
+    compute_procs=$(echo "$compute_procs" | tr -d '[:space:]')
+    if [[ "$compute_procs" =~ ^[0-9]+$ && "$compute_procs" -gt 0 ]]; then
+        echo 100
+        return 0
+    fi
+
+    # ── 2. Multi-sample peak utilisation ─────────────────────────────────
+    # No compute processes found; sample utilisation several times and take
+    # the peak to catch any burst activity the process list may have missed.
+    local sample_cmd="for i in \$(seq ${GPU_IDLE_SAMPLES}); do \
+        nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null; \
+        sleep ${GPU_IDLE_SAMPLE_INTERVAL}; \
+    done"
+
+    local output
+    output=$(${ssh_cmd} "$sample_cmd" 2>/dev/null)
+
+    if [[ -z "$output" ]]; then
+        echo -1
+        return 0
+    fi
+
+    local max_util=0 util
     while IFS= read -r line; do
         util=$(echo "$line" | tr -d '[:space:]')
         [[ "$util" =~ ^[0-9]+$ ]] || continue
@@ -591,17 +636,17 @@ echo "[${NOW}] ${STATUS_ICON} ${TARGET_LABEL} status=${STATUS}"
         if [[ "$IDLE_STOP" == true && -n "$SSH_TARGET" ]]; then
             GPU_UTIL=$(check_gpu_usage "$SSH_TARGET" 2>/dev/null)
             if [[ "$GPU_UTIL" -lt 0 ]]; then
-                echo "[${NOW}] GPU check skipped (nvidia-smi unavailable or SSH error)"
+                echo "[${NOW}] GPU check skipped (nvidia-smi unavailable or SSH error) — idle strikes reset"
                 echo 0 > "$GPU_IDLE_COUNT_FILE"
             elif [[ "$GPU_UTIL" -lt "$GPU_IDLE_THRESHOLD" ]]; then
                 GPU_IDLE_STRIKES=$((GPU_IDLE_STRIKES + 1))
                 echo "$GPU_IDLE_STRIKES" > "$GPU_IDLE_COUNT_FILE"
-                echo "[${NOW}] GPU idle — util=${GPU_UTIL}% (strike ${GPU_IDLE_STRIKES}/${GPU_IDLE_MAX_STRIKES})"
+                echo "[${NOW}] GPU idle — peak_util=${GPU_UTIL}% over ${GPU_IDLE_SAMPLES}x${GPU_IDLE_SAMPLE_INTERVAL}s samples, no compute processes (strike ${GPU_IDLE_STRIKES}/${GPU_IDLE_MAX_STRIKES})"
                 if [[ $GPU_IDLE_STRIKES -ge $GPU_IDLE_MAX_STRIKES ]]; then
                     do_idle_stop
                 fi
             else
-                echo "[${NOW}] GPU active — util=${GPU_UTIL}% (idle strikes reset)"
+                echo "[${NOW}] GPU active — peak_util=${GPU_UTIL}% (idle strikes reset)"
                 echo 0 > "$GPU_IDLE_COUNT_FILE"
             fi
         fi

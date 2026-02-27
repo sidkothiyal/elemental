@@ -120,6 +120,19 @@ runpod_get_pod() {
     runpod_api GET "/pods/${pod_id}"
 }
 
+# List pods, optionally filtered by desiredStatus.
+# Usage: runpod_list_pods [desiredStatus]
+#   desiredStatus: RUNNING, EXITED, or TERMINATED (optional; omit to list all)
+# Returns: JSON array of pod objects on stdout
+runpod_list_pods() {
+    local status="${1:-}"
+    if [[ -n "$status" ]]; then
+        runpod_api GET "/pods?desiredStatus=${status}"
+    else
+        runpod_api GET "/pods"
+    fi
+}
+
 # Get pod status string (running, exited, stopped, etc.).
 # Checks runtime.status first (actual container state), then falls back
 # to desiredStatus (the requested state).  This distinction matters: a

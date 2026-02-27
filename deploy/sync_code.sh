@@ -44,13 +44,28 @@ EXCLUDES
     # --no-owner --no-group: don't attempt chown (fails on NAS / RunPod)
     # --omit-dir-times: skip setting dir timestamps (also fails on some NAS mounts)
     # --filter ':- .gitignore': additionally let rsync parse .gitignore files directly
-    rsync -avz --progress --delete \
-        --no-owner --no-group --omit-dir-times \
-        --exclude-from="$exclude_file" \
-        --filter=':- .gitignore' \
-        -e "$RSYNC_SSH" \
-        "$REPO_ROOT/" \
-        "${REMOTE_HOST}:${REMOTE_CODE_DIR}/"
+    local max_attempts="${SSH_RETRY_ATTEMPTS:-5}"
+    local retry_interval="${SSH_RETRY_INTERVAL:-10}"
+    local attempt=1
+    while true; do
+        if rsync -avz --progress --delete \
+                --no-owner --no-group --omit-dir-times \
+                --exclude-from="$exclude_file" \
+                --filter=':- .gitignore' \
+                -e "$RSYNC_SSH" \
+                "$REPO_ROOT/" \
+                "${REMOTE_HOST}:${REMOTE_CODE_DIR}/"; then
+            break
+        fi
+        if [[ $attempt -ge $max_attempts ]]; then
+            rm -f "$exclude_file"
+            log_error "rsync failed after ${max_attempts} attempts."
+            return 1
+        fi
+        log_warn "rsync failed (attempt ${attempt}/${max_attempts}), retrying in ${retry_interval}s …"
+        sleep "$retry_interval"
+        attempt=$((attempt + 1))
+    done
 
     rm -f "$exclude_file"
     log_done "Code synced."
