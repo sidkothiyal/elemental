@@ -153,6 +153,139 @@ _runpod_create_with_fallbacks() {
     return 1
 }
 
+# ── Vast.ai helpers ─────────────────────────────────────────────────────────
+
+_vastai_require_api() {
+    source "${DEPLOY_DIR}/vastai/api.sh"
+    require_vastai_api || {
+        log_error "Vast.ai REST API prerequisites not met (need curl, jq, VAST_API_KEY)."
+        return 1
+    }
+}
+
+# Start an existing Vast.ai instance (set state to running).
+# Args: $1 = instance_id
+_vastai_start() {
+    local instance_id="$1"
+    log_step "Starting Vast.ai instance ${instance_id} …"
+
+    local output
+    output=$(vastai_start_instance "$instance_id")
+    vastai_sync_http_code
+    if [[ "$VAST_API_HTTP_CODE" != "200" ]]; then
+        log_error "Failed to start instance (HTTP ${VAST_API_HTTP_CODE}): $(echo "$output" | jq -r '.msg // .error // empty' 2>/dev/null || echo "$output")"
+        return 1
+    fi
+    echo "$output" | jq . 2>/dev/null || echo "$output"
+    vastai_wait_ready "$instance_id"
+    vastai_wait_ssh_info "$instance_id"
+}
+
+# Create a new Vast.ai instance from config.
+# Uses POD_CONFIG or default deploy/vastai/instance_rtx.conf
+# When POD_CONFIG is unset, reads deploy/vastai/instance_configs.list and tries each
+# config in order until one succeeds.
+_vastai_create() {
+    local config_file="${POD_CONFIG:-${DEPLOY_DIR}/vastai/instance_rtx.conf}"
+    if [[ ! -f "$config_file" ]]; then
+        log_error "Instance config not found: $config_file"
+        return 1
+    fi
+
+    log_info "Loading instance config: $config_file"
+    # shellcheck source=vastai/instance_rtx.conf
+    source "$config_file"
+
+    # Resolve offer_id: from config or search
+    local offer_id="${OFFER_ID:-}"
+    if [[ -z "$offer_id" ]]; then
+        log_step "Searching for offers …"
+        local search_body
+        search_body=$(build_vastai_search_body)
+        local search_response
+        search_response=$(vastai_search_offers "$search_body")
+        vastai_sync_http_code
+        if [[ "$VAST_API_HTTP_CODE" != "200" ]]; then
+            log_error "Search offers failed (HTTP ${VAST_API_HTTP_CODE}): $(echo "$search_response" | jq -r '.msg // .error // empty' 2>/dev/null || echo "$search_response")"
+            return 1
+        fi
+        offer_id=$(echo "$search_response" | jq -r '.offers[0].id // empty' 2>/dev/null)
+        if [[ -z "$offer_id" || "$offer_id" == "null" ]]; then
+            log_error "No offers found matching config (GPU_NAME=${GPU_NAME:-}, etc.)."
+            return 1
+        fi
+        log_done "Using offer ID: ${offer_id}"
+    fi
+
+    local payload
+    payload=$(build_vastai_create_json)
+    log_step "Creating Vast.ai instance …"
+    echo -e "  ${BLUE}Offer ID:${NC} ${offer_id}"
+    echo "$payload" | jq . 2>/dev/null
+    echo ""
+
+    local output
+    output=$(vastai_create_instance "$offer_id" "$payload")
+    vastai_sync_http_code
+    if [[ "$VAST_API_HTTP_CODE" != "200" ]]; then
+        log_error "Failed to create instance (HTTP ${VAST_API_HTTP_CODE}): $(echo "$output" | jq -r '.msg // .error // empty' 2>/dev/null || echo "$output")"
+        return 1
+    fi
+
+    POD_ID=$(echo "$output" | jq -r '.new_contract // empty' 2>/dev/null)
+    if [[ -z "$POD_ID" || "$POD_ID" == "null" ]]; then
+        log_warn "Could not parse instance ID from response."
+        echo "$output" | jq . 2>/dev/null || echo "$output"
+        return 1
+    fi
+
+    log_done "Instance created: ${POD_ID}"
+    vastai_wait_ready "$POD_ID"
+    vastai_wait_ssh_info "$POD_ID"
+}
+
+# Try to create an instance using primary config, then fallbacks from instance_configs.list.
+_vastai_create_with_fallbacks() {
+    local vastai_dir="${DEPLOY_DIR}/vastai"
+    local list_file="${vastai_dir}/instance_configs.list"
+
+    if [[ -n "${POD_CONFIG:-}" ]]; then
+        _vastai_create
+        return $?
+    fi
+
+    if [[ ! -f "$list_file" ]]; then
+        POD_CONFIG="${vastai_dir}/instance_rtx.conf"
+        _vastai_create
+        return $?
+    fi
+
+    local tried=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line=$(echo "$line" | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+        [[ -z "$line" ]] && continue
+        local config_file="${vastai_dir}/${line}"
+        if [[ ! -f "$config_file" ]]; then
+            log_warn "Instance config from list not found: $config_file (skipping)"
+            continue
+        fi
+        POD_CONFIG="$config_file"
+        tried+=("$config_file")
+        if _vastai_create; then
+            return 0
+        fi
+        log_warn "Instance creation failed with config $config_file, trying next fallback …"
+        local pause_sec="${POD_FALLBACK_PAUSE_SECONDS:-15}"
+        if [[ $pause_sec -gt 0 ]]; then
+            log_step "Waiting ${pause_sec}s before trying next config …"
+            sleep "$pause_sec"
+        fi
+    done < "$list_file"
+
+    log_error "All instance configs failed (tried: ${tried[*]})."
+    return 1
+}
+
 # ── SSH readiness check ────────────────────────────────────────────────────
 # After a pod is created/restarted and IP/port are known, the network path may
 # not be routable yet ("Network is unreachable") and sshd may need extra time.
@@ -190,6 +323,10 @@ ensure_machine() {
     # Load pod config to pick up RECOVERY_POLICY (and other settings)
     if [[ "${PROVIDER:-}" == "runpod" && -z "${RECOVERY_POLICY:-}" ]]; then
         local _conf="${POD_CONFIG:-${DEPLOY_DIR}/runpod/pod_a40.conf}"
+        [[ -f "$_conf" ]] && source "$_conf"
+    fi
+    if [[ "${PROVIDER:-}" == "vast.ai" && -z "${RECOVERY_POLICY:-}" ]]; then
+        local _conf="${POD_CONFIG:-${DEPLOY_DIR}/vastai/instance_rtx.conf}"
         [[ -f "$_conf" ]] && source "$_conf"
     fi
 
@@ -235,13 +372,27 @@ ensure_machine() {
             ssh_remove_from_known_hosts
             _wait_for_ssh || return 1
             return 0
-        elif [[ "${PROVIDER:-}" == "vast.ai" ]]; then
-            log_error "vast.ai auto-restart is not yet implemented."
-            log_info "Please restart the instance manually and re-run with the new IP/port."
-            return 1
+        elif [[ "${PROVIDER:-}" == "vast.ai" && -n "${POD_ID:-}" ]]; then
+            _vastai_require_api || return 1
+
+            if [[ "${RECOVERY_POLICY:-restart}" == "new" ]]; then
+                log_info "Recovery policy is 'new' — creating a fresh instance …"
+                log_step "Destroying old instance ${POD_ID} …"
+                vastai_destroy_instance "$POD_ID" 2>/dev/null || true
+                REMOTE_IP=""
+                _vastai_create_with_fallbacks || return 1
+            else
+                log_info "Attempting to start existing instance via Vast.ai …"
+                _vastai_start "$POD_ID" || return 1
+            fi
+
+            build_ssh_opts
+            ssh_remove_from_known_hosts
+            _wait_for_ssh || return 1
+            return 0
         else
             log_error "Machine is unreachable and no provider configured for auto-restart."
-            [[ -z "${PROVIDER:-}" ]] && log_info "Hint: use --provider runpod --pod-id <ID> to enable auto-restart."
+            [[ -z "${PROVIDER:-}" ]] && log_info "Hint: use --provider runpod --pod-id <ID> or --provider vast.ai --pod-id <ID> to enable auto-restart."
             return 1
         fi
     fi
@@ -264,10 +415,16 @@ ensure_machine() {
                 return 0
                 ;;
             vast.ai)
-                log_error "vast.ai provider is not yet implemented."
-                log_info "Once implemented, this will create/start vast.ai instances automatically."
-                log_info "For now, create an instance manually and pass --ip and --port."
-                return 1
+                _vastai_require_api || return 1
+                if [[ -n "${POD_ID:-}" && "${RECOVERY_POLICY:-restart}" != "new" ]]; then
+                    _vastai_start "$POD_ID" || return 1
+                else
+                    _vastai_create_with_fallbacks || return 1
+                fi
+                build_ssh_opts
+                ssh_remove_from_known_hosts
+                _wait_for_ssh || return 1
+                return 0
                 ;;
             *)
                 log_error "Unknown provider: $PROVIDER (supported: runpod, vast.ai)"
@@ -279,7 +436,7 @@ ensure_machine() {
     # Case 3: Neither IP nor provider
     log_error "No remote IP or provider specified. Cannot ensure machine."
     log_info "Use --ip HOST --port PORT for an existing machine,"
-    log_info "or --provider runpod to create/start one automatically."
+    log_info "or --provider runpod / --provider vast.ai to create/start one automatically."
     return 1
 }
 

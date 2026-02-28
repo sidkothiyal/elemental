@@ -242,6 +242,7 @@ install_cron() {
     # Build env vars that cron needs (cron has a minimal environment)
     local env_prefix="PATH=${PATH} HOME=${HOME} "
     [[ -n "${RUNPOD_API_KEY:-}" ]] && env_prefix+="RUNPOD_API_KEY=${RUNPOD_API_KEY} "
+    [[ -n "${VAST_API_KEY:-}" ]] && env_prefix+="VAST_API_KEY=${VAST_API_KEY} "
 
     local cron_line="${cron_expr} ${env_prefix}cd ${REPO_ROOT} && ${SCRIPT_DIR}/pulse.sh${pulse_args} >> ${log_file} 2>&1 # ${CRON_TAG}"
 
@@ -283,8 +284,9 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     [[ -z "$SSH_TARGET" && -n "${SESSION_IP:-}" ]] && SSH_TARGET="${SESSION_USER:-root}@${SESSION_IP}"
     [[ -z "$SSH_PORT" && -n "${SESSION_PORT:-}" ]] && SSH_PORT="$SESSION_PORT"
     [[ -z "$SSH_IDENTITY" && -n "${SESSION_SSH_IDENTITY:-}" ]] && SSH_IDENTITY="$SESSION_SSH_IDENTITY"
-    # Pick up API key from session state
+    # Pick up API keys from session state
     [[ -z "${RUNPOD_API_KEY:-}" && -n "${SESSION_RUNPOD_API_KEY:-}" ]] && export RUNPOD_API_KEY="$SESSION_RUNPOD_API_KEY"
+    [[ -z "${VAST_API_KEY:-}" && -n "${SESSION_VAST_API_KEY:-}" ]] && export VAST_API_KEY="$SESSION_VAST_API_KEY"
 fi
 
 # Handle --install-cron after loading session (so we have all target info)
@@ -311,13 +313,22 @@ _PULSE_SSH_OPTS=()
 [[ -n "$SSH_PORT" ]] && _PULSE_SSH_OPTS+=(-p "$SSH_PORT")
 [[ -n "$SSH_IDENTITY" ]] && _PULSE_SSH_OPTS+=(-i "$SSH_IDENTITY")
 
-# Source RunPod API if monitoring a pod
+# Source provider API when monitoring a pod/instance by ID
 if [[ -n "$POD_ID" ]]; then
-    source "${DEPLOY_DIR}/runpod/api.sh"
-    if [[ -z "${RUNPOD_API_KEY:-}" ]]; then
-        log_error "RUNPOD_API_KEY is required to monitor a RunPod pod."
-        log_info "Set it with: export RUNPOD_API_KEY=your_api_key_here"
-        exit 1
+    if [[ "${SESSION_PROVIDER:-}" == "vast.ai" ]]; then
+        source "${DEPLOY_DIR}/vastai/api.sh"
+        if [[ -z "${VAST_API_KEY:-}" ]]; then
+            log_error "VAST_API_KEY is required to monitor a Vast.ai instance."
+            log_info "Set it with: export VAST_API_KEY=your_api_key_here"
+            exit 1
+        fi
+    else
+        source "${DEPLOY_DIR}/runpod/api.sh"
+        if [[ -z "${RUNPOD_API_KEY:-}" ]]; then
+            log_error "RUNPOD_API_KEY is required to monitor a RunPod pod."
+            log_info "Set it with: export RUNPOD_API_KEY=your_api_key_here"
+            exit 1
+        fi
     fi
 fi
 
@@ -373,6 +384,20 @@ check_runpod() {
     echo "unknown"
 }
 
+# Check Vast.ai instance status via the REST API.
+# Returns a status string. On transient API errors, returns "api_error".
+check_vastai() {
+    local instance_id="$1"
+    local status
+    status=$(vastai_get_instance_status "$instance_id" 2>/dev/null)
+    vastai_sync_http_code
+    if [[ "$VAST_API_HTTP_CODE" != "200" ]]; then
+        echo "api_error"
+        return 0
+    fi
+    echo "$status"
+}
+
 # Check SSH reachability.  Returns "reachable" or "unreachable".
 # Retries up to 3 times with 5s interval to avoid false "unreachable" on transient network blips.
 # Never crashes on error — always returns a status string.
@@ -424,6 +449,7 @@ do_auto_restart() {
     # Restore API keys that cron's minimal environment doesn't have
     [[ -n "${SESSION_WANDB_API_KEY:-}" ]] && export WANDB_API_KEY="$SESSION_WANDB_API_KEY"
     [[ -n "${SESSION_RUNPOD_API_KEY:-}" ]] && export RUNPOD_API_KEY="$SESSION_RUNPOD_API_KEY"
+    [[ -n "${SESSION_VAST_API_KEY:-}" ]] && export VAST_API_KEY="$SESSION_VAST_API_KEY"
 
     # Reconstruct PYTHON_ARGS from the saved string
     eval "PYTHON_ARGS=( ${SESSION_PYTHON_ARGS:-} )"
@@ -486,7 +512,7 @@ do_auto_restart() {
     save_session_state || true
 
     # Update pulse monitoring targets with new connection info
-    # (POD_ID may have been updated by _runpod_create if RECOVERY_POLICY="new")
+    # (POD_ID may have been updated by _runpod_create / _vastai_create if RECOVERY_POLICY="new")
     SSH_TARGET="${REMOTE_USER}@${REMOTE_IP}"
     SSH_PORT="$REMOTE_PORT"
     _PULSE_SSH_OPTS=()
@@ -583,12 +609,22 @@ do_idle_stop() {
 
     if [[ -n "$POD_ID" ]]; then
         local result
-        result=$(runpod_stop_pod "$POD_ID" 2>/dev/null)
-        _runpod_sync_http_code
-        if [[ "$RUNPOD_API_HTTP_CODE" == "200" ]]; then
-            echo "[${now}] Pod ${POD_ID} stopped successfully."
+        if [[ "${SESSION_PROVIDER:-}" == "vast.ai" ]]; then
+            result=$(vastai_stop_instance "$POD_ID" 2>/dev/null)
+            vastai_sync_http_code
+            if [[ "$VAST_API_HTTP_CODE" == "200" ]]; then
+                echo "[${now}] Instance ${POD_ID} stopped successfully."
+            else
+                echo "[${now}] Warning: stop API returned HTTP ${VAST_API_HTTP_CODE} — instance may already be stopped."
+            fi
         else
-            echo "[${now}] Warning: stop API returned HTTP ${RUNPOD_API_HTTP_CODE} — pod may already be stopped."
+            result=$(runpod_stop_pod "$POD_ID" 2>/dev/null)
+            _runpod_sync_http_code
+            if [[ "$RUNPOD_API_HTTP_CODE" == "200" ]]; then
+                echo "[${now}] Pod ${POD_ID} stopped successfully."
+            else
+                echo "[${now}] Warning: stop API returned HTTP ${RUNPOD_API_HTTP_CODE} — pod may already be stopped."
+            fi
         fi
     elif [[ -n "$SSH_TARGET" ]]; then
         ssh "${_PULSE_SSH_OPTS[@]}" \
@@ -610,7 +646,11 @@ TARGET_LABEL=""
 
     STATUS=""
     if [[ -n "$POD_ID" ]]; then
-        STATUS=$(check_runpod "$POD_ID" 2>/dev/null) || STATUS="check_error"
+        if [[ "${SESSION_PROVIDER:-}" == "vast.ai" ]]; then
+            STATUS=$(check_vastai "$POD_ID" 2>/dev/null) || STATUS="check_error"
+        else
+            STATUS=$(check_runpod "$POD_ID" 2>/dev/null) || STATUS="check_error"
+        fi
     else
         STATUS=$(check_ssh_target "$SSH_TARGET" 2>/dev/null) || STATUS="check_error"
     fi

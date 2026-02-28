@@ -41,6 +41,9 @@
 #   # Remote — auto-create a RunPod pod from config:
 #   ./run.sh --provider runpod -- -m src.train --config configs/default.yaml
 #
+#   # Remote — auto-create a Vast.ai instance:
+#   ./run.sh --provider vast.ai -- -m src.train --config configs/default.yaml
+#
 #   # Remote — restart an existing RunPod pod:
 #   ./run.sh --provider runpod --pod-id abc123 -- -m src.train --config configs/default.yaml
 #
@@ -125,6 +128,9 @@ Examples:
 
   # Remote (auto-create RunPod pod):
   ./run.sh --provider runpod -- -m src.train --config configs/default.yaml
+
+  # Remote (auto-create Vast.ai instance):
+  ./run.sh --provider vast.ai -- -m src.train --config configs/default.yaml
 
   # Remote (restart existing pod + pulse monitoring):
   ./run.sh --provider runpod --pod-id abc123 --pulse 5m -- -m src.train
@@ -344,9 +350,13 @@ if [[ -n "$PULSE_INTERVAL" && ${#PYTHON_ARGS[@]} -gt 0 ]]; then
     # Warn if we have a RunPod provider but no pod ID (happens when the user
     # provides --ip manually, bypassing pod creation).  Without a pod ID,
     # pulse can only do SSH-based monitoring and cannot restart via the API.
-    if [[ -z "$POD_ID" && "$PROVIDER" == "runpod" ]]; then
+    if [[ -z "$POD_ID" && "${PROVIDER:-}" == "runpod" ]]; then
         log_warn "No pod ID available — pulse will use SSH monitoring only (cannot restart via RunPod API)."
         log_info "Hint: pass --pod-id <ID>, or omit --ip to let the script create the pod automatically."
+    fi
+    if [[ -z "$POD_ID" && "${PROVIDER:-}" == "vast.ai" ]]; then
+        log_warn "No instance ID available — pulse will use SSH monitoring only (cannot restart via Vast.ai API)."
+        log_info "Hint: pass --pod-id <ID>, or omit --ip to let the script create the instance automatically."
     fi
 
     echo ""
@@ -380,7 +390,10 @@ if [[ -n "${SESSION_NAME:-}" ]]; then
     echo -e "  ${BLUE}Logs:${NC}     ssh${SSH_DISPLAY} ${REMOTE_HOST} 'tail -f ${REMOTE_LOGS_DIR}/${SESSION_NAME}.log'"
     echo -e "  ${BLUE}Sessions:${NC} ssh${SSH_DISPLAY} ${REMOTE_HOST} 'tmux ls'"
 fi
-[[ -n "$POD_ID" ]] && echo -e "  ${BLUE}Pod:${NC}      curl -s -H 'Authorization: Bearer \$RUNPOD_API_KEY' https://rest.runpod.io/v1/pods/${POD_ID} | jq ."
-[[ -n "$POD_ID" ]] && echo -e "  ${BLUE}Stop pod:${NC} ./deploy/runpod/stop_pod.sh ${POD_ID}"
+[[ -n "$POD_ID" && "${PROVIDER:-}" == "runpod" ]] && echo -e "  ${BLUE}Pod:${NC}      curl -s -H 'Authorization: Bearer \$RUNPOD_API_KEY' https://rest.runpod.io/v1/pods/${POD_ID} | jq ."
+[[ -n "$POD_ID" && "${PROVIDER:-}" == "runpod" ]] && echo -e "  ${BLUE}Stop pod:${NC} ./deploy/runpod/stop_pod.sh ${POD_ID}"
+[[ -n "$POD_ID" && "${PROVIDER:-}" == "vast.ai" ]] && echo -e "  ${BLUE}Instance:${NC} curl -s -H 'Authorization: Bearer \$VAST_API_KEY' https://console.vast.ai/api/v0/instances/${POD_ID}/ | jq ."
+[[ -n "$POD_ID" && "${PROVIDER:-}" == "vast.ai" ]] && echo -e "  ${BLUE}Stop instance:${NC} ./deploy/vastai/stop_instance.sh ${POD_ID}"
+[[ -n "$POD_ID" && "${PROVIDER:-}" == "vast.ai" ]] && echo -e "  ${BLUE}Start instance:${NC} ./deploy/vastai/start_instance.sh ${POD_ID}"
 [[ -n "$PULSE_INTERVAL" ]] && echo -e "  ${BLUE}Stop pulse:${NC} ./deploy/pulse.sh --uninstall-cron"
 echo ""

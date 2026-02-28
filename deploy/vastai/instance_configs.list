@@ -1,0 +1,9 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Vast.ai instance config list — primary and fallback configs for create
+# ──────────────────────────────────────────────────────────────────────────────
+# One config file per line, in order. When creating an instance, the script
+# tries the first config; if creation fails, it tries the next. Paths are
+# relative to deploy/vastai/.
+# ──────────────────────────────────────────────────────────────────────────────
+
+instance_rtx.conf
