@@ -58,19 +58,42 @@ if [[ -z "$OFFER_ID" ]]; then
     log_done "Using offer ID: ${OFFER_ID}"
 fi
 
-# ── Build create payload ──────────────────────────────────────────────────────
-PAYLOAD=$(build_vastai_create_json)
-
-echo ""
-log_step "Creating Vast.ai instance …"
-echo -e "  ${BLUE}Offer ID:${NC} ${OFFER_ID}"
-echo -e "  ${BLUE}Payload:${NC}"
-echo "$PAYLOAD" | jq . 2>/dev/null
-echo ""
-
-# ── Create the instance ──────────────────────────────────────────────────────
-OUTPUT=$(vastai_create_instance "$OFFER_ID" "$PAYLOAD")
-vastai_sync_http_code
+# ── Build create payload and create (with optional bid increment) ──────────────
+OUTPUT=""
+if [[ "${OFFER_TYPE:-}" == "bid" && -n "${PRICE_MAX:-}" ]]; then
+    current="${PRICE:-}"
+    price_step="${PRICE_STEP:-0.005}"
+    price_max="${PRICE_MAX}"
+    while true; do
+        PRICE="$current" PAYLOAD=$(build_vastai_create_json)
+        echo ""
+        log_step "Creating Vast.ai instance (bid \$${current}/hr) …"
+        echo -e "  ${BLUE}Offer ID:${NC} ${OFFER_ID}"
+        echo "$PAYLOAD" | jq . 2>/dev/null
+        OUTPUT=$(vastai_create_instance "$OFFER_ID" "$PAYLOAD")
+        vastai_sync_http_code
+        if [[ "$VAST_API_HTTP_CODE" == "200" ]]; then
+            break
+        fi
+        log_warn "Create failed (HTTP ${VAST_API_HTTP_CODE}). Trying higher bid …"
+        echo "$OUTPUT" | jq . 2>/dev/null || echo "$OUTPUT"
+        if [[ "$current" == "$price_max" ]]; then
+            log_error "Failed to create instance after bidding up to \$${price_max}/hr."
+            exit 1
+        fi
+        current=$(awk -v current="$current" -v price_step="$price_step" -v price_max="$price_max" 'BEGIN {n=current+price_step; if(n>price_max)n=price_max; printf "%.4f", n}' 2>/dev/null || echo "$price_max")
+    done
+else
+    PAYLOAD=$(build_vastai_create_json)
+    echo ""
+    log_step "Creating Vast.ai instance …"
+    echo -e "  ${BLUE}Offer ID:${NC} ${OFFER_ID}"
+    echo -e "  ${BLUE}Payload:${NC}"
+    echo "$PAYLOAD" | jq . 2>/dev/null
+    echo ""
+    OUTPUT=$(vastai_create_instance "$OFFER_ID" "$PAYLOAD")
+    vastai_sync_http_code
+fi
 
 if [[ "$VAST_API_HTTP_CODE" != "200" ]]; then
     log_error "Failed to create instance (HTTP ${VAST_API_HTTP_CODE})."

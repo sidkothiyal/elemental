@@ -10,8 +10,10 @@ RUN rm -rf /var/lib/apt/lists/* \
     && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev \
     git build-essential ninja-build \
+    openssh-server \
     && ln -sf /usr/bin/python3 /usr/bin/python \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
 
 WORKDIR /app
 
@@ -41,3 +43,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Activate the virtual environment via PATH
 ENV PATH="/app/.venv/bin:$PATH"
 ENV VIRTUAL_ENV="/app/.venv"
+
+# SSH for RunPod/Vast: accept PUBLIC_KEY env (injected by RunPod) and run sshd.
+EXPOSE 22
+CMD bash -c 'if [ -n "${PUBLIC_KEY:-}" ]; then mkdir -p /root/.ssh && echo "$PUBLIC_KEY" >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys; fi; exec /usr/sbin/sshd -D'

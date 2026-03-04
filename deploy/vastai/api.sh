@@ -324,13 +324,13 @@ build_vastai_create_json() {
     json=$(jq -n \
         --arg image "${IMAGE:-vastai/base-image:latest}" \
         --argjson disk "${DISK_GB:-50}" \
-        --arg label "${INSTANCE_LABEL:-elemental-training}" \
+        --arg instance_label "${INSTANCE_LABEL:-elemental-training}" \
         --arg runtype "${RUNTYPE:-ssh}" \
         --arg target_state "${TARGET_STATE:-running}" \
         '{
             image: $image,
             disk: $disk,
-            label: $label,
+            "label": $instance_label,
             runtype: $runtype,
             target_state: $target_state
         }')
@@ -358,6 +358,7 @@ build_vastai_search_body() {
         }')
     [[ -n "${GPU_NAME:-}" ]] && body=$(echo "$body" | jq --arg v "$GPU_NAME" '.gpu_name = {"eq": $v}')
     [[ -n "${NUM_GPUS:-}" ]] && body=$(echo "$body" | jq --argjson v "$NUM_GPUS" '.num_gpus = {"gte": $v}')
+    [[ -n "${MACHINE_ID:-}" ]] && body=$(echo "$body" | jq --argjson v "$MACHINE_ID" '.machine_id = {"eq": $v}')
     [[ -n "${DISK_GB:-}" ]] && body=$(echo "$body" | jq --argjson v "$DISK_GB" '.disk_space = {"gte": $v}')
     [[ -n "${RELIABILITY_MIN:-}" ]] && body=$(echo "$body" | jq --argjson v "$RELIABILITY_MIN" '.reliability = {"gte": $v}')
     [[ -n "${DPH_MAX:-}" ]] && body=$(echo "$body" | jq --argjson v "$DPH_MAX" '.dph_total = {"lte": $v}')

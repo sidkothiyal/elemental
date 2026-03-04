@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
-# sync_venv.sh — Transfer the .venv from the local Docker image to the remote.
+# sync_venv.sh — Transfer or link .venv on the remote.
 #
-# Checks the remote venv hash against local; only transfers when outdated.
-# Strategy: docker cp → gzip → ssh → tar extract (no Docker needed on remote).
+# When USE_REGISTRY_VENV is set (provider + ghcr.io image): symlink
+# REMOTE_VENV_DIR to /app/.venv from the container image. Otherwise: stream
+# .venv from local Docker to remote (docker cp → gzip → ssh → tar).
 #
 # Expects (env): REMOTE_HOST, SSH_OPTS, REMOTE_CODE_DIR, REMOTE_VENV_DIR,
 #                DOCKER_IMAGE, DEPS_CHANGED, CURRENT_HASH
+#                USE_REGISTRY_VENV (true = symlink from /app/.venv)
 #
 # Usage:
 #   source deploy/common.sh && source deploy/sync_venv.sh
@@ -16,6 +18,30 @@
 [[ -z "${DEPLOY_DIR:-}" ]] && source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 sync_venv() {
+    if [[ "${USE_REGISTRY_VENV:-false}" == true ]]; then
+        # Instance was created from our ghcr.io image; venv is already at /app/.venv.
+        log_step "Linking remote venv to container /app/.venv …"
+        ssh_cmd bash <<SYMLINK_EOF
+set -e
+mkdir -p '${REMOTE_CODE_DIR}'
+if [ -L '${REMOTE_VENV_DIR}' ]; then
+  target=\$(readlink '${REMOTE_VENV_DIR}')
+  if [ "\$target" = '/app/.venv' ]; then
+    echo 'Venv already linked to /app/.venv.'
+    exit 0
+  fi
+fi
+if [ -d '${REMOTE_VENV_DIR}' ] && [ ! -L '${REMOTE_VENV_DIR}' ]; then
+  rm -rf '${REMOTE_VENV_DIR}'
+fi
+ln -sfn /app/.venv '${REMOTE_VENV_DIR}'
+echo 'Linked ${REMOTE_VENV_DIR} -> /app/.venv'
+SYMLINK_EOF
+        log_done "Venv linked from container image."
+        return 0
+    fi
+
+    # ── Stream path: transfer .venv from local Docker image to remote ─────
     # Check remote venv hash (ssh_cmd has built-in retry)
     local remote_hash
     remote_hash=$(ssh_cmd "cat '${REMOTE_VENV_DIR}/.deps_hash' 2>/dev/null || echo ''")

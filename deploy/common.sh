@@ -33,6 +33,18 @@ REPO_NAME="${REPO_NAME:-$(basename "$REPO_ROOT")}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-elemental}"
 DEPLOY_LOGS_DIR="${DEPLOY_LOGS_DIR:-${DEPLOY_DIR}/logs}"
 
+# ── GitHub Container Registry (ghcr.io) ───────────────────────────────────────
+# Used when creating RunPod/Vast instances from a pre-built image with venv.
+# Set GITHUB_USERNAME (and DOCKER_GHRC_TOKEN for push) to use registry flow.
+# Full image: ghcr.io/GITHUB_USERNAME/GHRC_IMAGE_NAME:GHRC_TAG
+GHRC_IMAGE_NAME="${GHRC_IMAGE_NAME:-loom-env}"
+GHRC_TAG="${GHRC_TAG:-latest}"
+if [[ -n "${GITHUB_USERNAME:-}" ]]; then
+    GHRC_IMAGE="ghcr.io/${GITHUB_USERNAME}/${GHRC_IMAGE_NAME}:${GHRC_TAG}"
+else
+    GHRC_IMAGE=""
+fi
+
 # ── Remote path setup ──────────────────────────────────────────────────────
 # Call setup_remote_paths after REMOTE_PROJECT_DIR and REPO_NAME are set.
 # REMOTE_PROJECT_DIR is the workspace root (e.g. /workspace).

@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 #
-# run.sh — Run Python commands locally (via uv) or on a remote GPU server
+# run.sh — Run commands locally (via uv/bash) or on a remote GPU server
 #           (via pre-built venv + tmux), with efficient code syncing.
 #
-# Local mode:  uses uv directly (no remote args needed).
+# Local mode:  runs the given command in bash (e.g. uv run python ... or any script).
 # Remote mode: ensures a machine is running (via provider or direct SSH),
 #              builds a Docker image locally (for caching heavy deps like
 #              flash-attn), extracts the .venv, transfers it to the remote,
-#              syncs code via rsync, sets up credentials, and runs in tmux.
+#              syncs code via rsync, sets up credentials, and runs the command in tmux.
 #              No Docker daemon is needed on the remote — just CUDA + Python.
 #
 # Usage:
-#   ./run.sh [OPTIONS] [-- <python args>]
+#   ./run.sh [OPTIONS] [-- <command>]
+#
+# The command after -- is run as a bash command (local and remote). Examples:
+#   uv run python src/trainer.py config.yaml
+#   uv run python src/data_processor/download.py --download_dir=./data && uv run python src/trainer.py experiment/autoencoder/compression_ae.yaml
+#   ./scripts/my_script.sh
 #
 # Options:
 #   --ip HOST             Remote server IP/hostname
@@ -32,28 +37,34 @@
 #   --help                Show this help
 #
 # Examples:
-#   # Local — run via uv:
-#   ./run.sh -- -m src.train --config configs/default.yaml
+#   # Local — run a single Python module:
+#   ./run.sh -- uv run python -m src.train --config configs/default.yaml
+#
+#   # Local — download then train (chained command; quote so shell doesn't split on &&):
+#   ./run.sh -- "uv run python src/data_processor/download.py --download_dir=./data --dataset_name=div2k && uv run python src/trainer.py experiment/autoencoder/compression_ae.yaml"
+#
+#   # Local — run a bash script:
+#   ./run.sh -- ./scripts/prepare_data.sh
 #
 #   # Remote — existing server with known IP:
-#   ./run.sh --ip 1.2.3.4 -p 22222 -- -m src.train --config configs/default.yaml
+#   ./run.sh --ip 1.2.3.4 -p 22222 -- uv run python -m src.train --config configs/default.yaml
 #
 #   # Remote — auto-create a RunPod pod from config:
-#   ./run.sh --provider runpod -- -m src.train --config configs/default.yaml
+#   ./run.sh --provider runpod -- uv run python -m src.train --config configs/default.yaml
 #
 #   # Remote — auto-create a Vast.ai instance:
-#   ./run.sh --provider vast.ai -- -m src.train --config configs/default.yaml
+#   ./run.sh --provider vast.ai -- uv run python -m src.train --config configs/default.yaml
 #
 #   # Remote — restart an existing RunPod pod:
-#   ./run.sh --provider runpod --pod-id abc123 -- -m src.train --config configs/default.yaml
+#   ./run.sh --provider runpod --pod-id abc123 -- uv run python -m src.train --config configs/default.yaml
 #
 #   # Remote — with pulse auto-restart monitoring:
-#   ./run.sh --ip 1.2.3.4 -p 22222 --provider runpod --pod-id abc123 --pulse 5m -- -m src.train
+#   ./run.sh --ip 1.2.3.4 -p 22222 --provider runpod --pod-id abc123 --pulse 5m -- uv run python -m src.train
 #
 #   # Remote — with pulse + idle-stop (shuts down when GPU goes idle):
-#   ./run.sh --provider runpod --pulse 5m --pulse-idle-stop -- -m src.train
+#   ./run.sh --provider runpod --pulse 5m --pulse-idle-stop -- uv run python -m src.train
 #
-#   # Remote — setup only (no python args = no execution):
+#   # Remote — setup only (no command = no execution):
 #   ./run.sh --ip 1.2.3.4 -p 22222
 #
 
@@ -68,6 +79,7 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 source "${DEPLOY_DIR}/common.sh"
 source "${DEPLOY_DIR}/build_venv.sh"
+source "${DEPLOY_DIR}/push_image.sh"
 source "${DEPLOY_DIR}/ensure_machine.sh"
 source "${DEPLOY_DIR}/sync_venv.sh"
 source "${DEPLOY_DIR}/sync_code.sh"
@@ -90,6 +102,7 @@ REMOTE_PROJECT_DIR="/workspace"
 REMOTE_HOME="/root"
 PULSE_INTERVAL=""
 PULSE_IDLE_STOP=false
+# Command to run (everything after --); stored as array for quoting/session state
 PYTHON_ARGS=()
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -98,10 +111,12 @@ PYTHON_ARGS=()
 
 usage() {
     cat <<'USAGE'
-Usage: ./run.sh [OPTIONS] [-- <python args>]
+Usage: ./run.sh [OPTIONS] [-- <command>]
 
-Run a Python command locally (via uv) or on a remote server (via pre-built
-venv + tmux). If no python args are provided, remote setup runs without execution.
+Run a bash command locally or on a remote server (via pre-built venv + tmux).
+The command after -- is executed as-is (e.g. "uv run python ..." or "./script.sh").
+For chained commands (e.g. with &&), quote the whole command: -- "cmd1 && cmd2".
+If no command is provided, remote setup runs without execution.
 
 Options:
   --ip HOST             Remote server IP/hostname
@@ -120,23 +135,29 @@ Options:
   --help                Show this help
 
 Examples:
-  # Local:
-  ./run.sh -- -m src.train --config configs/default.yaml
+  # Local (single command):
+  ./run.sh -- uv run python -m src.train --config configs/default.yaml
+
+  # Local (chained commands; quote so the shell doesn't split on &&):
+  ./run.sh -- "uv run python src/data_processor/download.py --download_dir=./data --dataset_name=div2k && uv run python src/trainer.py experiment/autoencoder/compression_ae.yaml"
+
+  # Local (bash script):
+  ./run.sh -- ./scripts/prepare_data.sh
 
   # Remote (existing server):
-  ./run.sh --ip 1.2.3.4 -p 22222 -- -m src.train --config configs/default.yaml
+  ./run.sh --ip 1.2.3.4 -p 22222 -- uv run python -m src.train --config configs/default.yaml
 
   # Remote (auto-create RunPod pod):
-  ./run.sh --provider runpod -- -m src.train --config configs/default.yaml
+  ./run.sh --provider runpod -- uv run python -m src.train --config configs/default.yaml
 
   # Remote (auto-create Vast.ai instance):
-  ./run.sh --provider vast.ai -- -m src.train --config configs/default.yaml
+  ./run.sh --provider vast.ai -- uv run python -m src.train --config configs/default.yaml
 
   # Remote (restart existing pod + pulse monitoring):
-  ./run.sh --provider runpod --pod-id abc123 --pulse 5m -- -m src.train
+  ./run.sh --provider runpod --pod-id abc123 --pulse 5m -- uv run python -m src.train
 
   # Remote (pulse + idle-stop):
-  ./run.sh --provider runpod --pulse 5m --pulse-idle-stop -- -m src.train
+  ./run.sh --provider runpod --pulse 5m --pulse-idle-stop -- uv run python -m src.train
 
   # Remote (setup only):
   ./run.sh --ip 1.2.3.4 -p 22222
@@ -235,18 +256,19 @@ if [[ -z "$REMOTE_IP" && -z "$PROVIDER" ]]; then
     # fi
 
     if [[ ${#PYTHON_ARGS[@]} -eq 0 ]]; then
-        log_done "Venv ready. Nothing to run (no python args)."
+        log_done "Nothing to run (no command after --)."
         exit 0
     fi
 
-    log_success "▶ Running locally via uv …"
+    log_success "▶ Running locally …"
 
     # Expose Python headers so torch.compile / triton can find Python.h
     _py_include="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
     export CFLAGS="-I${_py_include} ${CFLAGS:-}"
     export CPATH="${_py_include}${CPATH:+:$CPATH}"
 
-    exec uv run python "${PYTHON_ARGS[@]}"
+    run_cmd_quoted=$(printf '%q ' "${PYTHON_ARGS[@]}")
+    exec bash -c "$run_cmd_quoted"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -254,7 +276,7 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 
 if [[ ${#PYTHON_ARGS[@]} -eq 0 ]]; then
-    log_warn "Note: No python arguments provided — will sync/setup only (no remote execution)."
+    log_warn "Note: No command provided — will sync/setup only (no remote execution)."
 fi
 
 # SSH retry and timeout for transient "Network is unreachable" and slow pod bring-up
@@ -264,22 +286,58 @@ export SSH_RETRY_INTERVAL="${SSH_RETRY_INTERVAL:-10}"
 
 # ════════════════════════════════════════════════════════════════════════════
 # ── Deployment pipeline ──────────────────────────────────────────────────
-# The full auto-create/restart pipeline:
-#   1. Ensure machine is running (create/start pod if needed, verify SSH)
-#   2. Build venv locally (Docker-based, cached by dep hashes)
-#   3. Transfer venv to remote (skipped if already up-to-date)
-#   4. Sync code to remote via rsync
-#   5. Setup credentials on remote (WANDB, etc.)
-#   6. Ensure uv package manager on remote
-#   7. Launch training session in tmux
+# Provider + GITHUB_USERNAME: build → push to ghcr.io → ensure machine with
+#   that image → symlink venv on remote. Otherwise: ensure machine → build →
+#   stream venv → sync code (existing behavior).
 # ════════════════════════════════════════════════════════════════════════════
 
-# ── Step 1: Ensure machine is running + SSH-reachable ─────────────────────
-echo ""
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}  Step 1/7 — Ensure machine is running${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-ensure_machine
+USE_REGISTRY_VENV=false
+if [[ -n "${PROVIDER:-}" && -n "${GITHUB_USERNAME:-}" ]]; then
+    USE_REGISTRY_VENV=true
+    export GHRC_IMAGE
+fi
+
+if [[ -n "${PROVIDER:-}" && -n "${GITHUB_USERNAME:-}" ]]; then
+    # ── Provider path: build and push image, then create instance with it ───
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  Step 1/7 — Build venv locally${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    build_venv
+
+    if [[ "$DEPS_CHANGED" == true || "${FORCE_PUSH:-0}" == "1" ]]; then
+        echo ""
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${CYAN}  Step 2/7 — Push image to ghcr.io${NC}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        push_image
+    else
+        echo ""
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${CYAN}  Step 2/7 — Push image to ghcr.io (skipped, up-to-date)${NC}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        log_done "Image unchanged — using existing registry image."
+    fi
+
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  Step 3/7 — Ensure machine is running${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    ensure_machine
+else
+    # ── Manual --ip or provider without GITHUB_USERNAME: ensure machine first ─
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  Step 1/7 — Ensure machine is running${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    ensure_machine
+
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  Step 2/7 — Build venv locally${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    build_venv
+fi
 # ensure_machine sets/updates: REMOTE_IP, REMOTE_PORT, POD_ID
 # It also calls build_ssh_opts and verifies SSH connectivity.
 
@@ -294,15 +352,11 @@ echo -e "${BLUE}Remote logs:${NC}        ${REMOTE_LOGS_DIR}"
 echo -e "${BLUE}Remote home:${NC}        ${REMOTE_HOME}"
 [[ -n "$POD_ID" ]] && echo -e "${BLUE}Pod ID:${NC}             ${POD_ID}"
 [[ -n "$PROVIDER" ]] && echo -e "${BLUE}Provider:${NC}           ${PROVIDER}"
+if [[ "${USE_REGISTRY_VENV:-false}" == true && -n "${GHRC_IMAGE:-}" ]]; then
+    echo -e "${BLUE}Registry image:${NC}    ${GHRC_IMAGE}"
+fi
 
-# ── Step 2: Build Docker image + venv locally ───────────────────────────────
-echo ""
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}  Step 2/7 — Build venv locally${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-build_venv
-
-# ── Step 3: Transfer .venv to remote ────────────────────────────────────────
+# ── Step 3/7 (manual) or 4/7 (provider): Sync venv to remote ─────────────────
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${CYAN}  Step 3/7 — Sync venv to remote${NC}"
@@ -336,7 +390,7 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${CYAN}  Step 7/7 — Launch remote session${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 run_remote
-# run_remote sets: SESSION_NAME (if python args were provided)
+# run_remote sets: SESSION_NAME (if a command was provided)
 
 # ── Save session state (for pulse auto-restart) ────────────────────────────
 save_session_state

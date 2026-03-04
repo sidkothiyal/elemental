@@ -225,8 +225,27 @@ _vastai_create() {
     echo ""
 
     local output
-    output=$(vastai_create_instance "$offer_id" "$payload")
-    vastai_sync_http_code
+    if [[ "${OFFER_TYPE:-}" == "bid" && -n "${PRICE_MAX:-}" ]]; then
+        local current="${PRICE:-}" price_step="${PRICE_STEP:-0.005}"
+        while true; do
+            PRICE="$current" payload=$(build_vastai_create_json)
+            log_step "Creating Vast.ai instance (bid \$${current}/hr) …"
+            output=$(vastai_create_instance "$offer_id" "$payload")
+            vastai_sync_http_code
+            if [[ "$VAST_API_HTTP_CODE" == "200" ]]; then
+                break
+            fi
+            log_warn "Create failed (HTTP ${VAST_API_HTTP_CODE}). Trying higher bid …"
+            if [[ "$current" == "$PRICE_MAX" ]]; then
+                log_error "Failed to create instance (HTTP ${VAST_API_HTTP_CODE}): $(echo "$output" | jq -r '.msg // .error // empty' 2>/dev/null || echo "$output")"
+                return 1
+            fi
+            current=$(awk -v current="$current" -v price_step="$price_step" -v price_max="$PRICE_MAX" 'BEGIN {n=current+price_step; if(n>price_max)n=price_max; printf "%.4f", n}' 2>/dev/null || echo "$PRICE_MAX")
+        done
+    else
+        output=$(vastai_create_instance "$offer_id" "$payload")
+        vastai_sync_http_code
+    fi
     if [[ "$VAST_API_HTTP_CODE" != "200" ]]; then
         log_error "Failed to create instance (HTTP ${VAST_API_HTTP_CODE}): $(echo "$output" | jq -r '.msg // .error // empty' 2>/dev/null || echo "$output")"
         return 1
