@@ -28,3 +28,16 @@ batch_size: 128
 lr_scheduler_params:
   step_size: 2
   gamma: 0.5
+
+# Post-processors: argmax class indices for callbacks / metrics
+postprocessors:
+  _target_: postprocessor.pipeline.PostProcessorPipeline
+  steps:
+    argmax:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.argmax.ArgmaxPostProcessor
+        dim: 1
+      input_mapping:
+        "pred": "pred"
+      output_key: "post_processed/formatted_pred"

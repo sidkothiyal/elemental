@@ -4,8 +4,8 @@ import logging
 import os
 import re
 
-from callback.wandb_callback import WANDB_RUN_ID_FILENAME, download_artifact, upload_artifact
 from utils.remote_backup.base import RemoteBackupStrategy
+from utils.wandb_utils import WANDB_RUN_ID_FILENAME, download_artifact, upload_artifact
 
 logger = logging.getLogger(__name__)
 

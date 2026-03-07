@@ -1,4 +1,9 @@
 # @package _global_
 # Binary Cross Entropy with Logits loss
 loss:
-  _target_: torch.nn.BCEWithLogitsLoss
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.BCEWithLogitsLoss

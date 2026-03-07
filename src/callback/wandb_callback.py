@@ -1,184 +1,30 @@
-"""Wandb callback for Trainer"""
+"""Wandb callback for Trainer."""
 
 import logging
 import os
 import random
 
 import numpy as np
+import plotly.graph_objects as go
 import torch
 from torch.nn import functional as F
 
 import wandb
 from callback import callback
 from data_processor.tokenizer import Tokenizer
-from utils import checkpoint as ckpt_utils, torch_np_utils
-
-# from transformers import AutoTokenizer
-
+from utils import torch_np_utils
+from utils.wandb_utils import (  # noqa: F401 — re-export for backward compat
+    WANDB_RUN_ID_FILENAME,
+    find_wandb_run_id_for_resume,
+)
 
 logger = logging.getLogger(__name__)
 
 os.environ["WANDB_SILENT"] = "True"
 
-# Filename for storing wandb run id
-WANDB_RUN_ID_FILENAME = "wandb_run_id.txt"
-
-
-def _find_wandb_run_id_for_resume(
-    results_dir: str,
-    experiment_name: str,
-    load_checkpoint_path: str | None = None,
-) -> str | None:
-    """Find wandb run ID from a previous run for resumption.
-
-    If ``load_checkpoint_path`` is ``"latest"``, uses ``find_latest_checkpoint``
-    to locate the most recent checkpoint and reads the wandb run ID from its
-    directory. If a specific checkpoint path is provided, uses that directory.
-
-    Args:
-        results_dir: Root results directory (e.g. ``results/autoencoder/``).
-        experiment_name: Current experiment name with datetime stamp.
-        load_checkpoint_path: Path to checkpoint file or ``"latest"``.
-
-    Returns:
-        The wandb run ID if found, otherwise ``None``.
-    """
-    checkpoint_dir: str | None = None
-
-    # Resolve checkpoint path to get the directory containing wandb_run_id.txt
-    if load_checkpoint_path:
-        if str(load_checkpoint_path).lower() == "latest":
-            # Use find_latest_checkpoint to locate the most recent checkpoint
-            try:
-                resolved_path = ckpt_utils.find_latest_checkpoint(
-                    results_dir=results_dir,
-                    experiment_name=experiment_name,
-                )
-                checkpoint_dir = os.path.dirname(resolved_path)
-                logger.info("Resolved 'latest' checkpoint to directory: %s", checkpoint_dir)
-            except FileNotFoundError as e:
-                logger.info("Could not find latest checkpoint for wandb resume: %s", e)
-                return None
-        else:
-            # Use the directory of the specified checkpoint path
-            checkpoint_dir = os.path.dirname(load_checkpoint_path)
-            logger.info("Using checkpoint directory: %s", checkpoint_dir)
-
-    if checkpoint_dir is None:
-        logger.info("No checkpoint path provided, cannot find wandb run ID")
-        return None
-
-    # Look for wandb run ID file in the checkpoint directory
-    run_id_path = os.path.join(checkpoint_dir, WANDB_RUN_ID_FILENAME)
-    if not os.path.isfile(run_id_path):
-        logger.info("No wandb run ID file found at: %s", run_id_path)
-        return None
-
-    # Read the run ID from the file
-    try:
-        with open(run_id_path, "r", encoding="utf-8") as f:
-            run_id = f.read().strip()
-        if run_id:
-            logger.info("Loaded wandb run ID for resumption: %s", run_id)
-            return run_id
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.warning("Failed to read wandb run ID file: %s", e)
-
-    return None
-
-
-def upload_artifact(
-    name: str,
-    artifact_type: str,
-    path: str,
-    aliases: list[str] | None = None,
-    delete_previous: bool = True,
-) -> wandb.Artifact:
-    """Upload a file or directory as a wandb artifact.
-
-    Uses the current active run (``wandb.run``) to log the artifact.
-
-    Args:
-        name: Artifact name (e.g. "my-dataset", "model-ckpt").
-        artifact_type: Artifact type (e.g. "dataset", "model").
-        path: Local path to a file or directory to upload.
-        aliases: Optional list of aliases to assign (e.g. ["latest", "v1"]).
-        delete_previous: If ``True`` (default), delete all previous versions
-            of this artifact after the new version is uploaded.
-
-    Returns:
-        The created and logged ``wandb.Artifact``.
-
-    Raises:
-        FileNotFoundError: If *path* does not exist.
-        ValueError: If no active run is available.
-    """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Path does not exist: {path}")
-
-    if wandb.run is None:
-        raise ValueError("No active wandb run (wandb.run is None). Call wandb.init() first.")
-
-    artifact = wandb.Artifact(name=name, type=artifact_type)
-    if os.path.isfile(path):
-        artifact.add_file(path)
-    else:
-        artifact.add_dir(path)
-
-    wandb.run.log_artifact(artifact, aliases=aliases)
-    logger.info("Uploaded artifact %s (%s) from %s", name, artifact_type, path)
-
-    if delete_previous:
-        _delete_previous_artifact_versions(name, artifact_type)
-
-    return artifact
-
-
-def _delete_previous_artifact_versions(name: str, artifact_type: str) -> None:
-    """Delete all versions of an artifact except the latest."""
-    try:
-        api = wandb.Api()
-        artifact_path = f"{wandb.run.entity}/{wandb.run.project}/{name}"
-        for version in api.artifacts(type_name=artifact_type, name=artifact_path):
-            if "latest" in version.aliases:
-                continue
-            logger.info("Deleting old artifact version %s", version.name)
-            version.delete()
-    except Exception:  # pylint: disable=broad-exception-caught
-        logger.warning("Failed to delete previous versions of artifact %s", name, exc_info=True)
-
-
-def download_artifact(
-    artifact_ref: str,
-    root: str | None = None,
-) -> tuple[str, wandb.Artifact]:
-    """Download a wandb artifact to disk via the public API.
-
-    Always uses ``wandb.Api()`` so that no active run is required.  This
-    makes it safe to call before ``wandb.init()``.
-
-    Args:
-        artifact_ref: Fully-qualified artifact reference, e.g.
-            ``"entity/project/name:alias"``.
-        root: Directory to download into.  If ``None``, uses wandb's
-            default artifact cache.
-
-    Returns:
-        A ``(download_path, artifact)`` tuple where *download_path* is
-        the local directory containing the artifact files and *artifact*
-        is the resolved ``wandb.Artifact`` object (useful for
-        inspecting metadata such as ``artifact.logged_by()``).
-    """
-    print(f"Downloading artifact {artifact_ref} to {root}")
-    api = wandb.Api()
-    artifact = api.artifact(artifact_ref)
-    download_path = artifact.download(root=root)
-    logger.info("Downloaded artifact %s to %s", artifact_ref, download_path)
-    return download_path, artifact
-
 
 class WandbCallback(callback.Callback):
-    """Wandb callback for Trainer"""
+    """Wandb callback for Trainer."""
 
     def __init__(
         self,
@@ -186,15 +32,15 @@ class WandbCallback(callback.Callback):
         project: str | None = "elemental",
         entity: str | None = "elemental-ai",
         logging_interval: int = 100,
-        num_samples_to_log: int = 1,
         class_colors: dict[int, tuple[int, int, int]] | None = None,
         num_classes: int | None = None,
         mode: str | None = None,
         log_text_data: bool = False,
-        tokenizer: str | None = None,  # pylint: disable=unused-argument
+        tokenizer: str | None = None,
         results_dir: str | None = None,
         resume_training: bool = False,
         load_checkpoint_path: str | None = None,
+        field_loggers: dict[str, str] | None = None,
     ):
         """Initialize the callback.
 
@@ -203,19 +49,21 @@ class WandbCallback(callback.Callback):
             project: The name of the project.
             entity: The name of the entity.
             logging_interval: The logging interval.
-            num_samples_to_log: The number of images to log.
             class_colors: The colors for each class for segmentation images.
             num_classes: The number of classes for segmentation images.
-            mode: The mode of training.
+            mode: The mode of training (e.g. ``"classification"``).
             log_text_data: Whether to log text data.
-            tokenizer: The tokenizer to use for text logging.
+            tokenizer: The tokenizer path to use for text logging.
             results_dir: Directory where results and checkpoints are saved.
                 Required for resume_training to find previous wandb run ID.
             resume_training: Whether to resume training from a checkpoint.
                 If True, will attempt to resume the wandb run from the previous
                 training session.
-            load_checkpoint_path: Path to the checkpoint file or "latest".
+            load_checkpoint_path: Path to the checkpoint file or ``"latest"``.
                 Used to locate the wandb run ID file when resuming.
+            field_loggers: Optional dict mapping data-container keys to logger
+                type strings (e.g. ``"point3d"``). For those keys, the specified
+                logger is used instead of the default image/text logging.
         """
         logger.info(
             "Initializing WandbCallback with project: %s, entity: %s, exp_name: %s",
@@ -224,52 +72,79 @@ class WandbCallback(callback.Callback):
             exp_name,
         )
         self._logging_interval = logging_interval
-        self._num_samples_to_log = num_samples_to_log
         self._mode = mode
         self._log_text_data = log_text_data
+        self._to_log: list[str] | None = None
         self._results_dir = results_dir
         self._exp_name = exp_name
-        if self._num_samples_to_log != 1:
-            raise NotImplementedError(
-                f"num_samples_to_log is not 1, but {self._num_samples_to_log}"
-            )
 
         self._class_colors = class_colors
         self._num_classes = num_classes
-        if self._num_classes:
-            if self._class_colors is None:
-                self._class_colors = {
-                    i: (
-                        random.randint(0, 255),
-                        random.randint(0, 255),
-                        random.randint(0, 255),
-                    )
-                    for i in range(self._num_classes)
-                }
-        if log_text_data:
-            # if tokenizer is None:
-            #     raise ValueError("tokenizer is required when log_text_data is True")
-            self._log_table = wandb.Table(columns=["step", "phase", "tag", "text"])
-            self._tokenizer = Tokenizer("data/tiny_shakespeare/")
-            # self._tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self._field_loggers = dict(field_loggers) if field_loggers else None
 
-        # Determine wandb init parameters for resume
-        wandb_init_kwargs: dict = {
+        if self._num_classes and self._class_colors is None:
+            self._class_colors = self._generate_class_colors(self._num_classes)
+
+        if log_text_data:
+            self._setup_text_logging(tokenizer)
+
+        wandb_init_kwargs = self._build_wandb_init_kwargs(
+            project=project,
+            entity=entity,
+            exp_name=exp_name,
+            resume_training=resume_training,
+            results_dir=results_dir,
+            load_checkpoint_path=load_checkpoint_path,
+        )
+        self._wandb_logger = wandb.init(**wandb_init_kwargs)
+
+        # Save wandb run ID to results directory for future resumption
+        self._save_wandb_run_id()
+
+    # ------------------------------------------------------------------
+    # Init helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _generate_class_colors(num_classes: int) -> dict[int, tuple[int, int, int]]:
+        """Generate random RGB colours for *num_classes* classes."""
+        return {
+            i: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for i in range(num_classes)
+        }
+
+    def _setup_text_logging(self, tokenizer: str | None) -> None:
+        """Initialise the tokenizer and wandb table for text logging."""
+        if tokenizer is None:
+            raise ValueError("tokenizer path is required when log_text_data is True")
+        self._log_table = wandb.Table(columns=["step", "phase", "tag", "text"])
+        self._tokenizer = Tokenizer(tokenizer)
+
+    @staticmethod
+    def _build_wandb_init_kwargs(
+        project: str | None,
+        entity: str | None,
+        exp_name: str,
+        resume_training: bool,
+        results_dir: str | None,
+        load_checkpoint_path: str | None,
+    ) -> dict:
+        """Build the keyword arguments dict for ``wandb.init``."""
+        kwargs: dict = {
             "project": project,
             "entity": entity,
             "name": exp_name,
         }
 
-        # Attempt to resume wandb run if resume_training is enabled
         if resume_training and results_dir:
-            run_id = _find_wandb_run_id_for_resume(
+            run_id = find_wandb_run_id_for_resume(
                 results_dir=results_dir,
                 experiment_name=exp_name,
                 load_checkpoint_path=load_checkpoint_path,
             )
             if run_id:
-                wandb_init_kwargs["id"] = run_id
-                wandb_init_kwargs["resume"] = "allow"
+                kwargs["id"] = run_id
+                kwargs["resume"] = "allow"
                 logger.info("Resuming wandb run with ID: %s", run_id)
             else:
                 logger.info("No previous wandb run found, starting new run")
@@ -279,10 +154,7 @@ class WandbCallback(callback.Callback):
                 "Cannot resume wandb run without results_dir."
             )
 
-        self._wandb_logger = wandb.init(**wandb_init_kwargs)
-
-        # Save wandb run ID to results directory for future resumption
-        self._save_wandb_run_id()
+        return kwargs
 
     def _save_wandb_run_id(self) -> None:
         """Save the wandb run ID to the results directory for future resumption."""
@@ -306,27 +178,48 @@ class WandbCallback(callback.Callback):
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to save wandb run ID: %s", e)
 
-    def update_config(self, config: dict, *args, **kwargs):  # pylint: disable=unused-argument
+    # ------------------------------------------------------------------
+    # Config
+    # ------------------------------------------------------------------
+
+    def update_config(self, config: dict):
         """Update the config of the callback.
 
         Args:
-            config: The config to update.
+            config: The config to update.  Recognised keys:
+                - ``to_log``: optional list of data-container keys that
+                  should be logged by :meth:`on_batch_end`.  ``None``
+                  (the default) means log everything.
         """
+        to_log = config.get("to_log")
+        if to_log is not None:
+            self._to_log = list(to_log)
+
         # allow_val_change=True is needed when resuming a run, as the config
         # may already be set from the previous run
         self._wandb_logger.config.update(config, allow_val_change=True)
 
-    def filter_label(self, label: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor | None:
-        """Filter the label.
+    # ------------------------------------------------------------------
+    # Logging helpers
+    # ------------------------------------------------------------------
 
-        Args:
-            label: The label to filter.
+    @staticmethod
+    def _first_sample(
+        label: torch.Tensor | dict[str, torch.Tensor] | None,
+    ) -> torch.Tensor | dict | None:
+        """Return the first batch element from *label*.
+
+        Works recursively on nested dicts.
         """
+        if label is None:
+            return None
         if isinstance(label, torch.Tensor):
             return label[0]
         if isinstance(label, dict):
-            return {k: self.filter_label(v) for k, v in label.items()}
+            return {k: WandbCallback._first_sample(v) for k, v in label.items()}
         return label
+
+    # -- Image logging -------------------------------------------------
 
     def _log_image(
         self,
@@ -337,27 +230,27 @@ class WandbCallback(callback.Callback):
         target_label: torch.Tensor | None = None,
         pred_label: torch.Tensor | None = None,
     ):
-        """Log the image.
+        """Log an image (or dict of images) to wandb.
 
-        Args:
-            step: The step of the image.
-            phase: The phase of the image.
-            image: The image to log.
+        Handles dicts by recursing, then processes a single image tensor:
+        transposes NCHW → NHWC, takes the first sample, and optionally
+        converts class-index maps to RGB using ``_class_colors``.
         """
-        if isinstance(image, torch.Tensor):
-            image = torch_np_utils.to_numpy(image)
-        elif isinstance(image, dict):
+        if isinstance(image, dict):
             for key, img_value in image.items():
                 target = target_label[key] if target_label is not None else None
                 pred = pred_label[key] if pred_label is not None else None
                 self._log_image(step, phase, f"{tag}/{key}", img_value, target, pred)
             return
 
+        if isinstance(image, torch.Tensor):
+            image = torch_np_utils.to_numpy(image)
+
         if image.ndim == 4:
             image = np.transpose(image, (0, 2, 3, 1))
         image = image[0]
-        target_label = self.filter_label(target_label)
-        pred_label = self.filter_label(pred_label)
+        target_label = self._first_sample(target_label)
+        pred_label = self._first_sample(pred_label)
 
         if image.ndim not in [2, 3]:
             return
@@ -370,26 +263,30 @@ class WandbCallback(callback.Callback):
                 colored_image[image == i] = self._class_colors[i]  # type: ignore
             image = colored_image
 
-        wandb_image_kwargs = {"caption": ""}
+        caption = ""
         if target_label is not None:
-            wandb_image_kwargs["caption"] += f"Target: {target_label} "
+            caption += f"Target: {target_label} "
         if pred_label is not None:
-            wandb_image_kwargs["caption"] += f"Pred: {pred_label} "
-        wandb_image = wandb.Image(image, **wandb_image_kwargs)
+            caption += f"Pred: {pred_label} "
+        wandb_image = wandb.Image(image, caption=caption)
 
         self._wandb_logger.log({f"{phase}/{tag}": wandb_image, f"{phase}/step": step})
+
+    # -- Text logging --------------------------------------------------
 
     def _log_text(
         self, step: int, phase: str, tag: str, text: torch.Tensor | dict[str, torch.Tensor]
     ):
-        """Log the text.
+        """Log text data to wandb.
 
-        Args:
-            step: The step of the text.
-            phase: The phase of the text.
-            tag: The tag of the text.
-            text: The text to log.
+        Tensor inputs are decoded via the configured tokenizer.  Dicts are
+        handled recursively.
         """
+        if isinstance(text, dict):
+            for key, text_value in text.items():
+                self._log_text(step, phase, f"{tag}/{key}", text_value)
+            return
+
         if isinstance(text, torch.Tensor):
             if text.ndim in [1, 2]:
                 text = self._tokenizer.decode(text[0, ...])
@@ -399,56 +296,195 @@ class WandbCallback(callback.Callback):
                 text = self._tokenizer.decode(text[0, ...])
             else:
                 raise ValueError(f"Text tensor has invalid dimensions: {text.ndim}")
-        elif isinstance(text, dict):
-            for key, text_value in text.items():
-                self._log_text(step, phase, f"{tag}/{key}", text_value)
+
+        logger.info("Logging step: %d, phase: %s, tag: %s, text: %s", step, phase, tag, text)
+
+    # -- 3D scatter / line logging -------------------------------------
+
+    def _prepare_3d_data(
+        self, value: torch.Tensor | np.ndarray, logger_name: str
+    ) -> np.ndarray | None:
+        """Convert *value* to a ``(N, 3)`` numpy array, or ``None`` on failure.
+
+        Handles tensor → numpy conversion, takes the first batch element if
+        the array is 3-D, and validates the final shape.
+        """
+        if isinstance(value, torch.Tensor):
+            value = torch_np_utils.to_numpy(value)
+        if value.ndim == 3:
+            value = value[0]
+        if value.ndim != 2 or value.shape[1] != 3:
+            logger.warning(
+                "%s logger expects shape (N, 3) or (B, N, 3), got %s",
+                logger_name,
+                value.shape,
+            )
+            return None
+        return value
+
+    def _log_point3d(
+        self, step: int, phase: str, tag: str, value: torch.Tensor | np.ndarray
+    ) -> None:
+        """Log a ``(N, 3)`` tensor as a 3-D point cloud (markers only)."""
+        data = self._prepare_3d_data(value, "point3d")
+        if data is None:
             return
+        xs, ys, zs = data[:, 0], data[:, 1], data[:, 2]
+        fig = go.Figure(data=[go.Scatter3d(x=xs, y=ys, z=zs, mode="markers", marker=dict(size=4))])
+        fig.update_layout(
+            title=tag,
+            scene=dict(xaxis_title="x", yaxis_title="y", zaxis_title="z", aspectmode="data"),
+        )
+        self._wandb_logger.log({f"{phase}/{tag}": wandb.Plotly(fig), f"{phase}/step": step})
 
-        print(f"Logging step: {step}, phase: {phase}, tag: {tag}, text: {text}")
+    def _log_line3d(
+        self, step: int, phase: str, tag: str, value: torch.Tensor | np.ndarray
+    ) -> None:
+        """Log a ``(N, 3)`` tensor as a 3-D line with directional color gradient."""
+        data = self._prepare_3d_data(value, "line3d")
+        if data is None:
+            return
+        xs, ys, zs = data[:, 0], data[:, 1], data[:, 2]
+        point_indices = np.arange(len(xs), dtype=np.float64)
+        fig = go.Figure(
+            data=[
+                go.Scatter3d(
+                    x=xs,
+                    y=ys,
+                    z=zs,
+                    mode="lines+markers",
+                    line=dict(
+                        width=4,
+                        color=point_indices,
+                        colorscale="Bluered",
+                        showscale=True,
+                        colorbar=dict(title="Point order"),
+                    ),
+                    marker=dict(
+                        size=3,
+                        color=point_indices,
+                        colorscale="Bluered",
+                        showscale=False,
+                    ),
+                )
+            ]
+        )
+        fig.update_layout(
+            title=tag,
+            scene=dict(xaxis_title="x", yaxis_title="y", zaxis_title="z", aspectmode="data"),
+        )
+        self._wandb_logger.log({f"{phase}/{tag}": wandb.Plotly(fig), f"{phase}/step": step})
 
-        # self._log_table.add_data(step, phase, tag, text)
-        # push_table = wandb.Table(data=self._log_table.data, columns=self._log_table.columns)
-        # wandb.log({f"{phase}/text": push_table})
+    # -- Dispatch helpers ----------------------------------------------
 
-    def on_batch_end(
+    _FIELD_LOGGER_DISPATCH: dict[str, str] = {
+        "point3d": "_log_point3d",
+        "line3d": "_log_line3d",
+    }
+
+    def _dispatch_field_logger(
+        self, step: int, phase: str, key: str, value: torch.Tensor | np.ndarray
+    ) -> bool:
+        """Call the configured logger for *key* if present. Returns ``True`` if dispatched."""
+        if self._field_loggers is None or key not in self._field_loggers:
+            return False
+        logger_type = self._field_loggers[key]
+        method_name = self._FIELD_LOGGER_DISPATCH.get(logger_type)
+        if method_name is None:
+            logger.warning("Unknown field logger type %r for key %s", logger_type, key)
+            return False
+        getattr(self, method_name)(step, phase, key, value)
+        return True
+
+    def _log_dict_scalars(self, step: int, phase: str, key: str, value: dict) -> bool:
+        """If *value* is a dict of scalars, log each to wandb and return ``True``."""
+        if not isinstance(value, dict) or len(value) == 0:
+            return False
+        if not all(isinstance(v, (int, float)) for v in value.values()):
+            return False
+        metrics = {f"{phase}/{key}/{subkey}": val for subkey, val in value.items()}
+        metrics[f"{phase}/step"] = step
+        self._wandb_logger.log(metrics)
+        return True
+
+    # -- Unified value logger ------------------------------------------
+
+    def _log_value(
         self,
         step: int,
         phase: str,
-        input_data: torch.Tensor | dict[str, torch.Tensor],
-        target_data: torch.Tensor | dict[str, torch.Tensor],
-        pred_data: torch.Tensor | dict[str, torch.Tensor],
-    ):
-        """Log the metrics.
+        key: str,
+        value,
+        target_label=None,
+        pred_label=None,
+    ) -> None:
+        """Log a single data-container value through the dispatch chain.
+
+        Order: field_loggers → dict-of-scalars → text → image.
+        """
+        if value is None:
+            return
+        if self._dispatch_field_logger(step, phase, key, value):
+            return
+        if self._log_dict_scalars(step, phase, key, value):
+            return
+        if self._log_text_data:
+            self._log_text(step, phase, key, value)
+        else:
+            self._log_image(
+                step, phase, key, value, target_label=target_label, pred_label=pred_label
+            )
+
+    def _resolve_default_keys(self, data: dict) -> list[str]:
+        """Build the default list of keys to log when ``_to_log`` is ``None``."""
+        keys = ["input/input", "target", "pred"]
+        # Include conditioning images (e.g. observation image in VLA diffusion)
+        cond_data = data.get("input/cond")
+        if isinstance(cond_data, dict):
+            for cond_key, value in cond_data.items():
+                if isinstance(value, torch.Tensor) and value.ndim >= 3:
+                    keys.append(f"input/cond/{cond_key}")
+        return keys
+
+    # ------------------------------------------------------------------
+    # Callback hooks
+    # ------------------------------------------------------------------
+
+    def on_batch_end(self, step: int, phase: str, data: dict):
+        """Log visual data (images / text) from the unified data container.
 
         Args:
-            step: The step of the metrics.
-            phase: The phase of the metrics.
-            input_data: The input of the metrics.
-            target_data: The target of the metrics.
-            pred_data: The predicted of the metrics.
+            step: The current step number.
+            phase: The current phase (train/val/test).
+            data: Unified data container with namespaced keys
+                (``input/*``, ``target``, ``pred``, ``post_processed/*``).
         """
-        # Only log at specified intervals to reduce GPU-CPU sync overhead
-        if step % self._logging_interval == 0:
-            if self._log_text_data:
-                self._log_text(step, phase, "input", input_data)
-                self._log_text(step, phase, "target", target_data)
-                self._log_text(step, phase, "pred", pred_data)
-            elif self._mode == "classification":
-                self._log_image(
+        if step % self._logging_interval != 0:
+            return
+
+        keys = self._to_log if self._to_log is not None else self._resolve_default_keys(data)
+
+        for key in keys:
+            value = data.get(key)
+            if value is None:
+                continue
+
+            # In classification mode, pass target/pred labels alongside the
+            # input image so they appear in the caption.
+            if self._mode == "classification" and key == "input/input":
+                self._log_value(
                     step,
                     phase,
-                    "input",
-                    input_data,
-                    target_label=target_data,
-                    pred_label=pred_data,
+                    key,
+                    value,
+                    target_label=data.get("target"),
+                    pred_label=data.get("pred"),
                 )
             else:
-                self._log_image(step, phase, "input", input_data)
-                self._log_image(step, phase, "target", target_data)
-                self._log_image(step, phase, "pred", pred_data)
+                self._log_value(step, phase, key, value)
 
     def log_metrics(self, step: int, phase: str, metrics: dict[str, float]):
-        """Log the metrics.
+        """Log scalar metrics to wandb.
 
         Args:
             step: The step of the metrics.

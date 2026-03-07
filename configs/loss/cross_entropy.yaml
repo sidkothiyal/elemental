@@ -1,4 +1,9 @@
 # @package _global_
 # Cross Entropy loss for classification
 loss:
-  _target_: torch.nn.CrossEntropyLoss
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.CrossEntropyLoss

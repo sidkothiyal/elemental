@@ -28,5 +28,11 @@ load_keys: null
 strict: true
 resume_training: false
 
+# Post-processor pipeline (null disables post-processing)
+postprocessors: null
+
+# Controls which data-container keys WandbCallback logs (null = log everything)
+to_log: null
+
 # Remote backup strategy (null disables remote backup)
 remote_backup: null

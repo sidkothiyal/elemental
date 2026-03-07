@@ -30,10 +30,9 @@ phases:
 # Whether to log metrics per batch (can be expensive)
 log_per_batch: false
 
-# Keys to extract predictions and targets from the data dicts
-# passed to on_batch_end
-pred_key: data
-target_key: data
+# Keys into the unified data container passed to on_batch_end
+pred_key: pred
+target_key: target
 
 # Optional transforms for predictions/targets before metric computation
 # Set to null to disable

@@ -23,7 +23,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from callback import callback
+from loss.loss_container import LossContainer
 from loss.utils import call_loss_with_epoch
+from postprocessor.pipeline import PostProcessorPipeline
 from utils import distributed, initializer
 
 # Configure logging
@@ -31,6 +33,34 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def move_to_device(obj: object, device: torch.device) -> object:
+    """Recursively move torch tensors to the specified device.
+
+    Handles:
+    - torch.Tensor: moves to device using .to(device)
+    - list: recursively processes each item
+    - dict: recursively processes each value
+    - tuple: recursively processes each item
+    - other types: returns as-is
+
+    Args:
+        obj: Object to move (tensor, list, dict, tuple, or other)
+        device: Target device to move tensors to
+
+    Returns:
+        Object with all torch tensors moved to the specified device
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [move_to_device(item, device) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(move_to_device(item, device) for item in obj)
+    return obj
 
 
 def collect_module_losses(
@@ -140,6 +170,69 @@ def cleanup_memory(
         torch.cuda.empty_cache()
 
 
+def build_data_container(
+    batch: dict,
+    model: nn.Module | None = None,
+    epoch: int | None = None,
+) -> dict:
+    """Build a unified namespaced data container from a batch dict.
+
+    Every key except ``"target"`` is prefixed with ``"input/"``
+    (e.g. ``batch["input"]`` -> ``"input/input"``).  The ``"target"``
+    key is kept as-is.
+
+    Optionally stores the *model* reference (under ``"model"``) and
+    the current *epoch* (under ``"epoch"``) so that losses
+    and post-processors can resolve them via their input / context
+    mappings.
+
+    Args:
+        batch: Raw batch dictionary from the dataloader.
+        model: Optional model instance to store in the container.
+        epoch: Optional current epoch number.
+
+    Returns:
+        A new dict with namespaced keys.
+    """
+    data: dict = {}
+    for key, value in batch.items():
+        if key == "target":
+            data["target"] = value
+        else:
+            data[f"input/{key}"] = value
+    if model is not None:
+        data["model"] = model
+    if epoch is not None:
+        data["epoch"] = epoch
+    return data
+
+
+def populate_predictions(pred: torch.Tensor | dict[str, torch.Tensor], data: dict) -> dict:
+    """Populate the data container with model predictions.
+
+    If *pred* is a dict (e.g. from ``DenoisingDiffusionModel``), each key
+    is stored under ``pred/<key>`` (e.g. ``pred/pred_noise``,
+    ``pred/pred_x0``).  The raw dict is also kept at ``pred`` for
+    introspection.
+
+    If *pred* is a plain tensor, it is stored at ``pred``.
+
+    Args:
+        pred: Model output — a single tensor or a dict of tensors.
+        data: The unified data container to populate.
+
+    Returns:
+        The same *data* dict, now containing prediction entries.
+    """
+    if isinstance(pred, dict):
+        data["pred"] = pred
+        for key, value in pred.items():
+            data[f"pred/{key}"] = value
+    else:
+        data["pred"] = pred
+    return data
+
+
 def batch_loop_gan(
     phase: str,
     epoch: int,
@@ -150,10 +243,10 @@ def batch_loop_gan(
     callbacks: callback.CallbackList,
     device: torch.device,
     dtype: torch.dtype = torch.bfloat16,
-    mode: str = "gan",  # pylint: disable=unused-argument
     config: dict | object | None = None,
     scaler: torch.amp.GradScaler | None = None,
     scheduler: dict[str, torch.optim.lr_scheduler.LRScheduler] | None = None,
+    postprocessor_pipeline: PostProcessorPipeline | None = None,
 ) -> dict[str, float]:
     """Batch loop for GAN training.
 
@@ -167,10 +260,11 @@ def batch_loop_gan(
         callbacks: list of callbacks for monitoring and logging
         device: Torch device to run computations on
         dtype: Data type for mixed precision training
-        mode: Training mode (unused, kept for API consistency)
         config: Configuration object
         scaler: GradScaler for mixed precision training (optional)
         scheduler: Dict of schedulers for per-batch stepping (optional)
+        postprocessor_pipeline: Optional pipeline for transforming model
+            outputs before callbacks.
 
     Returns:
         Dictionary of average losses for the epoch
@@ -191,18 +285,15 @@ def batch_loop_gan(
         step = num_steps + batch_idx
         callbacks.on_batch_start(step, phase)
 
-        # Prepare data containers
-        input_data = {}
-        target_data = {}
-        pred_data = {}
-
         # Move batch to device
-        batch = {k: v.to(device) for k, v in batch.items()}
+        batch = move_to_device(batch, device)
+
+        # Build unified data container
+        data = build_data_container(batch, model=model, epoch=epoch)
 
         # ---------------------------------------
         # Train discriminator on fake data
         # ---------------------------------------
-        input_data["input"] = batch["input"]
 
         # Generate fake segmentation mask
         with (
@@ -276,9 +367,9 @@ def batch_loop_gan(
                     )
                 optim["discriminator"].step()
 
-        # Store for callbacks
-        pred_data["discriminator_fake"] = pred_target
-        target_data["discriminator_real"] = real_target
+        # Store GAN-specific outputs in the unified container
+        data["pred/discriminator_fake"] = pred_target
+        data["pred/discriminator_real"] = real_target
 
         # Calculate total discriminator loss
         disc_total_loss = disc_real_loss.item() + disc_fake_loss.item()
@@ -331,11 +422,19 @@ def batch_loop_gan(
                 optim["generator"].step()
 
             # Per-batch scheduler stepping for GAN
-            if scheduler_step_per == "batch" and scheduler is not None:
+            if scheduler and scheduler_step_per == "batch":
                 for sched in scheduler.values():
                     sched.step()
+                    callbacks.on_lr_update(epoch, float(statistics.mean(sched.get_lr())))
 
         running_loss["generator"] += gen_loss.item()
+
+        # Store generator prediction in the unified container
+        populate_predictions(pred_target, data)
+
+        # Run post-processors (if configured)
+        if postprocessor_pipeline is not None:
+            postprocessor_pipeline(data)
 
         # Update progress bar
         progress_bar.set_postfix(
@@ -343,19 +442,17 @@ def batch_loop_gan(
         )
 
         # Callbacks at end of batch
-        callbacks.on_batch_end(
-            step,
-            phase,
-            input_data=input_data,
-            target_data=target_data,
-            pred_data=pred_data,
-        )
+        callbacks.on_batch_end(step, phase, data=data)
 
     # Calculate average metrics
     metrics = {
         "generator_loss": running_loss["generator"] / total_batches,
         "discriminator_loss": running_loss["discriminator"] / total_batches,
     }
+
+    # Trigger on_epoch_end before log_metrics so that MetricsCallback can
+    # compute aggregated metrics and inject them into the metrics dict.
+    callbacks.on_epoch_end(epoch, phase)
     callbacks.log_metrics(num_steps + total_batches, phase, metrics)
 
     # Calculate average losses
@@ -370,15 +467,15 @@ def batch_loop(
     epoch: int,
     dataloader: DataLoader,
     model: nn.Module,
-    loss: nn.Module,
+    loss: LossContainer,
     optim: torch.optim.Optimizer,
     callbacks: callback.CallbackList,
     device: torch.device,
     dtype: torch.dtype = torch.bfloat16,
-    mode: str = "classification",
     config: dict | object | None = None,
     scaler: torch.amp.GradScaler | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    postprocessor_pipeline: PostProcessorPipeline | None = None,
 ) -> dict[str, float]:
     """Batch loop for standard DNN training.
 
@@ -387,15 +484,16 @@ def batch_loop(
         epoch: Current epoch number
         dataloader: DataLoader providing batches
         model: Neural network model
-        loss: Loss function
+        loss: Loss container that pulls inputs from the data dict
         optim: Optimizer
         callbacks: list of callbacks for monitoring and logging
         device: Torch device to run computations on
         dtype: Data type for mixed precision training
-        mode: Training mode ('classification', 'autoregressive', 'autoencoder')
         config: Configuration object
         scaler: GradScaler for mixed precision training (optional)
         scheduler: Learning rate scheduler for per-batch stepping (optional)
+        postprocessor_pipeline: Optional pipeline for transforming model
+            outputs before callbacks.
 
     Returns:
         Dictionary of average losses for the epoch
@@ -417,13 +515,11 @@ def batch_loop(
         step = num_steps + batch_idx
         callbacks.on_batch_start(step, phase)
 
-        # Prepare data containers
-        input_data = {}
-        target_data = {}
-        pred_data = {}
-
         # Move batch to device
-        batch = {k: v.to(device) for k, v in batch.items()}
+        batch = move_to_device(batch, device)
+
+        # Build unified data container for callbacks
+        data = build_data_container(batch, model=model, epoch=epoch)
 
         # Forward pass with gradient calculation only during training
         with (
@@ -436,17 +532,22 @@ def batch_loop(
                     model_input_args[arg] = batch[arg]
             pred = model(batch["input"], **model_input_args)
 
-            loss_args = {}
+            # Populate data container before loss so LossContainer can
+            # reference any key (pred/*, post_processed/*, target/*, etc.)
+            populate_predictions(pred, data)
             if hasattr(model, "loss_args"):
-                loss_args = model.loss_args
-                target_data.update(loss_args)
+                data.update({f"model/{key}": value for key, value in model.loss_args.items()})
 
-            # Call loss with epoch support for phased losses
-            batch_loss = call_loss_with_epoch(loss, pred, batch["target"], epoch, **loss_args)
+            # Run post-processors (populates post_processed/* keys)
+            if postprocessor_pipeline is not None:
+                postprocessor_pipeline(data)
+
+            # Compute loss from the data container
+            batch_loss, component_losses = loss(data)
+            for key, value in component_losses.items():
+                running_loss[key] += value.detach().item()
 
             # Collect losses from all submodules and trigger compute_losses hooks
-            # (handles nested module losses like VQVAE in PatcherUnpatcher, and
-            # dataset-side hooks like loss-aware timestep sampling in DiffusionDataset)
             module_losses = collect_module_losses(
                 model,
                 dataset=dataloader.dataset if phase == "train" else None,
@@ -486,33 +587,9 @@ def batch_loop(
                 optim.zero_grad()
 
                 # Per-batch scheduler stepping
-                if scheduler_step_per == "batch" and scheduler is not None:
+                if scheduler and scheduler_step_per == "batch":
                     scheduler.step()
-
-        # TODO: Add a post processor for input, target, pred to correctly format
-        # the data for logging and metrics
-        # Store data for callbacks
-        input_data["data"] = batch["input"]
-        if mode == "classification":
-            pred_data["data"] = pred.argmax(dim=1) if pred.dim() > 1 else pred
-        elif mode == "autoregressive":
-            pred_data["pred"] = pred
-            pred_data["generated"] = model.generate(batch["input"][:, :1], max_new_tokens=100)
-        elif mode == "autoencoder":
-            if pred.dim() == 4:
-                if pred.shape[1] == 1:
-                    # Single channel segmentation
-                    pred_data["data"] = pred.squeeze(1)
-                elif pred.shape[1] == 3:
-                    # RGB image
-                    pred_data["data"] = pred
-                else:
-                    # Multi-channel class-wise segmentation
-                    pred_data["data"] = pred.argmax(dim=1, keepdim=True)
-            else:
-                # Other cases
-                pred_data["data"] = pred
-        target_data["data"] = batch["target"]
+                    callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
 
         # Accumulate loss
         loss_value = batch_loss.detach().item()
@@ -522,19 +599,17 @@ def batch_loop(
         progress_bar.set_postfix({"loss": f"{loss_value:.4f}"})
 
         # Callbacks at end of batch
-        callbacks.on_batch_end(
-            step,
-            phase,
-            input_data=input_data,
-            target_data=target_data,
-            pred_data=pred_data,
-        )
+        callbacks.on_batch_end(step, phase, data=data)
 
     # Calculate average metrics
     metrics = {
         f"loss_{loss_key}": loss_value / total_batches
         for loss_key, loss_value in running_loss.items()
     }
+
+    # Trigger on_epoch_end before log_metrics so that MetricsCallback can
+    # compute aggregated metrics and inject them into the metrics dict.
+    callbacks.on_epoch_end(epoch, phase)
     callbacks.log_metrics(num_steps + total_batches, phase, metrics)
 
     # Calculate average losses
@@ -626,9 +701,10 @@ def run_train(
     # Initialize optimizer, scheduler and loss function
     mode = config.mode
     optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
-    scheduler_class = getattr(
-        torch.optim.lr_scheduler, config.get("lr_scheduler", "CosineAnnealingLR")
-    )
+    scheduler = None
+    scheduler_class = None
+    if config.get("lr_scheduler", None) is not None:
+        scheduler_class = getattr(torch.optim.lr_scheduler, config["lr_scheduler"])
     scheduler_params = config.get("lr_scheduler_params", {})
     # Filter out None values (allows scheduler configs to override defaults by setting to null)
     scheduler_params = {k: v for k, v in scheduler_params.items() if v is not None}
@@ -636,32 +712,40 @@ def run_train(
         # GAN specific setup
         optim = {
             "generator": optimizer_class(
-                model["generator"].parameters(),
+                [p for p in model["generator"].parameters() if p.requires_grad],
                 lr=config.lr,
             ),
-            "discriminator": optimizer_class(model["discriminator"].parameters(), lr=config.lr),
-        }
-        scheduler = {
-            "generator": scheduler_class(
-                optim["generator"],
-                **scheduler_params,
-            ),
-            "discriminator": scheduler_class(
-                optim["discriminator"],
-                **scheduler_params,
+            "discriminator": optimizer_class(
+                [p for p in model["discriminator"].parameters() if p.requires_grad],
+                lr=config.lr,
             ),
         }
+        if scheduler_class:
+            scheduler = {
+                "generator": scheduler_class(
+                    optim["generator"],
+                    **scheduler_params,
+                ),
+                "discriminator": scheduler_class(
+                    optim["discriminator"],
+                    **scheduler_params,
+                ),
+            }
         batch_loop_fn = batch_loop_gan
     else:
-        # Standard model setup
+        # Standard model setup — only optimize trainable parameters.
+        # Frozen sub-modules (e.g. VLM backbone) are excluded to avoid
+        # wasting memory on optimizer state for parameters that never update.
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
         optim = optimizer_class(
-            model.parameters(),
+            trainable_params,
             lr=config.lr,
         )
-        scheduler = scheduler_class(
-            optim,
-            **scheduler_params,
-        )
+        if scheduler_class:
+            scheduler = scheduler_class(
+                optim,
+                **scheduler_params,
+            )
         batch_loop_fn = batch_loop
 
     # Initialize loss function
@@ -707,6 +791,10 @@ def run_train(
     compile_config = config.get("torch_compile", None)
     model = initializer.compile_model_and_optimizer_step(model, optim, compile_config)
 
+    # Initialize post-processor pipeline from config (Hydra instantiates directly)
+    pp_config = config.get("postprocessors", None)
+    postprocessor_pipeline = hy_utils.instantiate(pp_config) if pp_config is not None else None
+
     # Update callback config with model details
     callbacks.update_config(
         {
@@ -722,6 +810,7 @@ def run_train(
             "device": device,
             "mode": mode,
             "remote_backup": remote_backup,
+            "to_log": config.get("to_log", None),
         }
     )
     # # TODO: check if watch is time consuming and if we should log only the
@@ -749,7 +838,7 @@ def run_train(
             if use_distributed and hasattr(train_loader.sampler, "set_epoch"):
                 train_loader.sampler.set_epoch(epoch)
 
-            callbacks.on_epoch_start(epoch, config.num_epochs, "train")
+            callbacks.on_epoch_start(epoch, "train")
             if distributed.is_main_process():
                 logger.info("Starting epoch %d/%d", epoch + 1, config.num_epochs)
 
@@ -766,16 +855,16 @@ def run_train(
                 callbacks,
                 device,
                 dtype=dtype,
-                mode=mode,
                 config=config,
                 scaler=scaler,
                 scheduler=scheduler if scheduler_step_per == "batch" else None,
+                postprocessor_pipeline=postprocessor_pipeline,
             )
             if distributed.is_main_process():
                 logger.info("Train loss: %s", train_loss)
 
             # Update learning rate (only if stepping per epoch)
-            if scheduler_step_per == "epoch":
+            if scheduler and scheduler_step_per == "epoch":
                 if isinstance(scheduler, dict):
                     for key in scheduler:
                         scheduler[key].step()
@@ -785,9 +874,17 @@ def run_train(
                 else:
                     scheduler.step()
                     callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
+            elif scheduler is None:
+                if isinstance(optim, dict):
+                    for key, o in optim.items():
+                        callbacks.on_lr_update(
+                            epoch, float(statistics.mean([pg["lr"] for pg in o.param_groups])), key
+                        )
+                else:
+                    callbacks.on_lr_update(
+                        epoch, float(statistics.mean([pg["lr"] for pg in optim.param_groups]))
+                    )
 
-            # Call on_epoch_end for training phase (was previously missing!)
-            callbacks.on_epoch_end(epoch, config.num_epochs, "train")
             callbacks.on_phase_end("train")
 
             # Validation phase (every 2 epochs by default)
@@ -798,7 +895,7 @@ def run_train(
                 callbacks.on_phase_start("val")
 
                 model.eval()
-                callbacks.on_epoch_start(epoch, config.num_epochs, "val")
+                callbacks.on_epoch_start(epoch, "val")
                 val_loss = batch_loop_fn(
                     "val",
                     epoch,
@@ -809,12 +906,11 @@ def run_train(
                     callbacks,
                     device,
                     dtype=dtype,
-                    mode=mode,
                     config=config,
                     scaler=None,  # No scaler needed for validation
                     scheduler=None,
+                    postprocessor_pipeline=postprocessor_pipeline,
                 )
-                callbacks.on_epoch_end(epoch, config.num_epochs, "val")
                 if distributed.is_main_process():
                     logger.info("Validation loss: %s", val_loss)
 
@@ -839,10 +935,10 @@ def run_train(
             callbacks,
             device,
             dtype=dtype,
-            mode=mode,
             config=config,
             scaler=None,
             scheduler=None,
+            postprocessor_pipeline=postprocessor_pipeline,
         )
         if distributed.is_main_process():
             logger.info("Test results: %s", test_loss)

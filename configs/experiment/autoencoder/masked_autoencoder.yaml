@@ -7,7 +7,7 @@ defaults:
   - /default
   - /dataset: cityscapes_autoencoder
   - /model: masked_autoencoder
-  - /loss: masked_mse
+  - /loss: masked_loss
   - /optimizer: adam
   - /scheduler: step_lr
   - /callback: default

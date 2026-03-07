@@ -28,8 +28,8 @@ class MetricsCallback(callback.Callback):
         metrics: dict[str, Metric] | MetricCollection | None = None,
         phases: dict[str, int] | None = None,
         log_per_batch: bool = False,
-        pred_key: str = "data",
-        target_key: str = "data",
+        pred_key: str = "pred",
+        target_key: str = "target",
         transform_pred: Callable[[torch.Tensor], torch.Tensor] | None = None,
         transform_target: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ):
@@ -44,8 +44,10 @@ class MetricsCallback(callback.Callback):
                 Default: {"train": 1, "val": 1, "test": 1}.
             log_per_batch: Whether to log batch-level metrics (default: False,
                 only log epoch-level aggregated metrics).
-            pred_key: Key to extract predictions from pred_data dict.
-            target_key: Key to extract targets from target_data dict.
+            pred_key: Key into the unified data container for predictions
+                (e.g. ``"pred"`` or ``"post_processed/formatted_pred"``).
+            target_key: Key into the unified data container for targets
+                (e.g. ``"target"``).
             transform_pred: Optional callable to transform predictions before
                 metric computation (e.g., argmax for classification).
             transform_target: Optional callable to transform targets before
@@ -87,7 +89,7 @@ class MetricsCallback(callback.Callback):
             self.phases,
         )
 
-    def update_config(self, config: dict, *args, **kwargs):
+    def update_config(self, config: dict, *args, **kwargs):  # pylint: disable=unused-argument
         """Update config and move metrics to the correct device.
 
         Args:
@@ -117,12 +119,11 @@ class MetricsCallback(callback.Callback):
         # Compute on epoch 0 and every nth epoch thereafter
         return epoch % interval == 0
 
-    def on_epoch_start(self, epoch: int, total_epochs: int, phase: str):
+    def on_epoch_start(self, epoch: int, phase: str):
         """Reset metrics at the start of each epoch if computing this epoch.
 
         Args:
             epoch: Current epoch number.
-            total_epochs: Total number of epochs.
             phase: Current phase (train/val/test).
         """
         self._current_epoch[phase] = epoch
@@ -131,50 +132,20 @@ class MetricsCallback(callback.Callback):
         if phase in self._metrics and self._should_compute[phase]:
             self._metrics[phase].reset()
 
-    def _extract_tensor(
-        self,
-        data: torch.Tensor | dict[str, torch.Tensor],
-        key: str,
-    ) -> torch.Tensor | None:
-        """Extract tensor from data dict or return tensor directly.
-
-        Args:
-            data: Either a tensor or a dict containing tensors.
-            key: Key to extract from dict if data is a dict.
-
-        Returns:
-            Extracted tensor or None if key not found.
-        """
-        if isinstance(data, torch.Tensor):
-            return data
-        if isinstance(data, dict):
-            return data.get(key)
-        return None
-
-    def on_batch_end(
-        self,
-        step: int,
-        phase: str,
-        input_data: torch.Tensor | dict[str, torch.Tensor],
-        target_data: torch.Tensor | dict[str, torch.Tensor],
-        pred_data: torch.Tensor | dict[str, torch.Tensor],
-    ):
+    def on_batch_end(self, step: int, phase: str, data: dict):  # pylint: disable=unused-argument
         """Update metrics with batch predictions and targets.
 
         Args:
             step: Current step number.
             phase: Current phase (train/val/test).
-            input_data: Input data (unused).
-            target_data: Target data tensor or dict.
-            pred_data: Prediction data tensor or dict.
+            data: Unified data container with namespaced keys.
         """
         # Skip if phase not tracked or not computing this epoch
         if phase not in self._metrics or not self._should_compute.get(phase, False):
             return
 
-        # Extract tensors from dicts if needed
-        preds = self._extract_tensor(pred_data, self.pred_key)
-        targets = self._extract_tensor(target_data, self.target_key)
+        preds = data.get(self.pred_key)
+        targets = data.get(self.target_key)
 
         if preds is None or targets is None:
             logger.warning(
@@ -202,12 +173,11 @@ class MetricsCallback(callback.Callback):
                 targets.shape if hasattr(targets, "shape") else type(targets),
             )
 
-    def on_epoch_end(self, epoch: int, total_epochs: int, phase: str):
+    def on_epoch_end(self, epoch: int, phase: str):
         """Compute and store aggregated metrics at epoch end.
 
         Args:
             epoch: Current epoch number.
-            total_epochs: Total number of epochs.
             phase: Current phase (train/val/test).
         """
         # Skip if phase not tracked or not computing this epoch
@@ -234,7 +204,12 @@ class MetricsCallback(callback.Callback):
         except Exception as e:
             logger.warning("Failed to compute metrics for phase %s: %s", phase, e)
 
-    def log_metrics(self, step: int, phase: str, metrics: dict[str, float]):
+    def log_metrics(
+        self,
+        step: int,
+        phase: str,
+        metrics: dict[str, float],
+    ):  # pylint: disable=unused-argument
         """Inject computed metrics into the metrics dict for downstream logging.
 
         This allows WandbCallback to pick up our metrics automatically.

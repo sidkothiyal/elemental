@@ -27,7 +27,6 @@ callbacks:
     exp_name: ${experiment_name}
     project: "elemental"
     entity: "elemental-ai"
-    num_samples_to_log: 1
     logging_interval: 100
     mode: ${mode}
     log_text_data: true

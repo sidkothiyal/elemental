@@ -24,7 +24,7 @@ class CheckpointCallback(callback.Callback):
         save_every_n_steps: int | None = None,
         save_best: bool = True,
         save_last: bool = True,
-        monitor_metric: str = "total",
+        monitor_metric: str = "loss_total",
         mode: str = "min",
         max_checkpoints_saved: int | None = None,
     ):
@@ -36,7 +36,7 @@ class CheckpointCallback(callback.Callback):
             save_every_n_steps: Save checkpoint every n steps (default: None).
             save_best: Whether to save the best model based on validation loss (default: True).
             save_last: Whether to save the last model at the end of training (default: True).
-            monitor_metric: Metric to monitor for best model (default: "total").
+            monitor_metric: Metric to monitor for best model (default: "loss_total").
             mode: Mode for monitoring metric - "min" or "max" (default: "min").
             max_checkpoints_saved: Maximum number of periodic checkpoints to keep
                 (default: None, unlimited). Best and last checkpoints are always kept and don't
@@ -159,14 +159,11 @@ class CheckpointCallback(callback.Callback):
             except Exception:  # pylint: disable=broad-exception-caught
                 logger.warning("Remote backup upload failed for %s", name, exc_info=True)
 
-    def on_epoch_start(
-        self, epoch: int, total_epochs: int, phase: str  # pylint: disable=unused-argument
-    ):
+    def on_epoch_start(self, epoch: int, phase: str):
         """Called when the epoch starts.
 
         Args:
             epoch: Current epoch number.
-            total_epochs: Total number of epochs.
             phase: Current phase (train/val/test).
         """
         if phase == "train":
@@ -180,52 +177,18 @@ class CheckpointCallback(callback.Callback):
                         f"checkpoint-epoch-{epoch}", epoch=epoch - 1, is_periodic=True
                     )
 
-    def on_epoch_end(
-        self, epoch: int, total_epochs: int, phase: str  # pylint: disable=unused-argument
-    ):
-        """Called when the epoch ends.
-
-        Args:
-            epoch: Current epoch number.
-            total_epochs: Total number of epochs.
-            phase: Current phase (train/val/test).
-        """
-        # Check for best model after validation
-        if phase == "val" and self.save_best and self.current_val_metrics:
-            metric_value = self.current_val_metrics.get(f"loss_{self.monitor_metric}")
-
-            if metric_value is not None:
-                is_better = (
-                    metric_value < self.best_metric
-                    if self.mode == "min"
-                    else metric_value > self.best_metric
-                )
-
-                if is_better:
-                    self.best_metric = metric_value
-                    self._save_checkpoint("best", epoch=epoch, is_periodic=False)
-                    logger.info(
-                        "New best model saved with %s: %.6f",
-                        self.monitor_metric,
-                        metric_value,
-                    )
-
     def on_batch_end(
         self,
         step: int,
         phase: str,
-        input_data: torch.Tensor | dict[str, torch.Tensor],  # pylint: disable=unused-argument
-        target_data: torch.Tensor | dict[str, torch.Tensor],  # pylint: disable=unused-argument
-        pred_data: torch.Tensor | dict[str, torch.Tensor],  # pylint: disable=unused-argument
+        data: dict,  # pylint: disable=unused-argument
     ):
         """Called when the batch ends.
 
         Args:
             step: Current step number.
             phase: Current phase (train/val/test).
-            input_data: Input data.
-            target_data: Target data.
-            pred_data: Predicted data.
+            data: Unified data container (unused by this callback).
         """
         # Save periodic checkpoints by step during training
         if phase == "train" and self.save_every_n_steps is not None:
@@ -237,7 +200,12 @@ class CheckpointCallback(callback.Callback):
     def log_metrics(
         self, step: int, phase: str, metrics: dict[str, float]  # pylint: disable=unused-argument
     ):
-        """Store validation metrics for best model tracking.
+        """Store validation metrics and check for best model.
+
+        Best-model saving lives here (rather than in ``on_epoch_end``)
+        because ``on_epoch_end`` is now called *before* ``log_metrics``
+        inside the batch loop, ensuring that MetricsCallback has a chance
+        to inject its computed metrics into *metrics* first.
 
         Args:
             step: Current step number.
@@ -246,6 +214,23 @@ class CheckpointCallback(callback.Callback):
         """
         if phase == "val":
             self.current_val_metrics = metrics
+
+            if self.save_best:
+                metric_value = metrics.get(self.monitor_metric)
+                if metric_value is not None:
+                    is_better = (
+                        metric_value < self.best_metric
+                        if self.mode == "min"
+                        else metric_value > self.best_metric
+                    )
+                    if is_better:
+                        self.best_metric = metric_value
+                        self._save_checkpoint("best", epoch=self.current_epoch, is_periodic=False)
+                        logger.info(
+                            "New best model saved with %s: %.6f",
+                            self.monitor_metric,
+                            metric_value,
+                        )
 
     def on_phase_end(self, phase: str):
         """Called when the phase ends.

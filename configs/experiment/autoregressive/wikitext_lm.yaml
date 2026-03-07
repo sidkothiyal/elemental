@@ -40,3 +40,17 @@ callbacks:
     tokenizer: ${pretrained_tokenizer}
   checkpoint:
     save_every_n_epochs: 100
+
+# Post-processors: generate text samples for logging
+postprocessors:
+  _target_: postprocessor.pipeline.PostProcessorPipeline
+  steps:
+    generate:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.generate.GeneratePostProcessor
+        max_new_tokens: 100
+      input_mapping:
+        "model": "model"
+        "input/input": "input_data"
+      output_key: "post_processed/generated"

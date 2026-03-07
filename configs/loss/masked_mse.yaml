@@ -1,6 +1,0 @@
-# @package _global_
-# Masked MSE loss for masked autoencoder
-loss:
-  _target_: loss.masked_mse_loss.MaskedMSELoss
-  mask_weight: 0.25
-  neg_mask_weight: 1.0

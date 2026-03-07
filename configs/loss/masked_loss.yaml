@@ -1,10 +1,18 @@
 # @package _global_
 # Masked loss for masked autoencoder training
 loss:
-  _target_: loss.masked_loss.MaskedLoss
-  loss_function:
-    _target_: torch.nn.MSELoss
-    reduction: "none"
-  auto_scale_loss: true
-  mask_weight: 0.1
-  neg_mask_weight: 1.0
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.masked_loss.MaskedLoss
+        loss_function:
+          _target_: torch.nn.MSELoss
+          reduction: "none"
+        auto_scale_loss: true
+        mask_weight: 0.1
+        neg_mask_weight: 1.0
+      context_mapping:
+        "model/mask": mask
+        "model/neg_mask": neg_mask
