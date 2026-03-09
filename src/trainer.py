@@ -701,6 +701,10 @@ def run_train(
     # Initialize optimizer, scheduler and loss function
     mode = config.mode
     optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
+    # Gather extra optimizer kwargs (e.g. weight_decay, betas, eps) from config.
+    # Filter out None values so configs can selectively override defaults.
+    optimizer_params = dict(config.get("optimizer_params", {}))
+    optimizer_params = {k: v for k, v in optimizer_params.items() if v is not None}
     scheduler = None
     scheduler_class = None
     if config.get("lr_scheduler", None) is not None:
@@ -714,10 +718,12 @@ def run_train(
             "generator": optimizer_class(
                 [p for p in model["generator"].parameters() if p.requires_grad],
                 lr=config.lr,
+                **optimizer_params,
             ),
             "discriminator": optimizer_class(
                 [p for p in model["discriminator"].parameters() if p.requires_grad],
                 lr=config.lr,
+                **optimizer_params,
             ),
         }
         if scheduler_class:
@@ -740,6 +746,7 @@ def run_train(
         optim = optimizer_class(
             trainable_params,
             lr=config.lr,
+            **optimizer_params,
         )
         if scheduler_class:
             scheduler = scheduler_class(
