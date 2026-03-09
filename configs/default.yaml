@@ -34,5 +34,8 @@ postprocessors: null
 # Controls which data-container keys WandbCallback logs (null = log everything)
 to_log: null
 
+# Profiler configuration (null disables profiling)
+profiler: null
+
 # Remote backup strategy (null disables remote backup)
 remote_backup: null

@@ -1,0 +1,23 @@
+# @package _global_
+# Memory profiling — ~10-20% overhead
+# Good for: OOM debugging, memory leak hunting, allocation analysis
+profiler:
+  enabled: true
+  activities:
+    - CPU
+    - CUDA
+  schedule:
+    wait: 1
+    warmup: 1
+    active: 3
+    repeat: 1
+  record_shapes: true
+  profile_memory: true   # tracks tensor allocations/deallocations
+  with_stack: true       # needed to identify allocation source lines
+  with_flops: false
+  output:
+    print_table: true
+    table_sort_by: "self_cuda_memory_usage"
+    table_row_limit: 25
+    export_chrome_trace: true
+    tensorboard: true

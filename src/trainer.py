@@ -18,6 +18,7 @@ import torch
 import tqdm
 from omegaconf import DictConfig
 from torch import nn
+from torch.profiler import ProfilerActivity, record_function, schedule, tensorboard_trace_handler
 
 # from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -140,6 +141,114 @@ def clear_module_losses(model: nn.Module) -> None:
             module.losses.clear()
 
 
+def setup_profiler(
+    profiler_config: dict | DictConfig | None,
+    results_dir: str,
+) -> torch.profiler.profile | None:
+    """Create a PyTorch profiler from config.
+
+    Args:
+        profiler_config: Profiler configuration dict with keys:
+            - enabled (bool): Whether profiling is active.
+            - activities (list[str]): Which activities to trace ("CPU", "CUDA").
+            - schedule (dict): Schedule params (wait, warmup, active, repeat).
+            - record_shapes (bool): Capture input tensor shapes per op.
+            - profile_memory (bool): Track tensor allocations/deallocations.
+            - with_stack (bool): Capture Python call stack for each op.
+            - with_flops (bool): Estimate FLOPs for matmul/conv ops.
+            - output (dict): Output settings (print_table, export_chrome_trace,
+              tensorboard, table_sort_by, table_row_limit).
+        results_dir: Directory to save profiler outputs.
+
+    Returns:
+        Configured profiler instance, or None if disabled.
+    """
+    if profiler_config is None:
+        return None
+
+    if isinstance(profiler_config, DictConfig):
+        profiler_config = dict(profiler_config)
+
+    if not profiler_config.get("enabled", False):
+        logger.info("Profiler is disabled")
+        return None
+
+    # Map activity strings to ProfilerActivity enums
+    activity_map = {
+        "CPU": ProfilerActivity.CPU,
+        "CUDA": ProfilerActivity.CUDA,
+    }
+    activities = [
+        activity_map[a] for a in profiler_config.get("activities", ["CPU"]) if a in activity_map
+    ]
+
+    # Build schedule
+    sched_cfg = profiler_config.get("schedule", {})
+    if isinstance(sched_cfg, DictConfig):
+        sched_cfg = dict(sched_cfg)
+    prof_schedule = schedule(
+        wait=sched_cfg.get("wait", 1),
+        warmup=sched_cfg.get("warmup", 1),
+        active=sched_cfg.get("active", 3),
+        repeat=sched_cfg.get("repeat", 1),
+    )
+
+    # Build output handler
+    output_cfg = profiler_config.get("output", {})
+    if isinstance(output_cfg, DictConfig):
+        output_cfg = dict(output_cfg)
+
+    profiler_dir = os.path.join(results_dir, "profiler")
+    os.makedirs(profiler_dir, exist_ok=True)
+
+    # TensorBoard trace handler (called when a trace is ready)
+    on_trace_ready = None
+    if output_cfg.get("tensorboard", False):
+        tb_dir = os.path.join(profiler_dir, "tensorboard")
+        os.makedirs(tb_dir, exist_ok=True)
+        on_trace_ready = tensorboard_trace_handler(tb_dir)
+        logger.info("Profiler TensorBoard traces will be saved to: %s", tb_dir)
+
+    def trace_handler(prof):
+        """Handle trace completion: print table, export chrome trace, forward to TB."""
+        if output_cfg.get("print_table", True):
+            sort_by = output_cfg.get("table_sort_by", "cpu_time_total")
+            row_limit = output_cfg.get("table_row_limit", 20)
+            logger.info(
+                "\n%s",
+                prof.key_averages().table(sort_by=sort_by, row_limit=row_limit),
+            )
+
+        if output_cfg.get("export_chrome_trace", True):
+            trace_path = os.path.join(profiler_dir, f"trace_step_{prof.step_num}.json")
+            prof.export_chrome_trace(trace_path)
+            logger.info("Chrome trace exported to: %s", trace_path)
+
+        if on_trace_ready is not None:
+            on_trace_ready(prof)
+
+    profiler = torch.profiler.profile(
+        activities=activities,
+        schedule=prof_schedule,
+        on_trace_ready=trace_handler,
+        record_shapes=profiler_config.get("record_shapes", False),
+        profile_memory=profiler_config.get("profile_memory", False),
+        with_stack=profiler_config.get("with_stack", False),
+        with_flops=profiler_config.get("with_flops", False),
+    )
+
+    logger.info(
+        "Profiler configured: activities=%s, schedule(wait=%d, warmup=%d, active=%d, repeat=%d)",
+        [a.name for a in activities],
+        sched_cfg.get("wait", 1),
+        sched_cfg.get("warmup", 1),
+        sched_cfg.get("active", 3),
+        sched_cfg.get("repeat", 1),
+    )
+
+    return profiler
+
+
 def cleanup_memory(
     model: nn.Module,
     optim: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
@@ -247,6 +356,7 @@ def batch_loop_gan(
     scaler: torch.amp.GradScaler | None = None,
     scheduler: dict[str, torch.optim.lr_scheduler.LRScheduler] | None = None,
     postprocessor_pipeline: PostProcessorPipeline | None = None,
+    profiler: torch.profiler.profile | None = None,
 ) -> dict[str, float]:
     """Batch loop for GAN training.
 
@@ -444,6 +554,10 @@ def batch_loop_gan(
         # Callbacks at end of batch
         callbacks.on_batch_end(step, phase, data=data)
 
+        # Signal end of profiler step (critical for schedule-based profiling)
+        if profiler is not None:
+            profiler.step()
+
     # Calculate average metrics
     metrics = {
         "generator_loss": running_loss["generator"] / total_batches,
@@ -476,6 +590,7 @@ def batch_loop(
     scaler: torch.amp.GradScaler | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     postprocessor_pipeline: PostProcessorPipeline | None = None,
+    profiler: torch.profiler.profile | None = None,
 ) -> dict[str, float]:
     """Batch loop for standard DNN training.
 
@@ -530,7 +645,8 @@ def batch_loop(
             if "model_input_args" in config:
                 for arg in config.model_input_args:
                     model_input_args[arg] = batch[arg]
-            pred = model(batch["input"], **model_input_args)
+            with record_function("forward"):
+                pred = model(batch["input"], **model_input_args)
 
             # Populate data container before loss so LossContainer can
             # reference any key (pred/*, post_processed/*, target/*, etc.)
@@ -543,9 +659,10 @@ def batch_loop(
                 postprocessor_pipeline(data)
 
             # Compute loss from the data container
-            batch_loss, component_losses = loss(data)
-            for key, value in component_losses.items():
-                running_loss[key] += value.detach().item()
+            with record_function("loss"):
+                batch_loss, component_losses = loss(data)
+                for key, value in component_losses.items():
+                    running_loss[key] += value.detach().item()
 
             # Collect losses from all submodules and trigger compute_losses hooks
             module_losses = collect_module_losses(
@@ -564,27 +681,29 @@ def batch_loop(
             scaled_loss = batch_loss / grad_accum_steps
 
             # Backward pass with optional GradScaler
-            if use_scaler:
-                scaler.scale(scaled_loss).backward()
-            else:
-                scaled_loss.backward()
+            with record_function("backward"):
+                if use_scaler:
+                    scaler.scale(scaled_loss).backward()
+                else:
+                    scaled_loss.backward()
 
             # Check if we should update weights (accumulation complete or last batch)
             is_accumulation_step = (batch_idx + 1) % grad_accum_steps == 0
             is_last_batch = (batch_idx + 1) == total_batches
 
             if is_accumulation_step or is_last_batch:
-                if clip_grad_norm is not None:
-                    if use_scaler:
-                        scaler.unscale_(optim)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad_norm)
+                with record_function("optimizer"):
+                    if clip_grad_norm is not None:
+                        if use_scaler:
+                            scaler.unscale_(optim)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad_norm)
 
-                if use_scaler:
-                    scaler.step(optim)
-                    scaler.update()
-                else:
-                    optim.step()
-                optim.zero_grad()
+                    if use_scaler:
+                        scaler.step(optim)
+                        scaler.update()
+                    else:
+                        optim.step()
+                    optim.zero_grad()
 
                 # Per-batch scheduler stepping
                 if scheduler and scheduler_step_per == "batch":
@@ -600,6 +719,10 @@ def batch_loop(
 
         # Callbacks at end of batch
         callbacks.on_batch_end(step, phase, data=data)
+
+        # Signal end of profiler step (critical for schedule-based profiling)
+        if profiler is not None:
+            profiler.step()
 
     # Calculate average metrics
     metrics = {
@@ -802,6 +925,9 @@ def run_train(
     pp_config = config.get("postprocessors", None)
     postprocessor_pipeline = hy_utils.instantiate(pp_config) if pp_config is not None else None
 
+    # Initialize profiler from config
+    profiler = setup_profiler(config.get("profiler", None), results_dir)
+
     # Update callback config with model details
     callbacks.update_config(
         {
@@ -866,6 +992,7 @@ def run_train(
                 scaler=scaler,
                 scheduler=scheduler if scheduler_step_per == "batch" else None,
                 postprocessor_pipeline=postprocessor_pipeline,
+                profiler=profiler,
             )
             if distributed.is_main_process():
                 logger.info("Train loss: %s", train_loss)

@@ -1,0 +1,23 @@
+# @package _global_
+# Standard GPU profiling — ~5-15% overhead
+# Good for: debugging slowdowns, standard GPU bottleneck analysis
+profiler:
+  enabled: true
+  activities:
+    - CPU
+    - CUDA
+  schedule:
+    wait: 1
+    warmup: 1
+    active: 3
+    repeat: 2        # two cycles for more reliable data
+  record_shapes: true
+  profile_memory: false
+  with_stack: false
+  with_flops: false
+  output:
+    print_table: true
+    table_sort_by: "cuda_time_total"
+    table_row_limit: 20
+    export_chrome_trace: true
+    tensorboard: true

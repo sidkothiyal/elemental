@@ -1,0 +1,23 @@
+# @package _global_
+# Debug profiling — ~15-30% overhead
+# Good for: mapping ops to source lines, shape debugging
+profiler:
+  enabled: true
+  activities:
+    - CPU
+    - CUDA
+  schedule:
+    wait: 1
+    warmup: 1
+    active: 3
+    repeat: 1
+  record_shapes: true
+  profile_memory: false
+  with_stack: true     # maps low-level ops back to your source lines
+  with_flops: true     # estimates FLOPs for matmul/conv ops
+  output:
+    print_table: true
+    table_sort_by: "self_cuda_time_total"
+    table_row_limit: 25
+    export_chrome_trace: true
+    tensorboard: true
