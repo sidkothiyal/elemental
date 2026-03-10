@@ -44,6 +44,7 @@ default-groups = ["dev", "heavy"]
 dev = [
   "ipykernel (>=6.25.1, <7)",
   "types-PyYAML",
+  "types-requests",
 ]
 heavy = [
   "accelerate",

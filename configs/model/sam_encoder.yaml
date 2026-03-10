@@ -1,0 +1,7 @@
+_target_: src.model.hf_vision.HFVisionEncoder
+model_name: "facebook/sam-vit-base"
+return_layers: null
+torch_dtype: "float32"
+attn_implementation: "sdpa"
+device_map: "auto"
+freeze_model: true

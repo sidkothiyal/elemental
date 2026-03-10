@@ -1,0 +1,34 @@
+# @package _global_
+# Simple convolutional VQ-VAE: same ConvBlock encoder + UpsampleBlock decoder as
+# simple_autoencoder, but wrapped in VQVAE with a vector-quantization bottleneck.
+# The codebook_dim must match the encoder output channels (256).
+model:
+  _target_: model.vq_vae.VQVAE
+  codebook_size: 1024
+  codebook_dim: 256   # must match encoder output channels
+
+  encoder:
+    _target_: model.blocks.conv_block.ConvBlock
+    in_channels: 3
+    channels: [64, 128, 256]
+    kernel_sizes: [3, 3, 3]
+    strides: [2, 2, 2]
+    paddings: [1, 1, 1]
+
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.upsample_block.UpsampleBlock
+        scale_factors: [2.0, 2.0, 2.0]
+        modes: bilinear
+        in_channels: 256
+        channels: [128, 64, 32]
+        kernel_sizes: [3, 3, 3]
+        paddings: [1, 1, 1]
+      # Final projection to RGB (no norm/activation)
+      - _target_: torch.nn.Conv2d
+        in_channels: 32
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1

@@ -1,0 +1,7 @@
+_target_: src.model.hf_vision.HFVisionEncoder
+model_name: "nvidia/RADIO-1.0-mini" # Let's use the mini variant
+return_layers: null
+torch_dtype: "float32"
+attn_implementation: "sdpa"
+device_map: "auto"
+freeze_model: true
