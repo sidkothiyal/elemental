@@ -33,12 +33,17 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
     --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --only-group heavy
 
-# ── Layer 2: All remaining deps ────────────────────────────────────────────
-# Rebuilds when any dep changes (pyproject.toml or uv.lock modified),
-# but heavy packages are already installed in the venv so this is fast.
-COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
+# ── Layer 2: Light deps (main + heavy group, minus already-installed heavy) ─
+# Uses the same bind-mount pattern so pyproject.toml changes don't bloat the
+# layer diff.  Only .deps_hash (overall hash) controls cache invalidation.
+COPY .deps_hash /tmp/.deps_hash
+RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=/app/uv.lock \
+    --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev --group heavy
+
+# Copy pyproject.toml + uv.lock for runtime (uv run needs them)
+COPY pyproject.toml uv.lock ./
 
 # Activate the virtual environment via PATH
 ENV PATH="/app/.venv/bin:$PATH"
