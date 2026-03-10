@@ -23,7 +23,7 @@ metrics:
 # Key: phase name (train/val/test)
 # Value: compute metrics every nth epoch (1 = every epoch, 2 = every other, etc.)
 phases:
-  train: 50  # Compute training metrics every 50 epochs (saves computation)
+  train: 250  # Compute training metrics every 250 epochs (saves computation)
   val: 10    # Compute validation metrics every 10 epochs
   test: 1    # Compute test metrics every epoch
 

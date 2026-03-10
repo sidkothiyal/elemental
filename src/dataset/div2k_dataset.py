@@ -75,10 +75,12 @@ class DIV2KDataset(data.Dataset):
         # Convert to tensor
         image_tensor = self.transform(image)
 
-        # Return the same tensor as both input and target for autoencoder training
+        # Return the same tensor as both input and target for autoencoder training.
+        # Both share the same data — the DataLoader's default collate will stack
+        # them into separate batch tensors anyway, so no aliasing issues arise.
         return {
             "input": image_tensor,
-            "target": image_tensor.clone().detach(),
+            "target": image_tensor,
         }
 
 

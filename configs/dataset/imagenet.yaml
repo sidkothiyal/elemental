@@ -23,6 +23,11 @@ dataloader:
       normalize: true
     batch_size: ${batch_size}
     shuffle: true
+    num_workers: 8
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
   val:
     _target_: torch.utils.data.DataLoader
     dataset:
@@ -33,4 +38,9 @@ dataloader:
       normalize: true
     batch_size: ${batch_size}
     shuffle: false
+    num_workers: 8
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
   test: null

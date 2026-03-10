@@ -17,6 +17,79 @@ from utils.remote_backup.base import RemoteBackupStrategy
 logger = logging.getLogger(__name__)
 
 
+def move_to_device(
+    obj: object,
+    device: torch.device,
+    channels_last: bool = False,
+) -> object:
+    """Recursively move torch tensors to the specified device."""
+    if isinstance(obj, torch.Tensor):
+        if channels_last and obj.ndim == 4:
+            return obj.to(device, memory_format=torch.channels_last, non_blocking=True)
+        return obj.to(device, non_blocking=True)
+    if isinstance(obj, dict):
+        return {k: move_to_device(v, device, channels_last) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [move_to_device(item, device, channels_last) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(move_to_device(item, device, channels_last) for item in obj)
+    return obj
+
+
+class CUDAPrefetcher:
+    """Prefetches batches to GPU using a side CUDA stream.
+
+    Overlaps Host-to-Device memory copies with compute on the default stream,
+    hiding most of the HtoD transfer latency.
+    """
+
+    def __init__(
+        self,
+        loader: DataLoader,
+        device: torch.device,
+        channels_last: bool = False,
+    ):
+        self.loader = loader
+        self.device = device
+        self.channels_last = channels_last
+        self.stream = torch.cuda.Stream() if device.type == "cuda" else None
+
+    def __len__(self):
+        return len(self.loader)
+
+    def __iter__(self):
+        loader_iter = iter(self.loader)
+        try:
+            next_batch = next(loader_iter)
+        except StopIteration:
+            return
+
+        if self.stream is not None:
+            with torch.cuda.stream(self.stream):
+                next_batch = move_to_device(
+                    next_batch, self.device, channels_last=self.channels_last
+                )
+
+        for batch in loader_iter:
+            if self.stream is not None:
+                torch.cuda.current_stream().wait_stream(self.stream)
+            current_batch = next_batch
+
+            if self.stream is not None:
+                with torch.cuda.stream(self.stream):
+                    next_batch = move_to_device(
+                        batch, self.device, channels_last=self.channels_last
+                    )
+            else:
+                next_batch = batch
+
+            yield current_batch
+
+        if self.stream is not None:
+            torch.cuda.current_stream().wait_stream(self.stream)
+        yield next_batch
+
+
 def initialize_device(
     device: str, local_rank: int = -1, use_distributed: bool = False
 ) -> torch.device:
@@ -84,6 +157,8 @@ def initialize_dataset(
     local_rank: int = -1,
     world_size: int = 1,
     use_distributed: bool = False,
+    device: torch.device | None = None,
+    channels_last: bool = False,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Initialize the dataset.
 
@@ -92,9 +167,14 @@ def initialize_dataset(
         local_rank: The local rank for distributed training.
         world_size: The world size for distributed training.
         use_distributed: Whether to use distributed training.
+        device: If provided, wraps each non-None dataloader with CUDAPrefetcher
+            to overlap Host-to-Device transfers with compute.
+        channels_last: If True, converts 4-D tensors to channels_last format
+            when prefetching. Only relevant when device is provided.
 
     Returns:
-        The train, val, and test dataloaders.
+        The train, val, and test dataloaders (wrapped in CUDAPrefetcher when
+        device is given).
     """
     dataloaders = hy_utils.instantiate(dataloader_config)
 
@@ -113,6 +193,12 @@ def initialize_dataset(
             if dataloaders["test"] is not None
             else None
         )
+
+    if device is not None:
+        dataloaders["train"] = CUDAPrefetcher(dataloaders["train"], device, channels_last)
+        dataloaders["val"] = CUDAPrefetcher(dataloaders["val"], device, channels_last)
+        if dataloaders["test"] is not None:
+            dataloaders["test"] = CUDAPrefetcher(dataloaders["test"], device, channels_last)
 
     return dataloaders["train"], dataloaders["val"], dataloaders["test"]
 
@@ -212,8 +298,11 @@ def compile_model_and_optimizer_step(
     )
     logger.info("Model compiled successfully")
 
-    # Compile optimizer.step in-place if requested
-    if compile_optim_step and optimizer is not None:
+    # Compile optimizer.step in-place if requested.
+    # Skip when mode is "reduce-overhead" — CUDA graphs from the compiled
+    # model forward and compiled optimizer step conflict, causing
+    # "accessing tensor output of CUDAGraphs that has been overwritten" errors.
+    if compile_optim_step and optimizer is not None and mode != "reduce-overhead":
         logger.info(
             "Compiling optimizer.step with torch.compile (mode=%s, backend=%s)", mode, backend
         )
@@ -225,6 +314,11 @@ def compile_model_and_optimizer_step(
         else:
             optimizer.step = torch.compile(optimizer.step, mode=mode, backend=backend)
             logger.info("Compiled optimizer.step successfully")
+    elif compile_optim_step and mode == "reduce-overhead":
+        logger.warning(
+            "Skipping optimizer.step compilation: incompatible with reduce-overhead mode "
+            "(CUDA graph conflicts)"
+        )
 
     return compiled_model
 

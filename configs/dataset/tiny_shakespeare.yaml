@@ -1,6 +1,7 @@
 # @package _global_
 # Tiny Shakespeare dataset configuration for character-level LM
 dataset_name: tiny_shakespeare
+channels_last: false  # text dataset — no image tensors
 max_length: 256
 
 dataloader:

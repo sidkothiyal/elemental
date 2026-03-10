@@ -17,7 +17,9 @@ dataloader:
       prediction_type: ${prediction_type}
     batch_size: ${batch_size}
     shuffle: true
-    num_workers: 4
+    num_workers: 6
+    prefetch_factor: 3
+    pin_memory: true
     persistent_workers: true
     drop_last: false
     multiprocessing_context: "spawn"
@@ -33,7 +35,9 @@ dataloader:
       prediction_type: ${prediction_type}
     batch_size: ${batch_size}
     shuffle: false
-    num_workers: 4
+    num_workers: 6
+    prefetch_factor: 3
+    pin_memory: true
     persistent_workers: true
     drop_last: false
     multiprocessing_context: "spawn"

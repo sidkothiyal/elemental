@@ -5,11 +5,11 @@ This module provides functionality for training different types of DNN models.
 It handles the training loop, validation, testing, and model checkpointing.
 """
 
-import collections
 import inspect
 import logging
 import os
 import statistics
+from typing import Callable
 
 import fire
 import hydra
@@ -36,32 +36,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def move_to_device(obj: object, device: torch.device) -> object:
-    """Recursively move torch tensors to the specified device.
+_signature_cache: dict[Callable, inspect.Signature] = {}
 
-    Handles:
-    - torch.Tensor: moves to device using .to(device)
-    - list: recursively processes each item
-    - dict: recursively processes each value
-    - tuple: recursively processes each item
-    - other types: returns as-is
 
-    Args:
-        obj: Object to move (tensor, list, dict, tuple, or other)
-        device: Target device to move tensors to
-
-    Returns:
-        Object with all torch tensors moved to the specified device
-    """
-    if isinstance(obj, torch.Tensor):
-        return obj.to(device)
-    if isinstance(obj, dict):
-        return {k: move_to_device(v, device) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [move_to_device(item, device) for item in obj]
-    if isinstance(obj, tuple):
-        return tuple(move_to_device(item, device) for item in obj)
-    return obj
+def _get_cached_signature(fn: Callable) -> inspect.Signature:
+    """Return inspect.signature(fn), cached to avoid repeated introspection."""
+    sig = _signature_cache.get(fn)
+    if sig is None:
+        sig = inspect.signature(fn)
+        _signature_cache[fn] = sig
+    return sig
 
 
 def collect_module_losses(
@@ -115,7 +99,7 @@ def collect_module_losses(
         # 1. Call compute_losses if available — triggers side-effects like loss
         #    history updates in datasets, or populates a losses dict on modules.
         if hasattr(obj, "compute_losses") and available_kwargs:
-            sig = inspect.signature(obj.compute_losses)
+            sig = _get_cached_signature(obj.compute_losses)
             matched_kwargs = {k: v for k, v in available_kwargs.items() if k in sig.parameters}
             obj.compute_losses(**matched_kwargs)
 
@@ -219,13 +203,15 @@ def setup_profiler(
                 prof.key_averages().table(sort_by=sort_by, row_limit=row_limit),
             )
 
-        if output_cfg.get("export_chrome_trace", True):
+        # tensorboard_trace_handler internally calls export_chrome_trace(),
+        # and PyTorch only allows one export per profiling cycle.  So when TB
+        # is enabled we let it handle the export; otherwise we do it ourselves.
+        if on_trace_ready is not None:
+            on_trace_ready(prof)
+        elif output_cfg.get("export_chrome_trace", True):
             trace_path = os.path.join(profiler_dir, f"trace_step_{prof.step_num}.json")
             prof.export_chrome_trace(trace_path)
             logger.info("Chrome trace exported to: %s", trace_path)
-
-        if on_trace_ready is not None:
-            on_trace_ready(prof)
 
     profiler = torch.profiler.profile(
         activities=activities,
@@ -253,34 +239,42 @@ def cleanup_memory(
     model: nn.Module,
     optim: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
     device: torch.device,
+    epoch: int | None = None,
+    empty_cache_interval: int = 0,
 ) -> None:
     """Clean up GPU memory before validation or between phases.
 
-    This function clears accumulated gradients, model losses, and CUDA cache
-    to prevent OOM errors when transitioning between training and validation.
+    This function clears accumulated gradients, model losses, and optionally
+    the CUDA cache to prevent OOM errors when transitioning between training
+    and validation.
 
     Args:
         model: The model to clear losses from.
         optim: Optimizer or dict of optimizers to clear gradients from.
         device: The torch device being used.
+        epoch: Current epoch number, used with empty_cache_interval.
+        empty_cache_interval: Interval (in epochs) at which to call
+            torch.cuda.empty_cache(). 0 disables it.
     """
-    # Clear accumulated gradients to free memory
     if isinstance(optim, dict):
         for opt in optim.values():
             opt.zero_grad(set_to_none=True)
     else:
         optim.zero_grad(set_to_none=True)
 
-    # Clear model's internal losses to prevent memory accumulation
     clear_module_losses(model)
 
-    # Clear CUDA cache to defragment memory
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    # Run empty_cache every N epochs to defragment GPU memory.
+    # This is a synchronization point that stalls the GPU pipeline;
+    # use only for large models close to OOM (interval=0 disables).
+    if device.type == "cuda" and empty_cache_interval > 0:
+        if epoch is None or epoch % empty_cache_interval == 0:
+            torch.cuda.empty_cache()
 
 
 def build_data_container(
     batch: dict,
+    data: dict | None = None,
     model: nn.Module | None = None,
     epoch: int | None = None,
 ) -> dict:
@@ -297,13 +291,18 @@ def build_data_container(
 
     Args:
         batch: Raw batch dictionary from the dataloader.
+        data: Optional existing dict to clear and update in-place. If None,
+            a new dict is created.
         model: Optional model instance to store in the container.
         epoch: Optional current epoch number.
 
     Returns:
-        A new dict with namespaced keys.
+        The populated dict (same object as *data* when provided).
     """
-    data: dict = {}
+    if data is None:
+        data = {}
+    else:
+        data.clear()
     for key, value in batch.items():
         if key == "target":
             data["target"] = value
@@ -340,6 +339,22 @@ def populate_predictions(pred: torch.Tensor | dict[str, torch.Tensor], data: dic
     else:
         data["pred"] = pred
     return data
+
+
+def _accumulate_loss(
+    running_loss: dict[str, torch.Tensor],
+    key: str,
+    tensor: torch.Tensor,
+) -> None:
+    """Accumulate a detached loss tensor into the running loss dict.
+
+    Clones on first insertion to avoid holding a reference to the full
+    computation graph; subsequent calls add in-place to minimize allocations.
+    """
+    if key in running_loss:
+        running_loss[key] += tensor
+    else:
+        running_loss[key] = tensor.clone()
 
 
 def batch_loop_gan(
@@ -379,7 +394,7 @@ def batch_loop_gan(
     Returns:
         Dictionary of average losses for the epoch
     """
-    running_loss: dict[str, float] = collections.defaultdict(float)
+    running_loss_gpu: dict[str, torch.Tensor] = {}
     total_batches = len(dataloader)
     num_steps = total_batches * epoch
 
@@ -387,19 +402,22 @@ def batch_loop_gan(
     clip_grad_norm = config.get("clip_grad_norm", None) if config else None
     scheduler_step_per = config.get("scheduler_step_per", "epoch") if config else "epoch"
     use_scaler = scaler is not None and scaler.is_enabled()
+    tqdm_update_interval = 5
 
-    # Progress bar with phase information
-    progress_bar = tqdm.tqdm(dataloader, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True)
+    # Progress bar with phase information (dataloader is already a CUDAPrefetcher)
+    progress_bar = tqdm.tqdm(
+        dataloader, total=total_batches, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True
+    )
+
+    # Reusable data container
+    data: dict = {}
 
     for batch_idx, batch in enumerate(progress_bar):
         step = num_steps + batch_idx
         callbacks.on_batch_start(step, phase)
 
-        # Move batch to device
-        batch = move_to_device(batch, device)
-
-        # Build unified data container
-        data = build_data_container(batch, model=model, epoch=epoch)
+        # Build unified data container in-place
+        build_data_container(batch, data=data, model=model, epoch=epoch)
 
         # ---------------------------------------
         # Train discriminator on fake data
@@ -421,7 +439,7 @@ def batch_loop_gan(
 
         if phase == "train":
             optim["discriminator"].zero_grad()
-            if use_scaler:
+            if use_scaler and scaler is not None:
                 scaler.scale(disc_fake_loss).backward()
                 if clip_grad_norm is not None:
                     scaler.unscale_(optim["discriminator"])
@@ -460,7 +478,7 @@ def batch_loop_gan(
 
         if phase == "train":
             optim["discriminator"].zero_grad()
-            if use_scaler:
+            if use_scaler and scaler is not None:
                 scaler.scale(disc_real_loss).backward()
                 if clip_grad_norm is not None:
                     scaler.unscale_(optim["discriminator"])
@@ -481,9 +499,9 @@ def batch_loop_gan(
         data["pred/discriminator_fake"] = pred_target
         data["pred/discriminator_real"] = real_target
 
-        # Calculate total discriminator loss
-        disc_total_loss = disc_real_loss.item() + disc_fake_loss.item()
-        running_loss["discriminator"] += disc_total_loss
+        # Calculate total discriminator loss (stay on GPU)
+        disc_total_loss_gpu = disc_real_loss.detach() + disc_fake_loss.detach()
+        _accumulate_loss(running_loss_gpu, "discriminator", disc_total_loss_gpu)
 
         # ---------------------------------------
         # Train generator
@@ -514,7 +532,7 @@ def batch_loop_gan(
 
         if phase == "train":
             optim["generator"].zero_grad()
-            if use_scaler:
+            if use_scaler and scaler is not None:
                 scaler.scale(gen_loss).backward()
                 if clip_grad_norm is not None:
                     scaler.unscale_(optim["generator"])
@@ -537,7 +555,8 @@ def batch_loop_gan(
                     sched.step()
                     callbacks.on_lr_update(epoch, float(statistics.mean(sched.get_lr())))
 
-        running_loss["generator"] += gen_loss.item()
+        gen_loss_detached = gen_loss.detach()
+        _accumulate_loss(running_loss_gpu, "generator", gen_loss_detached)
 
         # Store generator prediction in the unified container
         populate_predictions(pred_target, data)
@@ -546,10 +565,14 @@ def batch_loop_gan(
         if postprocessor_pipeline is not None:
             postprocessor_pipeline(data)
 
-        # Update progress bar
-        progress_bar.set_postfix(
-            {"D_loss": f"{disc_total_loss:.4f}", "G_loss": f"{gen_loss.item():.4f}"}
-        )
+        # Update progress bar every N batches
+        if batch_idx % tqdm_update_interval == 0:
+            progress_bar.set_postfix(
+                {
+                    "D_loss": f"{disc_total_loss_gpu.item():.4f}",
+                    "G_loss": f"{gen_loss_detached.item():.4f}",
+                }
+            )
 
         # Callbacks at end of batch
         callbacks.on_batch_end(step, phase, data=data)
@@ -558,10 +581,13 @@ def batch_loop_gan(
         if profiler is not None:
             profiler.step()
 
+    # Materialize GPU loss tensors to CPU (single sync point per epoch)
+    running_loss: dict[str, float] = {key: value.item() for key, value in running_loss_gpu.items()}
+
     # Calculate average metrics
     metrics = {
-        "generator_loss": running_loss["generator"] / total_batches,
-        "discriminator_loss": running_loss["discriminator"] / total_batches,
+        "generator_loss": running_loss.get("generator", 0.0) / total_batches,
+        "discriminator_loss": running_loss.get("discriminator", 0.0) / total_batches,
     }
 
     # Trigger on_epoch_end before log_metrics so that MetricsCallback can
@@ -613,7 +639,9 @@ def batch_loop(
     Returns:
         Dictionary of average losses for the epoch
     """
-    running_loss: dict[str, float] = collections.defaultdict(float)
+    # Accumulate losses as GPU tensors to avoid per-batch .item() CUDA syncs.
+    # Only materialize to CPU once at epoch end.
+    running_loss_gpu: dict[str, torch.Tensor] = {}
     total_batches = len(dataloader)
     num_steps = total_batches * epoch
 
@@ -622,19 +650,22 @@ def batch_loop(
     clip_grad_norm = config.get("clip_grad_norm", None) if config else None
     scheduler_step_per = config.get("scheduler_step_per", "epoch") if config else "epoch"
     use_scaler = scaler is not None and scaler.is_enabled()
+    tqdm_update_interval = 5
 
-    # Progress bar with phase information
-    progress_bar = tqdm.tqdm(dataloader, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True)
+    # Progress bar with phase information (dataloader is already a CUDAPrefetcher)
+    progress_bar = tqdm.tqdm(
+        dataloader, total=total_batches, desc=f"{phase.capitalize()} Epoch {epoch}", leave=True
+    )
+
+    # Reusable data container — cleared and repopulated each batch
+    data: dict = {}
 
     for batch_idx, batch in enumerate(progress_bar):
         step = num_steps + batch_idx
         callbacks.on_batch_start(step, phase)
 
-        # Move batch to device
-        batch = move_to_device(batch, device)
-
-        # Build unified data container for callbacks
-        data = build_data_container(batch, model=model, epoch=epoch)
+        # Batch is already on device from prefetcher — build data container in-place
+        build_data_container(batch, data=data, model=model, epoch=epoch)
 
         # Forward pass with gradient calculation only during training
         with (
@@ -642,9 +673,8 @@ def batch_loop(
             torch.autocast(device_type=device.type, dtype=dtype),
         ):
             model_input_args = {}
-            if "model_input_args" in config:
-                for arg in config.model_input_args:
-                    model_input_args[arg] = batch[arg]
+            for arg in config.get("model_input_args", []) if config else []:
+                model_input_args[arg] = batch[arg]
             with record_function("forward"):
                 pred = model(batch["input"], **model_input_args)
 
@@ -662,7 +692,7 @@ def batch_loop(
             with record_function("loss"):
                 batch_loss, component_losses = loss(data)
                 for key, value in component_losses.items():
-                    running_loss[key] += value.detach().item()
+                    _accumulate_loss(running_loss_gpu, key, value.detach())
 
             # Collect losses from all submodules and trigger compute_losses hooks
             module_losses = collect_module_losses(
@@ -673,8 +703,8 @@ def batch_loop(
                 model_input_args=model_input_args,
             )
             for key, value in module_losses.items():
-                running_loss[key] += value.detach().item()
-                batch_loss += value
+                _accumulate_loss(running_loss_gpu, key, value.detach())
+                batch_loss = batch_loss + value
 
         if phase == "train":
             # Scale loss for gradient accumulation
@@ -682,7 +712,7 @@ def batch_loop(
 
             # Backward pass with optional GradScaler
             with record_function("backward"):
-                if use_scaler:
+                if use_scaler and scaler is not None:
                     scaler.scale(scaled_loss).backward()
                 else:
                     scaled_loss.backward()
@@ -694,11 +724,11 @@ def batch_loop(
             if is_accumulation_step or is_last_batch:
                 with record_function("optimizer"):
                     if clip_grad_norm is not None:
-                        if use_scaler:
+                        if use_scaler and scaler is not None:
                             scaler.unscale_(optim)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad_norm)
 
-                    if use_scaler:
+                    if use_scaler and scaler is not None:
                         scaler.step(optim)
                         scaler.update()
                     else:
@@ -710,12 +740,14 @@ def batch_loop(
                     scheduler.step()
                     callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
 
-        # Accumulate loss
-        loss_value = batch_loss.detach().item()
-        running_loss["total"] += loss_value
+        # Accumulate total loss on GPU (no .item() sync)
+        batch_loss_detached = batch_loss.detach()
+        _accumulate_loss(running_loss_gpu, "total", batch_loss_detached)
 
-        # Update progress bar
-        progress_bar.set_postfix({"loss": f"{loss_value:.4f}"})
+        # Update progress bar every N batches to reduce formatting overhead
+        if batch_idx % tqdm_update_interval == 0:
+            # Single .item() sync per N batches for display only
+            progress_bar.set_postfix({"loss": f"{batch_loss_detached.item():.4f}"})
 
         # Callbacks at end of batch
         callbacks.on_batch_end(step, phase, data=data)
@@ -723,6 +755,9 @@ def batch_loop(
         # Signal end of profiler step (critical for schedule-based profiling)
         if profiler is not None:
             profiler.step()
+
+    # Materialize GPU loss tensors to CPU (single sync point per epoch)
+    running_loss: dict[str, float] = {key: value.item() for key, value in running_loss_gpu.items()}
 
     # Calculate average metrics
     metrics = {
@@ -766,6 +801,11 @@ def run_train(
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         distributed.setup_distributed(local_rank, world_size, backend)
 
+    # Allow TF32 for float32 matmuls on Ampere+ GPUs (A100, RTX 30xx, etc.).
+    # This is a no-op when using bfloat16 autocast, but speeds up any float32
+    # operations (e.g. loss computation, metrics) by using TF32 tensor cores.
+    torch.set_float32_matmul_precision("high")
+
     # Set up environment: set seeds, initialize device, create results directory
     initializer.set_seeds(config.seed)
     if distributed.is_main_process():
@@ -774,6 +814,7 @@ def run_train(
     # Initialize device
     device = initializer.initialize_device(config.device)
     dtype = initializer.initialize_dtype(config.get("dtype"))
+    cuda_empty_cache_interval = config.get("cuda_empty_cache_interval", 0)
 
     # Create results directory (only on main process)
     results_dir = os.path.join(config.results_dir, config.experiment_name)
@@ -798,12 +839,28 @@ def run_train(
         local_rank,
         world_size,
         use_distributed,
+        device=device,
+        channels_last=config.get("channels_last", True),
     )
     logger.info("Dataloaders initialized successfully")
 
     # Initialize model
     model = hy_utils.instantiate(config.model)
     model.to(device)
+
+    # Use channels-last memory format for better cuDNN performance.
+    # Eliminates NCHW↔NHWC layout conversions that cuDNN does internally.
+    if device.type == "cuda" and config.get("channels_last", True):
+        model = model.to(memory_format=torch.channels_last)
+        logger.info("Model converted to channels_last memory format")
+
+    # Enable cuDNN benchmark mode: auto-tunes the fastest conv algorithm for
+    # each (input size, kernel, layout) combination.  Safe when input shapes
+    # are fixed (constant crop + batch size).  Particularly important for
+    # channels_last where the default heuristic may pick a slower kernel.
+    if device.type == "cuda" and config.get("cudnn_benchmark", True):
+        torch.backends.cudnn.benchmark = True
+        logger.info("cuDNN benchmark mode enabled")
 
     # Wrap model with DDP if distributed training is enabled
     if use_distributed:
@@ -927,6 +984,10 @@ def run_train(
 
     # Initialize profiler from config
     profiler = setup_profiler(config.get("profiler", None), results_dir)
+    profiler_step_per = "batch"
+    if profiler is not None:
+        prof_cfg = config.get("profiler", {})
+        profiler_step_per = prof_cfg.get("step_per", "batch")
 
     # Update callback config with model details
     callbacks.update_config(
@@ -956,8 +1017,9 @@ def run_train(
 
         # Determine starting epoch for training
         start_epoch = 0
-        if resume_training and checkpoint_data.get("epoch") is not None:
-            start_epoch = checkpoint_data["epoch"] + 1
+        saved_epoch = checkpoint_data.get("epoch")
+        if resume_training and saved_epoch is not None:
+            start_epoch = saved_epoch + 1
             logger.info("Resuming training from epoch %d", start_epoch)
 
         # Get scheduler stepping mode
@@ -965,7 +1027,9 @@ def run_train(
 
         for epoch in range(start_epoch, config.num_epochs):
             # Clean up memory at the start of each epoch (except first)
-            cleanup_memory(model, optim, device)
+            cleanup_memory(
+                model, optim, device, epoch=epoch, empty_cache_interval=cuda_empty_cache_interval
+            )
 
             # Set epoch for distributed sampler (ensures different shuffling each epoch)
             if use_distributed and hasattr(train_loader.sampler, "set_epoch"):
@@ -992,7 +1056,7 @@ def run_train(
                 scaler=scaler,
                 scheduler=scheduler if scheduler_step_per == "batch" else None,
                 postprocessor_pipeline=postprocessor_pipeline,
-                profiler=profiler,
+                profiler=profiler if profiler_step_per == "batch" else None,
             )
             if distributed.is_main_process():
                 logger.info("Train loss: %s", train_loss)
@@ -1024,7 +1088,13 @@ def run_train(
             # Validation phase (every 2 epochs by default)
             validation_interval = config.get("validation_interval", 2)
             if epoch % validation_interval == 0:
-                cleanup_memory(model, optim, device)
+                cleanup_memory(
+                    model,
+                    optim,
+                    device,
+                    epoch=epoch,
+                    empty_cache_interval=cuda_empty_cache_interval,
+                )
 
                 callbacks.on_phase_start("val")
 
@@ -1049,6 +1119,11 @@ def run_train(
                     logger.info("Validation loss: %s", val_loss)
 
                 callbacks.on_phase_end("val")
+
+            # Step profiler at epoch boundary (captures inter-epoch overhead:
+            # cleanup_memory, callbacks, scheduler, validation, etc.)
+            if profiler is not None and profiler_step_per == "epoch":
+                profiler.step()
 
     # Test phase
     if test:

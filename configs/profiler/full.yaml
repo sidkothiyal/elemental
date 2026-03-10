@@ -9,6 +9,10 @@ profiler:
   activities:
     - CPU
     - CUDA
+  # step_per: "batch" (default) — profiler.step() fires after each batch
+  #           "epoch" — profiler.step() fires after each epoch (including
+  #                     validation & inter-epoch ops like cleanup_memory)
+  step_per: "epoch"
   schedule:
     wait: 1
     warmup: 1

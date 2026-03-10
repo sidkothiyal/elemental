@@ -9,8 +9,18 @@ seed: 42
 
 # Device configuration
 device: "gpu"
+# Use channels_last (NHWC) memory format on CUDA for image workloads.
+# Eliminates NCHW↔NHWC layout conversions inside cuDNN.
+# Only applies to 4D tensors after batching; no effect on CPU or non-image tasks.
+channels_last: true
+# Auto-tune cuDNN conv algorithm per (input size, kernel, layout).
+# Best for fixed-size inputs. Adds warmup cost on first batch.
+cudnn_benchmark: true
 
 # Optional parameters (set to null if not used)
+# Interval (in epochs) at which torch.cuda.empty_cache() is called to defragment GPU memory.
+# 0 = disabled (recommended for most runs); n = runs every n epochs.
+cuda_empty_cache_interval: 0
 validation_interval: 5
 gradient_accumulation_steps: 1
 clip_grad_norm: null

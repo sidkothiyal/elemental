@@ -23,6 +23,7 @@ dependencies = [
   "onnxscript (>=0.2, <0.3)", # Unused
   "plotly (>=5.0.0, <6.0.0)",
   "pre-commit",
+  "py-spy",
   "pytest",
   "pytorch-msssim",
   "pyyaml (>=6.0.2, <7.0.0)",
@@ -48,6 +49,7 @@ heavy = [
   "accelerate",
   "flash-attn; sys_platform == 'linux'",
   "mmcv",
+  "ninja",
   "tensorflow[and-cuda]",
   "tensorflow-datasets",
   "torch (>=2.9)",
