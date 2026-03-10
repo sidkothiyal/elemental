@@ -472,6 +472,19 @@ do_auto_restart() {
     [[ -n "${SESSION_RUNPOD_API_KEY:-}" ]] && export RUNPOD_API_KEY="$SESSION_RUNPOD_API_KEY"
     [[ -n "${SESSION_VAST_API_KEY:-}" ]] && export VAST_API_KEY="$SESSION_VAST_API_KEY"
 
+    # Restore registry venv settings so sync_venv uses the same path as the
+    # original run.sh invocation (symlink from /app/.venv vs Docker streaming).
+    GITHUB_USERNAME="${SESSION_GITHUB_USERNAME:-}"
+    GHRC_IMAGE_NAME="${SESSION_GHRC_IMAGE_NAME:-loom-env}"
+    GHRC_TAG="${SESSION_GHRC_TAG:-latest}"
+    if [[ -n "$GITHUB_USERNAME" ]]; then
+        GHRC_IMAGE="ghcr.io/${GITHUB_USERNAME}/${GHRC_IMAGE_NAME}:${GHRC_TAG}"
+    else
+        GHRC_IMAGE=""
+    fi
+    USE_REGISTRY_VENV=false
+    [[ -n "$PROVIDER" && -n "$GITHUB_USERNAME" ]] && USE_REGISTRY_VENV=true
+
     # Reconstruct PYTHON_ARGS from the saved string
     eval "PYTHON_ARGS=( ${SESSION_PYTHON_ARGS:-} )"
 
