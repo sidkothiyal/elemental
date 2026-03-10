@@ -48,7 +48,7 @@ dev = [
 ]
 heavy = [
   "accelerate",
-  "flash-attn; sys_platform == 'linux'",
+#  "flash-attn; sys_platform == 'linux'",
   "mmcv",
   "ninja",
   "tensorflow[and-cuda]",

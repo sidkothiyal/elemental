@@ -656,7 +656,6 @@ dev = [
 ]
 heavy = [
     { name = "accelerate" },
-    { name = "flash-attn", marker = "sys_platform == 'linux'" },
     { name = "mmcv", version = "2.2.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "mmcv", version = "2.2.0", source = { url = "https://github.com/sidkothiyal/builtlibs/releases/download/mmcv/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl" }, marker = "sys_platform == 'linux'" },
     { name = "ninja" },
@@ -712,7 +711,6 @@ dev = [
 ]
 heavy = [
     { name = "accelerate" },
-    { name = "flash-attn", marker = "sys_platform == 'linux'" },
     { name = "mmcv", marker = "sys_platform != 'linux'" },
     { name = "mmcv", marker = "sys_platform == 'linux'", url = "https://github.com/sidkothiyal/builtlibs/releases/download/mmcv/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl" },
     { name = "ninja" },
@@ -789,16 +787,6 @@ dependencies = [
     { name = "termcolor" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6b/b6/82c7e601d6d3c3278c40b7bd35e17e82aa227f050aa9f66cb7b7fce29471/fire-0.7.0.tar.gz", hash = "sha256:961550f07936eaf65ad1dc8360f2b2bf8408fad46abbfa4d2a3794f8d2a95cdf", size = 87189 }
-
-[[package]]
-name = "flash-attn"
-version = "2.8.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "einops", marker = "sys_platform == 'linux'" },
-    { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/b2/8d76c41ad7974ee264754709c22963447f7f8134613fd9ce80984ed0dab7/flash_attn-2.8.3.tar.gz", hash = "sha256:1e71dd64a9e0280e0447b8a0c2541bad4bf6ac65bdeaa2f90e51a9e57de0370d", size = 8447812 }
 
 [[package]]
 name = "flatbuffers"
