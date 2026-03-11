@@ -58,7 +58,7 @@ class UpsampleNormAct(nn.Module):
 
         self.upsample = nn.Upsample(
             scale_factor=scale_factor,
-            size=size,
+            size=tuple(size) if size is not None else None,
             mode=mode,
             align_corners=align_corners,
         )
@@ -119,7 +119,7 @@ class UpsampleBlock(nn.Module):
         scale_factors: list[float | tuple[float, float]] | None = None,
         sizes: list[tuple[int, int]] | None = None,
         modes: list[str] | str = "nearest",
-        align_corners: list[bool] | bool | None = None,
+        align_corners: list[bool | None] | bool | None = None,
         in_channels: int | None = None,
         channels: list[int] | None = None,
         kernel_sizes: list[int] | None = None,
@@ -171,6 +171,7 @@ class UpsampleBlock(nn.Module):
         if scale_factors is not None:
             self.num_layers = len(scale_factors)
         else:
+            assert sizes is not None  # guarded by the ValueError checks above
             self.num_layers = len(sizes)
 
         self.scale_factors = scale_factors

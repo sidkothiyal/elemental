@@ -1,0 +1,52 @@
+# @package _global_
+# DINOv2 ViT-S/14 encoder (frozen) + custom convolutional decoder autoencoder.
+#
+# Encoder:  facebook/dinov2-small  (patch_size=14, embed_dim=384)
+#   processor_kwargs disable resizing so the dataset resolution is preserved.
+#   interpolate_pos_encoding=true lets the ViT handle non-224 sizes.
+#   Patch grid is computed dynamically: H//14 × W//14.
+#
+# NOTE: H and W must be divisible by 14.  The experiment config uses
+#   target_shape: [560, 896]  (= 14/16 × [640, 1024])
+#   giving a 40×64 patch grid — identical to DINOv3 on 640×1024.
+#
+# Decoder:  4× bilinear-upsample + conv stages (14× total, matching patch_size),
+#           followed by a conv to RGB.
+model:
+  _target_: model.hf_vision.HFVisionEncoderDecoder
+  patch_size: 14  # DINOv2 ViT-S/14 — patch grid is H//14 × W//14
+
+  encoder:
+    _target_: model.hf_vision.HFVisionEncoder
+    model_name: "facebook/dinov2-small"
+    return_layers: null
+    torch_dtype: "bfloat16"
+    attn_implementation: "sdpa"
+    device_map: "auto"
+    freeze_model: true
+    interpolate_pos_encoding: true  # required for non-224 input sizes
+    processor_kwargs:
+      do_resize: false              # preserve native image resolution
+      do_center_crop: false
+
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      # 4 upsample stages → 14× total  (1.75 × 2 × 2 × 2 = 14)
+      # H: 40 → 70 → 140 → 280 → 560   W: 64 → 112 → 224 → 448 → 896
+      # Channel reduction: 384 → 256 → 128 → 64 → 32
+      - _target_: model.blocks.upsample_block.UpsampleBlock
+        scale_factors: [1.75, 2.0, 2.0, 2.0]
+        modes: bilinear
+        align_corners: false
+        in_channels: 384
+        channels: [256, 128, 64, 32]
+        kernel_sizes: [3, 3, 3, 3]
+        paddings: [1, 1, 1, 1]
+      # Final projection to RGB (no norm / activation)
+      - _target_: torch.nn.Conv2d
+        in_channels: 32
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1

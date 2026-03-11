@@ -26,6 +26,8 @@ class HFVisionEncoder(nn.Module):
         device_map: str | dict = "auto",
         trust_remote_code: bool = True,
         freeze_model: bool = True,
+        processor_kwargs: dict | None = None,
+        interpolate_pos_encoding: bool = False,
     ) -> None:
         """Initialize the HuggingFace Vision Encoder wrapper.
 
@@ -39,11 +41,18 @@ class HFVisionEncoder(nn.Module):
             device_map: Device placement strategy.
             trust_remote_code: Whether to trust remote code from HuggingFace.
             freeze_model: Whether to freeze the model parameters.
+            processor_kwargs: Extra keyword arguments forwarded to the processor at every
+                call (e.g. ``{"do_resize": False, "do_center_crop": False}`` to preserve
+                the original image resolution).
+            interpolate_pos_encoding: When True, passes ``interpolate_pos_encoding=True``
+                to the model forward to support variable / non-224 input resolutions.
         """
         super().__init__()
         self.model_name = model_name
         self.return_layers = return_layers
         self.freeze_model = freeze_model
+        self.processor_kwargs: dict = processor_kwargs or {}
+        self.interpolate_pos_encoding = interpolate_pos_encoding
 
         # Load vision processor and model directly
         self.processor = AutoImageProcessor.from_pretrained(
@@ -107,6 +116,7 @@ class HFVisionEncoder(nn.Module):
             **inputs,
             return_dict=True,
             output_hidden_states=requires_hidden_states,
+            interpolate_pos_encoding=self.interpolate_pos_encoding,
         )
 
         if output_all_hidden_states:
@@ -153,7 +163,8 @@ class HFVisionEncoder(nn.Module):
         loaded_images = [self._load_image(img) for img in images]
 
         # Processor handles normalization, resizing, etc.
-        inputs = self.processor(images=loaded_images, return_tensors="pt")
+        # processor_kwargs can override defaults (e.g. do_resize=False to keep native resolution)
+        inputs = self.processor(images=loaded_images, return_tensors="pt", **self.processor_kwargs)
         inputs = inputs.to(self.device)
 
         if self.freeze_model:
@@ -163,12 +174,80 @@ class HFVisionEncoder(nn.Module):
             return self._forward_impl(inputs, output_all_hidden_states)
 
 
+class HFVisionEncoderDecoder(nn.Module):
+    """Frozen HuggingFace ViT encoder paired with a custom convolutional decoder.
+
+    The encoder produces a token sequence [B, 1 + H*W, D] (CLS + patch tokens).
+    The CLS token is dropped, the remaining patch tokens are reshaped to a 2-D
+    spatial feature map [B, D, H//patch_size, W//patch_size], and the decoder
+    maps that feature map back to a full-resolution image.
+
+    The patch grid dimensions are computed dynamically from the input tensor shape
+    at every forward pass, so the model works at any resolution as long as H and W
+    are divisible by ``patch_size`` and the encoder has ``interpolate_pos_encoding``
+    enabled (set via ``processor_kwargs`` / ``interpolate_pos_encoding`` on the encoder).
+
+    Examples:
+        DINOv3-ViT-S/16 on 224x224  →  feature map [B, 384, 14, 14]  →  16x upsample
+        DINOv3-ViT-S/16 on 640x1024 →  feature map [B, 384, 40, 64]  →  16x upsample
+    """
+
+    def __init__(
+        self,
+        encoder: "HFVisionEncoder",
+        decoder: nn.Module,
+        patch_size: int,
+    ) -> None:
+        """Initialise the encoder-decoder.
+
+        Args:
+            encoder: Frozen HFVisionEncoder backbone.
+            decoder: Convolutional decoder that accepts
+                [B, embed_dim, H//patch_size, W//patch_size] and returns a
+                reconstructed image tensor at the original HxW resolution.
+            patch_size: Patch size used by the ViT backbone (e.g. 16 for DINOv3,
+                14 for DINOv2).  Used to compute the patch grid from the input shape.
+        """
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.patch_size = patch_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode a batch of images and reconstruct them via the convolutional decoder.
+
+        Args:
+            x: Input image batch [B, C, H, W] with pixel values in [0, 1].
+                H and W must be divisible by ``patch_size``.
+
+        Returns:
+            Reconstructed image tensor [B, C, H, W].
+        """
+        img_h, img_w = x.shape[2], x.shape[3]
+        patch_grid_h = img_h // self.patch_size
+        patch_grid_w = img_w // self.patch_size
+
+        # list(x) splits [B, C, H, W] → [B × (C, H, W)], which HFVisionEncoder handles
+        tokens = self.encoder(list(x))  # [B, 1 + patch_grid_h*patch_grid_w, embed_dim]
+
+        # Drop CLS token (index 0) to obtain only spatial patch tokens
+        patch_tokens = tokens[:, 1:, :]  # [B, patch_grid_h*patch_grid_w, embed_dim]
+
+        batch_size, _num_tokens, embed_dim = patch_tokens.shape
+        # Rearrange token sequence to a 2-D spatial feature map
+        features = patch_tokens.permute(0, 2, 1).reshape(
+            batch_size, embed_dim, patch_grid_h, patch_grid_w
+        )  # [B, embed_dim, patch_grid_h, patch_grid_w]
+
+        return self.decoder(features)
+
+
 if __name__ == "__main__":
     import numpy as np
 
     # Simple testing
     print("Testing HFVisionEncoder with dinov2-small...")
-    encoder = HFVisionEncoder(
+    sample_encoder = HFVisionEncoder(
         model_name="facebook/dinov2-small",
         return_layers=[-2, 2],  # Return second to last layer, and layer 2
         torch_dtype=torch.float32,
@@ -180,7 +259,7 @@ if __name__ == "__main__":
     dummy_img1 = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
     dummy_img2 = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
 
-    sample_outputs = encoder.forward([dummy_img1, dummy_img2])
+    sample_outputs = sample_encoder.forward([dummy_img1, dummy_img2])
     print(f"Output type: {type(sample_outputs)}")
     if isinstance(sample_outputs, dict):
         for k, v in sample_outputs.items():

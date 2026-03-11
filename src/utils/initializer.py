@@ -11,8 +11,8 @@ from omegaconf import DictConfig
 from torch import nn
 from torch.utils.data import DataLoader
 
-from utils import checkpoint, distributed
-from utils.remote_backup.base import RemoteBackupStrategy
+from utils import checkpoint, distributed  # pylint: disable=no-name-in-module
+from utils.remote_backup.base import RemoteBackupStrategy  # pylint: disable=no-name-in-module
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,11 @@ class CUDAPrefetcher:
 
     def __len__(self):
         return len(self.loader)
+
+    @property
+    def dataset(self):
+        """Get the dataset."""
+        return self.loader.dataset
 
     def __iter__(self):
         loader_iter = iter(self.loader)
