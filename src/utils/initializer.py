@@ -36,6 +36,24 @@ def move_to_device(
     return obj
 
 
+def _record_stream_recursive(obj: object, stream: torch.cuda.Stream) -> None:
+    """Tell the CUDA caching allocator that *obj*'s tensors are used on *stream*.
+
+    Without this, the allocator only knows the stream the tensor was allocated
+    on (the prefetch side-stream) and may recycle the memory before the
+    consumer stream (default stream) is done with it.
+    """
+    if isinstance(obj, torch.Tensor):
+        if obj.is_cuda:
+            obj.record_stream(stream)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _record_stream_recursive(v, stream)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _record_stream_recursive(item, stream)
+
+
 class CUDAPrefetcher:
     """Prefetches batches to GPU using a side CUDA stream.
 
@@ -78,6 +96,7 @@ class CUDAPrefetcher:
         for batch in loader_iter:
             if self.stream is not None:
                 torch.cuda.current_stream().wait_stream(self.stream)
+                _record_stream_recursive(next_batch, torch.cuda.current_stream())
             current_batch = next_batch
 
             if self.stream is not None:
@@ -92,6 +111,7 @@ class CUDAPrefetcher:
 
         if self.stream is not None:
             torch.cuda.current_stream().wait_stream(self.stream)
+            _record_stream_recursive(next_batch, torch.cuda.current_stream())
         yield next_batch
 
 

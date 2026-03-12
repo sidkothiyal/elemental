@@ -101,6 +101,12 @@ class UpsampleNormAct(nn.Module):
         Returns:
             Output tensor.
         """
+        # The NHWC bilinear kernel has an INT_MAX element count limit; convert to
+        # contiguous (NCHW) format to use the standard kernel when needed.
+        if self.upsample.mode in ("bilinear", "bicubic") and x.is_contiguous(
+            memory_format=torch.channels_last
+        ):
+            x = x.to(memory_format=torch.contiguous_format)
         x = self.upsample(x)
         if self.conv is not None:
             x = self.conv(x)

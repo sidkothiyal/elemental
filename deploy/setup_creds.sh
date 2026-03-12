@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# setup_creds.sh — Copy credentials (Kaggle, WandB) to the remote.
+# setup_creds.sh — Copy credentials (Kaggle, WandB, HuggingFace) to the remote.
 #
 # Expects (env): REMOTE_HOST, SSH_OPTS, REMOTE_HOME
 #
@@ -41,6 +41,22 @@ CRED_EOF
         log_done "WANDB_API_KEY set."
     else
         log_warn "  ⚠ WANDB_API_KEY not set locally — skipping."
+    fi
+
+    # ── HuggingFace ─────────────────────────────────────────────────────────
+    local hf_token="${HUGGING_FACE_HUB_TOKEN:-}"
+    if [[ -n "$hf_token" ]]; then
+        echo -e "  Setting HUGGING_FACE_HUB_TOKEN in ${REMOTE_HOME}/.bashrc …"
+        ssh_cmd bash <<CRED_EOF
+if grep -q '^export HUGGING_FACE_HUB_TOKEN=' '${REMOTE_HOME}/.bashrc' 2>/dev/null; then
+    sed -i 's|^export HUGGING_FACE_HUB_TOKEN=.*|export HUGGING_FACE_HUB_TOKEN=${hf_token}|' '${REMOTE_HOME}/.bashrc'
+else
+    echo 'export HUGGING_FACE_HUB_TOKEN=${hf_token}' >> '${REMOTE_HOME}/.bashrc'
+fi
+CRED_EOF
+        log_done "HUGGING_FACE_HUB_TOKEN set."
+    else
+        log_warn "  ⚠ HUGGING_FACE_HUB_TOKEN not set locally — skipping."
     fi
 }
 
