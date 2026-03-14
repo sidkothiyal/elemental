@@ -6,5 +6,7 @@
 # relative to deploy/vastai/.
 # ──────────────────────────────────────────────────────────────────────────────
 
-# instance_a100_pcie.conf
 instance_a100_sxm4.conf
+# instance_a800.conf
+# instance_rtx_pro_6000.conf
+# instance_a100_pcie.conf

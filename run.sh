@@ -392,6 +392,11 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 run_remote
 # run_remote sets: SESSION_NAME (if a command was provided)
 
+# Use a session-specific state file so multiple parallel runs each get their own.
+if [[ -n "${SESSION_NAME:-}" ]]; then
+    set_session_state_file "$SESSION_NAME"
+fi
+
 # ── Save session state (for pulse auto-restart) ────────────────────────────
 save_session_state
 
@@ -449,5 +454,9 @@ fi
 [[ -n "$POD_ID" && "${PROVIDER:-}" == "vast.ai" ]] && echo -e "  ${BLUE}Instance:${NC} curl -s -H 'Authorization: Bearer \$VAST_API_KEY' https://console.vast.ai/api/v0/instances/${POD_ID}/ | jq ."
 [[ -n "$POD_ID" && "${PROVIDER:-}" == "vast.ai" ]] && echo -e "  ${BLUE}Stop instance:${NC} ./deploy/vastai/stop_instance.sh ${POD_ID}"
 [[ -n "$POD_ID" && "${PROVIDER:-}" == "vast.ai" ]] && echo -e "  ${BLUE}Start instance:${NC} ./deploy/vastai/start_instance.sh ${POD_ID}"
-[[ -n "$PULSE_INTERVAL" ]] && echo -e "  ${BLUE}Stop pulse:${NC} ./deploy/pulse.sh --uninstall-cron"
+if [[ -n "$PULSE_INTERVAL" ]]; then
+    echo -e "  ${BLUE}Stop pulse:${NC} ./deploy/pulse.sh --uninstall-cron --session-file ${SESSION_STATE_FILE}"
+    echo -e "  ${BLUE}Stop all:${NC}   ./deploy/pulse.sh --uninstall-cron"
+    echo -e "  ${BLUE}Sessions:${NC}   ./deploy/pulse.sh --list-sessions"
+fi
 echo ""

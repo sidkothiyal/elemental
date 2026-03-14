@@ -7,6 +7,11 @@
 # When --auto-restart is enabled and the server is down, pulse will
 # restart the machine, re-sync code/venv, and re-launch the session.
 #
+# Multi-session support: each run.sh invocation creates a unique session
+# state file (.session_state_<id>). Pulse installs a separate cron job
+# per session, each with its own lock/state files. Multiple sessions can
+# be monitored in parallel.
+#
 # Use --install-cron / --uninstall-cron to manage scheduled monitoring.
 #
 # Usage:
@@ -14,7 +19,10 @@
 #
 # Commands:
 #   --install-cron        Install a cron job for periodic monitoring
-#   --uninstall-cron      Remove the pulse cron job
+#   --uninstall-cron      Remove pulse cron job(s)
+#                         With --session-file: removes cron for that session only
+#                         Without --session-file: removes ALL pulse cron jobs
+#   --list-sessions       List all tracked sessions and their cron status
 #   (default)             Run a single health check
 #
 # Options:
@@ -34,16 +42,22 @@
 #
 # Examples:
 #   # Install cron-based monitoring (every 5 minutes):
-#   ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --install-cron
+#   ./deploy/pulse.sh --session-file deploy/logs/.session_state_train-123 --interval 5m --auto-restart --install-cron
 #
 #   # Install with idle-stop (shuts down pod when GPU goes idle for 3 checks):
-#   ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --idle-stop --install-cron
+#   ./deploy/pulse.sh --session-file deploy/logs/.session_state_train-123 --interval 5m --auto-restart --idle-stop --install-cron
 #
 #   # Single manual check:
-#   ./deploy/pulse.sh --session-file deploy/logs/.session_state --auto-restart
+#   ./deploy/pulse.sh --session-file deploy/logs/.session_state_train-123 --auto-restart
 #
-#   # Remove cron job:
+#   # Remove cron for a specific session:
+#   ./deploy/pulse.sh --uninstall-cron --session-file deploy/logs/.session_state_train-123
+#
+#   # Remove ALL pulse cron jobs:
 #   ./deploy/pulse.sh --uninstall-cron
+#
+#   # List all tracked sessions:
+#   ./deploy/pulse.sh --list-sessions
 #
 
 # Only use set -e during setup phase, NOT in the check section.
@@ -63,8 +77,8 @@ SESSION_FILE=""
 MAX_RETRIES=5
 INSTALL_CRON=false
 UNINSTALL_CRON=false
-CRON_TAG="elemental_pulse"
 IDLE_STOP=false
+LIST_SESSIONS=false
 GPU_IDLE_THRESHOLD=5      # percent — below this is considered idle
 GPU_IDLE_MAX_STRIKES=3    # consecutive idle checks before auto-stop
 
@@ -78,7 +92,10 @@ Designed to be run as a cron job for periodic monitoring.
 
 Commands:
   --install-cron        Install a cron job for periodic monitoring
-  --uninstall-cron      Remove the pulse cron job
+  --uninstall-cron      Remove pulse cron job(s)
+                        With --session-file: removes cron for that session only
+                        Without --session-file: removes ALL pulse cron jobs
+  --list-sessions       List all tracked sessions and their cron status
   (default)             Run a single health check
 
 Options:
@@ -94,10 +111,12 @@ Options:
   --help                Show this help
 
 Examples:
-  ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --install-cron
-  ./deploy/pulse.sh --session-file deploy/logs/.session_state --interval 5m --auto-restart --idle-stop --install-cron
-  ./deploy/pulse.sh --session-file deploy/logs/.session_state --auto-restart
+  ./deploy/pulse.sh --session-file deploy/logs/.session_state_train-123 --interval 5m --auto-restart --install-cron
+  ./deploy/pulse.sh --session-file deploy/logs/.session_state_train-123 --interval 5m --auto-restart --idle-stop --install-cron
+  ./deploy/pulse.sh --session-file deploy/logs/.session_state_train-123 --auto-restart
+  ./deploy/pulse.sh --uninstall-cron --session-file deploy/logs/.session_state_train-123
   ./deploy/pulse.sh --uninstall-cron
+  ./deploy/pulse.sh --list-sessions
 USAGE
     exit 0
 }
@@ -174,36 +193,154 @@ while [[ $# -gt 0 ]]; do
         --max-retries)
             [[ $# -lt 2 ]] && { log_error "--max-retries requires N."; exit 1; }
             MAX_RETRIES="$2"; shift 2 ;;
-        --auto-restart) AUTO_RESTART=true; shift ;;
-        --idle-stop)    IDLE_STOP=true; shift ;;
-        --install-cron) INSTALL_CRON=true; shift ;;
+        --auto-restart)  AUTO_RESTART=true; shift ;;
+        --idle-stop)     IDLE_STOP=true; shift ;;
+        --install-cron)  INSTALL_CRON=true; shift ;;
         --uninstall-cron) UNINSTALL_CRON=true; shift ;;
+        --list-sessions) LIST_SESSIONS=true; shift ;;
         --help|-h)   usage ;;
         *)           log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
 
-# ── Cron management ─────────────────────────────────────────────────────────
+# ── Derive session ID from a session file ───────────────────────────────────
+# Extracts SESSION_ID by reading the file (prefers SESSION_ID, falls back to
+# SESSION_NAME, then filename). Does NOT source the file to avoid side effects.
+derive_session_id_from_file() {
+    local file="$1" sid=""
+    if [[ -f "$file" ]]; then
+        sid=$(grep '^SESSION_ID=' "$file" 2>/dev/null | head -1 | cut -d'"' -f2)
+        [[ -z "$sid" ]] && sid=$(grep '^SESSION_NAME=' "$file" 2>/dev/null | head -1 | cut -d'"' -f2)
+    fi
+    if [[ -z "$sid" ]]; then
+        local bname
+        bname=$(basename "$file")
+        [[ "$bname" == .session_state_* ]] && sid="${bname#.session_state_}"
+    fi
+    echo "$sid"
+}
 
-uninstall_cron() {
+# ── Cron tag helpers ────────────────────────────────────────────────────────
+# Session-specific cron tag: elemental_pulse_<SESSION_ID>
+# Legacy (single-session) tag: elemental_pulse
+cron_tag_for_session() {
+    local sid="$1"
+    if [[ -n "$sid" ]]; then
+        echo "elemental_pulse_${sid}"
+    else
+        echo "elemental_pulse"
+    fi
+}
+
+# ── List sessions ──────────────────────────────────────────────────────────
+list_sessions() {
+    local files
+    files=$(compgen -G "${DEPLOY_LOGS_DIR}/.session_state_*" 2>/dev/null) || files=""
+
+    if [[ -z "$files" ]]; then
+        echo "No active sessions found in ${DEPLOY_LOGS_DIR}/"
+        return 0
+    fi
+
+    local crontab_content
+    crontab_content=$(crontab -l 2>/dev/null) || crontab_content=""
+
+    echo ""
+    printf "  %-28s %-10s %-15s %-25s %s\n" "SESSION" "PROVIDER" "POD/INSTANCE" "HOST" "CRON"
+    printf "  %-28s %-10s %-15s %-25s %s\n" "───────" "────────" "────────────" "────" "────"
+
+    while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+
+        local sid provider pod_id ip port
+        sid=$(grep '^SESSION_ID=' "$f" 2>/dev/null | head -1 | cut -d'"' -f2)
+        [[ -z "$sid" ]] && sid=$(grep '^SESSION_NAME=' "$f" 2>/dev/null | head -1 | cut -d'"' -f2)
+        [[ -z "$sid" ]] && sid=$(basename "$f" | sed 's/^\.session_state_//')
+        provider=$(grep '^SESSION_PROVIDER=' "$f" 2>/dev/null | head -1 | cut -d'"' -f2)
+        pod_id=$(grep '^SESSION_POD_ID=' "$f" 2>/dev/null | head -1 | cut -d'"' -f2)
+        ip=$(grep '^SESSION_IP=' "$f" 2>/dev/null | head -1 | cut -d'"' -f2)
+        port=$(grep '^SESSION_PORT=' "$f" 2>/dev/null | head -1 | cut -d'"' -f2)
+
+        local host="${ip}"
+        [[ -n "$port" && "$port" != "22" ]] && host="${host}:${port}"
+
+        local cron_status="inactive"
+        local tag
+        tag=$(cron_tag_for_session "$sid")
+        if echo "$crontab_content" | grep -q "# ${tag}$"; then
+            cron_status="active"
+        fi
+
+        printf "  %-28s %-10s %-15s %-25s %s\n" \
+            "$sid" "${provider:-ssh}" "${pod_id:--}" "${host:--}" "$cron_status"
+    done <<< "$files"
+
+    echo ""
+    echo "  Session files: ${DEPLOY_LOGS_DIR}/.session_state_<SESSION>"
+    echo "  Uninstall one: ./deploy/pulse.sh --uninstall-cron --session-file <FILE>"
+    echo "  Uninstall all: ./deploy/pulse.sh --uninstall-cron"
+    echo ""
+}
+
+# ── Uninstall cron: single session ─────────────────────────────────────────
+uninstall_cron_session() {
+    local sid="$1"
+    local tag
+    tag=$(cron_tag_for_session "$sid")
+
     local existing filtered
     existing=$(crontab -l 2>/dev/null) || existing=""
-    filtered=$(echo "$existing" | grep -v "# ${CRON_TAG}$" || true)
-    # Clean up empty lines that might accumulate
+    filtered=$(echo "$existing" | grep -v "# ${tag}$" || true)
     filtered=$(echo "$filtered" | sed '/^[[:space:]]*$/d')
     if [[ -z "$filtered" ]]; then
         crontab -r 2>/dev/null || true
     else
         echo "$filtered" | crontab -
     fi
-    # Clean up state files and wrapper script
+
+    rm -f "${DEPLOY_LOGS_DIR}/.pulse_failures_${sid}" 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}/.pulse_low_gpu_${sid}" 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}/.pulse_cron_wrapper_${sid}.sh" 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}/.pulse.lock_${sid}" 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}/.session_state_${sid}" 2>/dev/null || true
+    log_done "Pulse cron job removed for session: ${sid}"
+}
+
+# ── Uninstall cron: all sessions ───────────────────────────────────────────
+uninstall_cron_all() {
+    local existing filtered
+    existing=$(crontab -l 2>/dev/null) || existing=""
+    # Match both legacy "# elemental_pulse" and session-specific "# elemental_pulse_*"
+    filtered=$(echo "$existing" | grep -v "# elemental_pulse" || true)
+    filtered=$(echo "$filtered" | sed '/^[[:space:]]*$/d')
+    if [[ -z "$filtered" ]]; then
+        crontab -r 2>/dev/null || true
+    else
+        echo "$filtered" | crontab -
+    fi
+
+    # Clean up all pulse state files (legacy + session-specific)
+    rm -f "${DEPLOY_LOGS_DIR}"/.pulse_failures* 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}"/.pulse_low_gpu* 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}"/.pulse_cron_wrapper* 2>/dev/null || true
+    rm -f "${DEPLOY_LOGS_DIR}"/.pulse.lock* 2>/dev/null || true
+    # Also remove legacy state file without suffix
     rm -f "${DEPLOY_LOGS_DIR}/.pulse_failures" 2>/dev/null || true
     rm -f "${DEPLOY_LOGS_DIR}/.pulse_low_gpu" 2>/dev/null || true
     rm -f "${DEPLOY_LOGS_DIR}/.pulse_cron_wrapper.sh" 2>/dev/null || true
-    log_done "Pulse cron job removed."
+    log_done "All pulse cron jobs removed."
 }
 
+# ── Install cron ───────────────────────────────────────────────────────────
 install_cron() {
+    if [[ -z "$SESSION_ID" ]]; then
+        log_error "Cannot install cron without a session ID. Provide --session-file."
+        exit 1
+    fi
+
+    local cron_tag
+    cron_tag=$(cron_tag_for_session "$SESSION_ID")
+
     local cron_expr
     cron_expr=$(seconds_to_cron "$INTERVAL")
 
@@ -219,15 +356,13 @@ install_cron() {
         abs_ssh_identity="$(cd "$(dirname "$SSH_IDENTITY")" && pwd)/$(basename "$SSH_IDENTITY")"
     fi
 
-    # Build the pulse command args
-    # When --session-file is provided, target info (pod ID, SSH host, port)
-    # is read from the session file at each invocation — NOT baked into the
-    # cron entry.  This is critical for RECOVERY_POLICY="new" where auto-
-    # restart creates a fresh pod with a new ID/IP.
+    # Build the pulse command args.
+    # Target info (pod ID, SSH host, port) is read from the session file at
+    # each invocation — NOT baked into the cron entry. Critical for
+    # RECOVERY_POLICY="new" where auto-restart creates a fresh pod.
     local pulse_args=""
     [[ -n "$abs_session_file" ]] && pulse_args+=" --session-file ${abs_session_file}"
     if [[ -z "$abs_session_file" ]]; then
-        # No session file — must bake target info into the cron entry
         [[ -n "$POD_ID" ]] && pulse_args+=" --pod ${POD_ID}"
         [[ -n "$SSH_TARGET" ]] && pulse_args+=" --ssh ${SSH_TARGET}"
         [[ -n "$SSH_PORT" ]] && pulse_args+=" -p ${SSH_PORT}"
@@ -240,10 +375,8 @@ install_cron() {
     local log_file="${DEPLOY_LOGS_DIR}/pulse_cron.log"
     mkdir -p "$DEPLOY_LOGS_DIR"
 
-    # Use a wrapper script so the crontab line stays short (cron has line-length limits).
-    # The wrapper sets env and runs pulse.sh with all arguments; API keys are
-    # loaded from the session file when pulse runs, so we don't bake them into the cron.
-    local wrapper_path="${DEPLOY_LOGS_DIR}/.pulse_cron_wrapper.sh"
+    # Session-specific wrapper script (cron has line-length limits).
+    local wrapper_path="${DEPLOY_LOGS_DIR}/.pulse_cron_wrapper_${SESSION_ID}.sh"
     local abs_wrapper_path="$wrapper_path"
     [[ "${abs_wrapper_path:0:1}" != "/" ]] && abs_wrapper_path="$(cd "$(dirname "$wrapper_path")" && pwd)/$(basename "$wrapper_path")"
     local abs_repo_root="$REPO_ROOT"
@@ -255,7 +388,7 @@ install_cron() {
 
     cat > "$wrapper_path" <<WRAPPER_EOF
 #!/usr/bin/env bash
-# Generated by pulse.sh --install-cron; do not edit.
+# Generated by pulse.sh --install-cron for session ${SESSION_ID}; do not edit.
 set -euo pipefail
 export PATH="${PATH}"
 export HOME="${HOME}"
@@ -264,13 +397,13 @@ exec "${abs_script_dir}/pulse.sh"${pulse_args}
 WRAPPER_EOF
     chmod +x "$wrapper_path"
 
-    # Cron line: only schedule + wrapper path + redirect. Kept short to avoid "command too long".
-    local cron_line="${cron_expr} ${abs_wrapper_path} >> ${abs_log_file} 2>&1 # ${CRON_TAG}"
+    # Cron line: schedule + wrapper + redirect, tagged for identification.
+    local cron_line="${cron_expr} ${abs_wrapper_path} >> ${abs_log_file} 2>&1 # ${cron_tag}"
 
-    # Remove existing pulse entries, then add the new one
+    # Remove any existing entry for THIS session, then add the new one.
     local existing filtered
     existing=$(crontab -l 2>/dev/null) || existing=""
-    filtered=$(echo "$existing" | grep -v "# ${CRON_TAG}$" || true)
+    filtered=$(echo "$existing" | grep -v "# ${cron_tag}$" || true)
     filtered=$(echo "$filtered" | sed '/^[[:space:]]*$/d')
 
     if [[ -n "$filtered" ]]; then
@@ -280,26 +413,39 @@ WRAPPER_EOF
     fi
 
     # Reset failure counter on fresh install
-    echo 0 > "${DEPLOY_LOGS_DIR}/.pulse_failures"
+    echo 0 > "${DEPLOY_LOGS_DIR}/.pulse_failures_${SESSION_ID}"
 
     echo ""
-    log_done "Pulse cron job installed."
+    log_done "Pulse cron job installed for session: ${SESSION_ID}"
     log_info "  Schedule:  ${cron_expr} (every $(format_interval "$INTERVAL"))"
     log_info "  Log file:  ${log_file}"
-    log_info "  Uninstall: ./deploy/pulse.sh --uninstall-cron"
+    log_info "  Uninstall: ./deploy/pulse.sh --uninstall-cron --session-file ${abs_session_file}"
     echo ""
 }
 
-# Handle --uninstall-cron early
-if [[ "$UNINSTALL_CRON" == true ]]; then
-    uninstall_cron
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Handle --list-sessions (before loading session state) ─────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+
+if [[ "$LIST_SESSIONS" == true ]]; then
+    list_sessions
     exit 0
 fi
 
-# ── Load session state if provided ──────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Load session state if provided ────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+
 if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     # shellcheck source=/dev/null
     source "$SESSION_FILE"
+    # Derive session ID: prefer SESSION_ID from file, fall back to SESSION_NAME/filename
+    if [[ -z "${SESSION_ID:-}" ]]; then
+        SESSION_ID="${SESSION_NAME:-}"
+    fi
+    if [[ -z "$SESSION_ID" ]]; then
+        SESSION_ID=$(derive_session_id_from_file "$SESSION_FILE")
+    fi
     # Map session vars to pulse vars
     [[ -z "$POD_ID" && -n "${SESSION_POD_ID:-}" ]] && POD_ID="$SESSION_POD_ID"
     [[ -z "$SSH_TARGET" && -n "${SESSION_IP:-}" ]] && SSH_TARGET="${SESSION_USER:-root}@${SESSION_IP}"
@@ -308,6 +454,26 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     # Pick up API keys from session state
     [[ -z "${RUNPOD_API_KEY:-}" && -n "${SESSION_RUNPOD_API_KEY:-}" ]] && export RUNPOD_API_KEY="$SESSION_RUNPOD_API_KEY"
     [[ -z "${VAST_API_KEY:-}" && -n "${SESSION_VAST_API_KEY:-}" ]] && export VAST_API_KEY="$SESSION_VAST_API_KEY"
+elif [[ -n "$SESSION_FILE" && ! -f "$SESSION_FILE" ]]; then
+    # File doesn't exist — try to derive session ID from filename for uninstall
+    SESSION_ID=$(derive_session_id_from_file "$SESSION_FILE")
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Handle --uninstall-cron ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+
+if [[ "$UNINSTALL_CRON" == true ]]; then
+    if [[ -n "$SESSION_FILE" && -n "$SESSION_ID" ]]; then
+        uninstall_cron_session "$SESSION_ID"
+    elif [[ -n "$SESSION_FILE" ]]; then
+        log_error "Cannot determine session ID from: ${SESSION_FILE}"
+        log_info "Use --list-sessions to see active sessions, or omit --session-file to remove all."
+        exit 1
+    else
+        uninstall_cron_all
+    fi
+    exit 0
 fi
 
 # Handle --install-cron after loading session (so we have all target info)
@@ -353,12 +519,16 @@ if [[ -n "$POD_ID" ]]; then
     fi
 fi
 
-# ── Lock file (prevent concurrent runs from cron overlap) ───────────────────
+# ── Lock file (prevent concurrent runs for the SAME session) ────────────────
 mkdir -p "$DEPLOY_LOGS_DIR"
-LOCK_FILE="${DEPLOY_LOGS_DIR}/.pulse.lock"
+if [[ -n "$SESSION_ID" ]]; then
+    LOCK_FILE="${DEPLOY_LOGS_DIR}/.pulse.lock_${SESSION_ID}"
+else
+    LOCK_FILE="${DEPLOY_LOGS_DIR}/.pulse.lock"
+fi
 exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Skipped — another pulse instance is running."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Skipped — another pulse instance is running for session ${SESSION_ID:-default}."
     exit 0
 fi
 
@@ -542,7 +712,10 @@ do_auto_restart() {
         return 1
     fi
 
-    # Step 8: Save updated session state
+    # Step 8: Save updated session state (preserving session-specific file path)
+    if [[ -n "$SESSION_ID" ]]; then
+        set_session_state_file "$SESSION_ID"
+    fi
     save_session_state || true
 
     # Update pulse monitoring targets with new connection info
@@ -557,13 +730,21 @@ do_auto_restart() {
     return 0
 }
 
-# ── Failure tracking ────────────────────────────────────────────────────────
-FAILURE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_failures"
+# ── Failure tracking (session-specific) ──────────────────────────────────────
+if [[ -n "$SESSION_ID" ]]; then
+    FAILURE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_failures_${SESSION_ID}"
+else
+    FAILURE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_failures"
+fi
 CONSECUTIVE_FAILURES=0
 [[ -f "$FAILURE_COUNT_FILE" ]] && CONSECUTIVE_FAILURES=$(cat "$FAILURE_COUNT_FILE" 2>/dev/null || echo 0)
 
-# ── GPU idle tracking ────────────────────────────────────────────────────────
-GPU_IDLE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_low_gpu"
+# ── GPU idle tracking (session-specific) ──────────────────────────────────────
+if [[ -n "$SESSION_ID" ]]; then
+    GPU_IDLE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_low_gpu_${SESSION_ID}"
+else
+    GPU_IDLE_COUNT_FILE="${DEPLOY_LOGS_DIR}/.pulse_low_gpu"
+fi
 GPU_IDLE_STRIKES=0
 [[ -f "$GPU_IDLE_COUNT_FILE" ]] && GPU_IDLE_STRIKES=$(cat "$GPU_IDLE_COUNT_FILE" 2>/dev/null || echo 0)
 
@@ -631,7 +812,7 @@ check_gpu_usage() {
     echo "$max_util"
 }
 
-# Stop the monitored machine and remove the cron job.
+# Stop the monitored machine and remove the cron job for this session.
 # For RunPod pods: calls the stop API.
 # For SSH-only targets: issues a remote shutdown.
 do_idle_stop() {
@@ -667,13 +848,18 @@ do_idle_stop() {
         echo "[${now}] Shutdown command sent to ${SSH_TARGET}."
     fi
 
-    uninstall_cron
+    if [[ -n "$SESSION_ID" ]]; then
+        uninstall_cron_session "$SESSION_ID"
+    else
+        uninstall_cron_all
+    fi
 }
 
 # ── Determine target label ──────────────────────────────────────────────────
 TARGET_LABEL=""
 [[ -n "$POD_ID" ]] && TARGET_LABEL="pod:${POD_ID}"
 [[ -z "$TARGET_LABEL" && -n "$SSH_TARGET" ]] && TARGET_LABEL="ssh:${SSH_TARGET}"
+[[ -n "$SESSION_ID" ]] && TARGET_LABEL="${TARGET_LABEL} [${SESSION_ID}]"
 
 # ── Perform single health check ────────────────────────────────────────────
     NOW=$(date '+%Y-%m-%d %H:%M:%S')
@@ -744,7 +930,11 @@ echo "[${NOW}] ${STATUS_ICON} ${TARGET_LABEL} status=${STATUS}"
                 echo "[${NOW}] Giving up after ${MAX_RETRIES} consecutive failures. Removing cron job."
                 log_error "Auto-restart failed ${MAX_RETRIES} times consecutively. Removing cron job — manual intervention needed."
                 log_info "Re-install with: ./deploy/pulse.sh --install-cron --session-file <FILE> --interval <INTERVAL> --auto-restart"
-                uninstall_cron
+                if [[ -n "$SESSION_ID" ]]; then
+                    uninstall_cron_session "$SESSION_ID"
+                else
+                    uninstall_cron_all
+                fi
                 else
                 echo "[${NOW}] AUTO-RESTART triggered (attempt ${CONSECUTIVE_FAILURES}/${MAX_RETRIES})"
                     if do_auto_restart; then
