@@ -7,7 +7,7 @@ defaults:
   - /default
   - /dataset: div2k
   - /model: simple_autoencoder
-  - /loss: mse
+  - /loss: phased_mse_ssim
   - /optimizer: adamw
   - /scheduler: cosine_annealing
   - /callback: default
@@ -16,7 +16,7 @@ defaults:
   - /remote_backup: wandb
   - _self_
 
-experiment_name: compression_simple_ae_${now:%Y-%m-%d}_${now:%H-%M-%S}
+experiment_name: compression_simple_ae_8x_phased_mse_ssim_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
 resume_training: true
@@ -26,9 +26,9 @@ mode: "autoencoder"
 
 # Training overrides
 lr: 0.0003
-num_epochs: 5000
+num_epochs: 2500
 validation_interval: 500
-batch_size: 24
+batch_size: 48
 
 dtype:
   _target_: hydra.utils.get_object

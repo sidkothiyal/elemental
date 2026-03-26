@@ -4,24 +4,24 @@
 model:
   _target_: torch.nn.Sequential
   _args_:
-    # Encoder - downsample 16x via four stride-2 convolutions
+    # Encoder - downsample 8x via five stride-2 convolutions
     - _target_: model.blocks.conv_block.ConvBlock
       in_channels: 3
-      channels: [64, 128, 256, 512]
-      kernel_sizes: [3, 3, 3, 3]
-      strides: [2, 2, 2, 2]
-      paddings: [1, 1, 1, 1]
-    # Decoder - upsample 16x via four 2x bilinear upsample + conv layers
+      channels: [64, 128, 256]
+      kernel_sizes: [3, 3, 3]
+      strides: [2, 2, 2]
+      paddings: [1, 1, 1]
+    # Decoder - upsample 8x via four 2x bilinear upsample + conv layers
     - _target_: model.blocks.upsample_block.UpsampleBlock
-      scale_factors: [2.0, 2.0, 2.0, 2.0]
+      scale_factors: [2.0, 2.0, 2.0]
       modes: bilinear
-      in_channels: 512
-      channels: [256, 128, 64, 32]
-      kernel_sizes: [3, 3, 3, 3]
-      paddings: [1, 1, 1, 1]
+      in_channels: 256
+      channels: [128, 64, 32]
+      kernel_sizes: [3, 3, 3]
+      paddings: [1, 1, 1]
     # Final projection to RGB (no norm/activation)
     - _target_: torch.nn.Conv2d
-      in_channels: 32 # 32
+      in_channels: 32
       out_channels: 3
       kernel_size: 3
       stride: 1

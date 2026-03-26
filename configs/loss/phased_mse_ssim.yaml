@@ -1,0 +1,32 @@
+# @package _global_
+# MSE + SSIM from epoch 0, no phase transitions.
+# Key stability fix: K=(0.1, 0.3) increases SSIM's internal stabilization
+# constants by 10x (C1=0.01, C2=0.09 vs defaults C1=0.0001, C2=0.0009).
+# This prevents gradient explosions in smooth/uniform image patches where
+# local variance ≈ 0 causes division by ~0.0009 with defaults.
+
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.moving_weighted_loss.MovingWeightedLoss
+        start_weights: [1.0, 0.001]
+        end_weights: [1.0, 0.05]
+        start_percentage: 0.0
+        end_percentage: 1.0
+        total_epochs: ${num_epochs}
+        scale_losses: false
+        easing: cosine_in
+        loss_fns:
+          - _target_: torch.nn.MSELoss
+          - _target_: loss.ssim.SSIMLoss
+            multi_scale: false
+            data_range: 1.0
+            size_average: true
+            channel: 3
+            nonnegative_ssim: true
+            K: [0.1, 0.3]
+      context_mapping:
+        "epoch": epoch
