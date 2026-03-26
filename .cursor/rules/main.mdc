@@ -1,0 +1,36 @@
+---
+description: Core rules for elemental — always applied
+alwaysApply: true
+---
+
+# elemental — Core Rules
+
+Modular PyTorch ML training library. Config via Hydra; tracking via W&B. Uses `uv` for Python env, Docker for deployment.
+
+## Import Convention
+`src/` is on `PYTHONPATH`. Import as `from model.transformer import Transformer` — never `from src.model...`.
+
+## Commands
+```bash
+uv run python src/trainer.py experiment/<task>/<config>
+uv run python src/trainer.py ... key=value
+uv run pytest tests/
+uv run pre-commit run --all-files
+```
+
+## Hydra Configs
+All configs live in `configs/` using hierarchical Hydra composition. Experiment configs in `configs/experiment/` compose sub-configs via `defaults:` lists. Entry point: `configs/config.yaml` → `configs/default.yaml`. Objects use `_target_` for instantiation.
+
+## Unified Data Container
+All components share a single `dict`. Keys: `input/<k>`, `target`, `pred`, `pred/<k>`, `post_processed/<k>`, `model`, `epoch`.
+Never pass tensors directly between components — always use this container.
+
+## Documentation
+Every `src/` subdirectory has `README.md` (usage) and `ARCHITECTURE.md` (implementation).
+**Update both files for every directory you modify.** Also update the outermost `README.md` and `ARCHITECTURE.md` if changes affect project-level docs. Outdated docs are worse than no docs.
+
+## Planning
+If a task has more than 3 steps, create a plan first before executing.
+
+## Testing
+Tests mirror `src/` structure under `tests/`. Add tests for new functionality only. Run `uv run pre-commit run --all-files` before committing.

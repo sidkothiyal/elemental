@@ -1,83 +1,85 @@
-# Configs
+# configs — Hydra Configuration
 
-Hierarchical Hydra configuration system for the Elemental training framework.
+All training configurations are managed by Hydra. Configs are modular and composable.
 
-## Directory Structure
+## Structure
 
 ```
 configs/
-├── config.yaml              # Main entry point
-├── default.yaml             # Base training defaults
-├── callback/                # Callback configurations
-├── checkpoint_surgery/      # Checkpoint manipulation configs
+├── config.yaml              # Main entry point, inherits default
+├── default.yaml             # Base hyperparams shared by all experiments
+├── experiment/              # Per-experiment overrides
+│   ├── autoencoder/         # Image compression / reconstruction experiments
+│   ├── autoregressive/      # Language model experiments
+│   ├── classification/      # Image classification experiments
+│   └── gan/                 # GAN experiments
 ├── dataset/                 # Dataset configurations
-├── experiment/              # Complete experiment configs (main entry points)
-│   ├── autoencoder/        # Autoencoder experiments
-│   ├── autoregressive/     # Language model experiments
-│   ├── classification/     # Classification experiments
-│   └── gan/                # GAN experiments
-├── loss/                    # Loss function configurations
-├── model/                   # Model architecture configurations
-├── optimizer/               # Optimizer configurations
-└── scheduler/               # Learning rate scheduler configurations
+├── model/                   # Model configurations
+├── loss/                    # Loss configurations
+├── callback/                # Callback configurations
+├── optimizer/               # Optimizer configurations (adam, adamw, sgd)
+├── scheduler/               # LR scheduler configurations
+├── profiler/                # PyTorch profiler presets
+├── remote_backup/           # Remote backup strategy configs
+├── legacy/                  # Old flat configs (kept for reference)
+└── checkpoint_surgery/      # Checkpoint rename/migration configs
 ```
 
-## Usage
+## How Configs Compose
 
-### Running Experiments (Hierarchical)
-
-```bash
-# Autoencoder experiments
-python src/trainer.py experiment/autoencoder/compression_unet
-python src/trainer.py experiment/autoencoder/compression_diffusion
-
-# Classification
-python src/trainer.py experiment/classification/imagenet
-
-# GAN
-python src/trainer.py experiment/gan/cityscapes_seg
-
-# Language Models
-python src/trainer.py experiment/autoregressive/wikitext_lm
-```
-
-### Legacy Flat Configs
-
-Old flat configs still work:
-```bash
-python src/trainer.py compression_autoencoder_unet
-python src/trainer.py base_classification
-```
-
-## How Composition Works
-
-Experiment configs use Hydra's defaults to compose from reusable components:
+An experiment config composes sub-configs via `defaults`:
 
 ```yaml
-# experiment/autoencoder/compression_unet.yaml
+# configs/experiment/autoencoder/compression_unet.yaml
 defaults:
-  - /default                    # Base training params
-  - /dataset: div2k             # Dataset config
-  - /model: unet_compression    # Model architecture
-  - /loss: mse                  # Loss function
-  - /optimizer: adamw           # Optimizer
-  - /scheduler: cosine_annealing # LR scheduler
-  - /callback: default          # Callbacks (wandb + checkpoint)
-  - _self_
-
-# Override specific values
-lr: 0.0003
-batch_size: 4
+  - /default                 # base hyperparams (lr, num_epochs, etc.)
+  - /dataset: div2k          # pulls in configs/dataset/div2k.yaml
+  - /model: unet_compression
+  - /loss: mse
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_                   # experiment-level overrides at end
 ```
 
-## Overriding Values
+## Key Default Values (default.yaml)
 
-Override any parameter from command line:
-```bash
-python src/trainer.py experiment/autoencoder/compression_unet lr=0.001 batch_size=8
-```
+| Key | Default | Description |
+|-----|---------|-------------|
+| `lr` | 0.0001 | Learning rate |
+| `num_epochs` | 100 | Training epochs |
+| `batch_size` | 64 | Batch size |
+| `seed` | 42 | Random seed |
+| `device` | `"gpu"` | Training device |
+| `dtype` | null (→ bfloat16) | Precision |
+| `validation_interval` | 5 | Run val every N epochs |
+| `gradient_accumulation_steps` | 1 | Grad accum steps |
+| `optimizer` | `"AdamW"` | Optimizer class name |
+| `lr_scheduler` | `"CosineAnnealingLR"` | LR scheduler |
+| `channels_last` | true | NHWC memory format |
+| `cudnn_benchmark` | true | Auto-tune conv algorithms |
+| `resume_training` | false | Resume from checkpoint |
 
-Override nested values:
-```bash
-python src/trainer.py experiment/autoencoder/compression_unet callbacks.checkpoint.save_every_n_epochs=5
-```
+## Experiment Configs
+
+See `configs/experiment/README.md` (each subdirectory has its own README).
+
+## Adding a New Experiment
+
+1. Create `configs/experiment/<task>/my_experiment.yaml`
+2. Declare `defaults` list pointing to existing sub-configs
+3. Override specific values below `_self_`
+4. Set `experiment_name` and `results_dir`
+
+## Profiler Presets
+
+| Config | Purpose |
+|--------|---------|
+| `disabled` | No profiling |
+| `standard` | CPU+CUDA, chrome trace |
+| `memory` | Memory profiling |
+| `full` | All activities + shapes + stack |
+| `cpu_only` | CPU-only profiling |
+| `debug` | Minimal (dev use) |
