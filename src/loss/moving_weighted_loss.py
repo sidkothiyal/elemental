@@ -1,6 +1,7 @@
-"""Moving Weighted Loss - weights transition linearly over training epochs."""
+"""Moving Weighted Loss - weights transition over training epochs with configurable easing."""
 
 import logging
+import math
 
 import torch
 from torch import nn
@@ -9,13 +10,25 @@ from loss.utils import call_loss_with_epoch
 
 logger = logging.getLogger(__name__)
 
+EASING_FUNCTIONS = {
+    "linear": lambda t: t,
+    "cosine": lambda t: (1.0 - math.cos(math.pi * t)) / 2.0,
+    "cosine_in": lambda t: 1.0 - math.cos(math.pi / 2.0 * t),
+    "sigmoid": lambda t: 1.0 / (1.0 + math.exp(-12.0 * (t - 0.5))),
+    "quadratic": lambda t: t * t,
+}
+
 
 class MovingWeightedLoss(nn.Module):
-    """Weighted loss with linearly interpolating weights based on training progress.
+    """Weighted loss with interpolating weights based on training progress.
 
-    This loss function transitions smoothly between start and end weights over
-    the course of training, providing gradual weight changes rather than hard
-    phase boundaries.
+    Supports multiple easing curves for the weight transition:
+    - "linear": constant rate of change (original behavior)
+    - "cosine": slow start AND slow end (S-curve via cosine)
+    - "cosine_in": very slow start, faster end — ideal for introducing a new
+      loss gently without shocking the optimizer
+    - "sigmoid": sharp S-curve, almost flat at boundaries, fast in the middle
+    - "quadratic": slow start, accelerating (t^2)
     """
 
     def __init__(
@@ -28,6 +41,8 @@ class MovingWeightedLoss(nn.Module):
         start_percentage: float = 0.0,
         end_percentage: float = 1.0,
         scale_losses: bool = False,
+        scale_ema_decay: float = 0.99,
+        easing: str = "linear",
     ):
         """Initialize the MovingWeightedLoss.
 
@@ -41,19 +56,13 @@ class MovingWeightedLoss(nn.Module):
                              Before this, weights remain at start_weights.
             end_percentage: Percentage of training when transition ends (0.0 to 1.0).
                            After this, weights remain at end_weights.
-            scale_losses: Whether to scale each loss by its maximum observed value.
-
-        Example:
-            >>> # Gradually transition from L1-heavy to SSIM-heavy
-            >>> loss_fns = [nn.L1Loss(), SSIMLoss()]
-            >>> loss = MovingWeightedLoss(
-            ...     loss_fns=loss_fns,
-            ...     start_weights=[0.9, 0.1],  # Start: 90% L1, 10% SSIM
-            ...     end_weights=[0.3, 0.7],    # End: 30% L1, 70% SSIM
-            ...     total_epochs=500,
-            ...     start_percentage=0.2,  # Start transition at 20% of training
-            ...     end_percentage=0.8,    # Finish transition at 80% of training
-            ... )
+            scale_losses: Whether to normalize each loss by its running magnitude
+                         (EMA-based) so weights represent true relative influence.
+            scale_ema_decay: EMA decay factor for loss scale tracking (0.9-0.999).
+                            Higher = smoother but slower to adapt. Only used when
+                            scale_losses=True.
+            easing: Easing curve for weight interpolation. One of:
+                   "linear", "cosine", "cosine_in", "sigmoid", "quadratic".
         """
         super().__init__()
 
@@ -67,24 +76,27 @@ class MovingWeightedLoss(nn.Module):
                 f"end_percentage ({end_percentage}) must be in (0, 1] with "
                 f"start_percentage < end_percentage"
             )
+        if easing not in EASING_FUNCTIONS:
+            raise ValueError(
+                f"easing must be one of {list(EASING_FUNCTIONS.keys())}, got '{easing}'"
+            )
 
         self.loss_fns = nn.ModuleList(loss_fns)
         self.total_epochs = total_epochs
         self.normalize_weights = normalize_weights
         self.start_percentage = start_percentage
         self.end_percentage = end_percentage
+        self.easing_fn = EASING_FUNCTIONS[easing]
+        self.easing_name = easing
 
-        # Calculate actual epoch boundaries
         self.start_epoch = int(start_percentage * total_epochs)
         self.end_epoch = int(end_percentage * total_epochs)
 
-        # Convert to tensors
         if not isinstance(start_weights, torch.Tensor):
             start_weights = torch.tensor(start_weights, dtype=torch.float32)
         if not isinstance(end_weights, torch.Tensor):
             end_weights = torch.tensor(end_weights, dtype=torch.float32)
 
-        # Validate dimensions
         if len(loss_fns) != len(start_weights) or len(loss_fns) != len(end_weights):
             raise ValueError(
                 f"Number of loss functions ({len(loss_fns)}) must match "
@@ -92,22 +104,22 @@ class MovingWeightedLoss(nn.Module):
                 f"end_weights ({len(end_weights)})"
             )
 
-        # Store as buffers (non-trainable parameters that move with the module)
         self.register_buffer("start_weights", start_weights)
         self.register_buffer("end_weights", end_weights)
 
         self.scale_losses = scale_losses
-        # Track maximum value for each loss function. Default to 1.0.
+        self.scale_ema_decay = scale_ema_decay
+        self.loss_scales: torch.Tensor
         self.register_buffer("loss_scales", torch.ones(len(self.loss_fns)))
-        # Track if we've seen any data yet for proper initialization
         self.register_buffer(
             "_scales_initialized", torch.zeros(len(self.loss_fns), dtype=torch.bool)
         )
 
         logger.info(
-            "MovingWeightedLoss initialized for %d epochs with %d losses:",
+            "MovingWeightedLoss initialized for %d epochs with %d losses (easing=%s):",
             total_epochs,
             len(loss_fns),
+            easing,
         )
         logger.info(
             "  Transition window: epochs [%d, %d) (%.1f%% - %.1f%% of training)",
@@ -134,20 +146,16 @@ class MovingWeightedLoss(nn.Module):
         Returns:
             Interpolated weights tensor
         """
-        # Before transition: use start_weights
         if epoch < self.start_epoch:
             weights = self.start_weights.clone()
-        # After transition: use end_weights
         elif epoch >= self.end_epoch:
             weights = self.end_weights.clone()
-        # During transition: interpolate
         else:
-            # Calculate progress within the transition window
             transition_duration = max(1, self.end_epoch - self.start_epoch)
-            progress = (epoch - self.start_epoch) / transition_duration
+            linear_progress = (epoch - self.start_epoch) / transition_duration
+            progress = self.easing_fn(linear_progress)
             weights = self.start_weights + (self.end_weights - self.start_weights) * progress
 
-        # Normalize if requested
         if self.normalize_weights:
             weights = weights / weights.sum()
 
@@ -177,16 +185,17 @@ class MovingWeightedLoss(nn.Module):
         for i, (weight, loss_fn) in enumerate(zip(weights, self.loss_fns)):
             loss_value = call_loss_with_epoch(loss_fn, pred, target, epoch, *args, **kwargs)
 
-            # Update the maximum value if scaling is enabled
             if self.scale_losses:
-                # On first encounter, initialize the scale to the first loss value
+                raw = loss_value.detach().clamp(min=1e-8)
                 if not self._scales_initialized[i]:
-                    self.loss_scales[i] = loss_value.detach()
+                    self.loss_scales[i] = raw
                     self._scales_initialized[i] = True
                 else:
-                    self.loss_scales[i] = torch.max(self.loss_scales[i], loss_value.detach())
+                    self.loss_scales[i] = (
+                        self.scale_ema_decay * self.loss_scales[i]
+                        + (1.0 - self.scale_ema_decay) * raw
+                    )
 
-            # Scale the loss by its loss scale. If scaling is not enabled, the loss scale is 1.0.
             scaled_loss = loss_value / torch.clamp(self.loss_scales[i], min=1e-8)
             total_loss = total_loss + weight * scaled_loss
 
@@ -218,6 +227,7 @@ class MovingWeightedLoss(nn.Module):
             f"normalize_weights={self.normalize_weights}, "
             f"start_percentage={self.start_percentage}, "
             f"end_percentage={self.end_percentage}, "
+            f"easing={self.easing_name}, "
             f"scale_losses={self.scale_losses})"
         )
 
@@ -236,14 +246,14 @@ if __name__ == "__main__":
         total_epochs=100,
     )
 
-    pred = torch.randn(2, 3, 480, 640)
-    target = torch.randn(2, 3, 480, 640)
+    sample_pred = torch.randn(2, 3, 480, 640)
+    sample_target = torch.randn(2, 3, 480, 640)
 
     # Test at different epochs
-    for epoch in [0, 25, 50, 75, 99]:
-        loss_value = loss(pred, target, epoch=epoch)
-        weights = loss.get_current_weights(epoch)
-        print(f"Epoch {epoch:3d}: loss={loss_value:.4f}, weights={weights}")
+    for test_epoch in [0, 25, 50, 75, 99]:
+        sample_loss_value = loss(sample_pred, sample_target, epoch=test_epoch)
+        loss_weights = loss.get_current_weights(test_epoch)
+        print(f"Epoch {test_epoch:3d}: loss={sample_loss_value:.4f}, loss_weights={loss_weights}")
 
     print("\nExample 2: Partial transition (20% - 80%)")
     loss2 = MovingWeightedLoss(
@@ -256,7 +266,7 @@ if __name__ == "__main__":
     )
 
     # Test at different epochs
-    for epoch in [0, 20, 40, 60, 80, 99]:
-        loss_value = loss2(pred, target, epoch=epoch)
-        weights = loss2.get_current_weights(epoch)
-        print(f"Epoch {epoch:3d}: loss={loss_value:.4f}, weights={weights}")
+    for test_epoch in [0, 20, 40, 60, 80, 99]:
+        sample_loss_value = loss2(sample_pred, sample_target, epoch=test_epoch)
+        loss_weights = loss2.get_current_weights(test_epoch)
+        print(f"Epoch {test_epoch:3d}: loss={sample_loss_value:.4f}, weights={loss_weights}")
