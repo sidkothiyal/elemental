@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 _DATETIME_SUFFIX_RE = re.compile(r"_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
 
 
+def _unwrap_compiled(obj: Any) -> Any:
+    """Unwrap a torch.compile OptimizedModule to get the original nn.Module.
+
+    torch.compile wraps the model in an OptimizedModule that registers the
+    original model as a submodule under ``_orig_mod``.  This causes
+    ``state_dict()`` to return keys prefixed with ``_orig_mod.``, which are
+    incompatible with the plain model used at load time.  Unwrapping before
+    save/load keeps checkpoint keys stable regardless of compilation state.
+    """
+    while hasattr(obj, "_orig_mod"):
+        obj = obj._orig_mod
+    return obj
+
+
 def add_state_to_checkpoint(checkpoint: dict[str, Any], obj: Any, obj_type: str) -> None:
     """Add state dict to checkpoint, handling both single objects and dicts.
 
@@ -26,10 +40,12 @@ def add_state_to_checkpoint(checkpoint: dict[str, Any], obj: Any, obj_type: str)
     if obj is None:
         return
 
+    obj = _unwrap_compiled(obj)
+
     state_dict = None
     if isinstance(obj, dict):
         # Handle dict of objects (e.g., GAN with generator/discriminator)
-        state_dict = {key: value.state_dict() for key, value in obj.items()}
+        state_dict = {key: _unwrap_compiled(value).state_dict() for key, value in obj.items()}
     elif hasattr(obj, "state_dict"):
         # Handle single object with state_dict method
         state_dict = obj.state_dict()
@@ -58,6 +74,8 @@ def load_state_from_checkpoint(
     """
     if obj is None:
         return
+
+    obj = _unwrap_compiled(obj)
 
     state_dict_key = f"{obj_type}_state_dict"
     state_dict = checkpoint.get(state_dict_key)
