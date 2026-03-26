@@ -1,4 +1,7 @@
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+# ============================================================================
+# Stage 1: Builder — compile mmcv, flash-attn, and other native extensions
+# ============================================================================
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -10,10 +13,8 @@ RUN rm -rf /var/lib/apt/lists/* \
     && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev \
     git build-essential ninja-build \
-    openssh-server \
     && ln -sf /usr/bin/python3 /usr/bin/python \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /run/sshd
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -41,6 +42,44 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
     --mount=type=bind,source=uv.lock,target=/app/uv.lock \
     --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev --group heavy
+
+# ── Remove CUDA pip packages not needed at runtime ──────────────────────────
+# Keep: cudnn (torch 2.10 needs 9.10.2, base has 9.8.0), cublas (version skew),
+#       nccl (base too old), cusparselt/cuda_cupti (not in base),
+#       cuda_runtime (torch needs it), cuda_nvrtc/nvjitlink (torch.compile needs them).
+# Remove: packages unused by this codebase or redundant with system libs.
+RUN rm -rf \
+    /app/.venv/lib/python*/site-packages/nvidia/cusparse \
+    /app/.venv/lib/python*/site-packages/nvidia/cusolver \
+    /app/.venv/lib/python*/site-packages/nvidia/cufft \
+    /app/.venv/lib/python*/site-packages/nvidia/curand \
+    /app/.venv/lib/python*/site-packages/nvidia/cufile \
+    /app/.venv/lib/python*/site-packages/nvidia/cuda_nvcc
+
+# ============================================================================
+# Stage 2: Runtime — slim image with only what's needed to run
+# ============================================================================
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime + torch.compile deps (gcc, python3-dev for Triton JIT; devel base for CUDA headers)
+RUN rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-full python3-dev \
+    git gcc \
+    libgl1 libglib2.0-0 \
+    openssh-server \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+
+WORKDIR /app
+
+# Copy the pre-built venv from the builder stage
+COPY --from=builder /app/.venv /app/.venv
 
 # Copy pyproject.toml + uv.lock for runtime (uv run needs them)
 COPY pyproject.toml uv.lock ./
