@@ -61,6 +61,7 @@ class MetricsCallback(callback.Callback):
         self.transform_pred = transform_pred
         self.transform_target = transform_target
         self.device: torch.device | None = None
+        self._num_epochs: int | None = None
 
         # Track current epoch per phase to determine if we should compute metrics
         self._current_epoch: dict[str, int] = {}
@@ -95,6 +96,7 @@ class MetricsCallback(callback.Callback):
         Args:
             config: Configuration dict. Expected keys:
                 - device: torch.device to move metrics to
+                - num_epochs: total number of training epochs
         """
         device = config.get("device")
         if device is not None and device != self.device:
@@ -103,11 +105,15 @@ class MetricsCallback(callback.Callback):
                 phase_metrics.to(device)
             logger.info("MetricsCallback moved metrics to device: %s", device)
 
+        num_epochs = config.get("num_epochs")
+        if num_epochs is not None:
+            self._num_epochs = num_epochs
+
     def _should_compute_metrics(self, epoch: int, phase: str) -> bool:
         """Check if metrics should be computed for this epoch and phase.
 
         Args:
-            epoch: Current epoch number.
+            epoch: Current epoch number (0-indexed).
             phase: Current phase (train/val/test).
 
         Returns:
@@ -116,6 +122,9 @@ class MetricsCallback(callback.Callback):
         if phase not in self.phases:
             return False
         interval = self.phases[phase]
+        # Always compute on the last epoch of training
+        if self._num_epochs is not None and epoch == self._num_epochs - 1:
+            return True
         # Compute on epoch 0 and every nth epoch thereafter
         return epoch % interval == 0
 

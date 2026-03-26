@@ -780,7 +780,7 @@ def batch_loop(
 def run_train(
     config_file: str,
     test: bool = False,
-    local_rank: int = -1,
+    local_rank: int = int(os.environ.get("LOCAL_RANK", -1)),
 ) -> None:
     """Run model training, validation, and testing.
 
@@ -1085,9 +1085,10 @@ def run_train(
 
             callbacks.on_phase_end("train")
 
-            # Validation phase (every 2 epochs by default)
+            # Validation phase (every 2 epochs by default, always on last epoch)
             validation_interval = config.get("validation_interval", 2)
-            if epoch % validation_interval == 0:
+            is_last_epoch = epoch == config.num_epochs - 1
+            if epoch % validation_interval == 0 or is_last_epoch:
                 cleanup_memory(
                     model,
                     optim,
