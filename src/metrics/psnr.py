@@ -1,25 +1,31 @@
 """Peak Signal-to-Noise Ratio (PSNR) metric."""
 
+import warnings
+
 import torch
-from torchmetrics import Metric
+
+from metrics.base_metric import BaseMetric
 
 
-class PSNR(Metric):
+class PSNR(BaseMetric):  # pylint: disable=too-few-public-methods
     """Peak Signal-to-Noise Ratio metric for image reconstruction tasks.
 
     PSNR is computed as: 10 * log10(data_range^2 / MSE)
     Higher values indicate better reconstruction quality.
     Typical values for 8-bit images: 20-40 dB.
+
+    Inherits optional extended statistics (min, max, std, median, percentiles,
+    histogram) from :class:`~metrics.base_metric.BaseMetric`.
     """
 
     higher_is_better = True
-    full_state_update = False
 
     def __init__(
         self,
         data_range: float = 1.0,
-        reduction: str = "elementwise_mean",
         eps: float = 1e-8,
+        reduction: str = "elementwise_mean",
+        **kwargs,
     ):
         """Initialize the PSNR metric.
 
@@ -27,26 +33,34 @@ class PSNR(Metric):
             data_range: The data range of the input images (max - min).
                 Default is 1.0 for normalized images [0, 1].
                 Use 255.0 for uint8 images [0, 255].
-            reduction: How to reduce over batch dimension.
-                'elementwise_mean': Return mean PSNR over batch.
-                'sum': Return sum of PSNR over batch.
-                'none': Return PSNR for each sample.
             eps: Small constant to avoid log(0).
+            reduction: Deprecated. Previously controlled batch reduction;
+                now always uses elementwise_mean via the base class.
+            **kwargs: Additional keyword arguments passed to
+                :class:`~metrics.base_metric.BaseMetric` (e.g.
+                ``compute_min``, ``compute_histogram``, ``num_buckets``).
         """
-        super().__init__()
+        super().__init__(**kwargs)
         self.data_range = data_range
-        self.reduction = reduction
         self.eps = eps
 
-        self.add_state("sum_psnr", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("total_samples", default=torch.tensor(0), dist_reduce_fx="sum")
+        if reduction != "elementwise_mean":
+            warnings.warn(
+                "The 'reduction' parameter of PSNR is deprecated and has no effect. "
+                "Per-sample PSNR values are always accumulated and the mean is returned.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
-    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
-        """Update metric state with predictions and targets.
+    def compute_sample_metric(self, preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Compute per-sample PSNR.
 
         Args:
             preds: Predicted tensor of shape (N, C, H, W) or (N, H, W).
             target: Target tensor of same shape as preds.
+
+        Returns:
+            1-D tensor of shape (N,) with per-sample PSNR values in dB.
         """
         if preds.shape != target.shape:
             raise ValueError(
@@ -54,28 +68,12 @@ class PSNR(Metric):
                 f"Got preds: {preds.shape}, target: {target.shape}"
             )
 
-        # Convert to float for computation
         preds = preds.float()
         target = target.float()
 
         batch_size = preds.shape[0]
-
-        # Compute MSE per sample
         preds_flat = preds.reshape(batch_size, -1)
         target_flat = target.reshape(batch_size, -1)
+
         mse = torch.mean((preds_flat - target_flat) ** 2, dim=1)
-
-        # Compute PSNR: 10 * log10(data_range^2 / MSE)
-        # Add eps to avoid log(0) for perfect reconstruction
-        psnr = 10 * torch.log10((self.data_range**2) / (mse + self.eps))
-
-        self.sum_psnr += psnr.sum()
-        self.total_samples += batch_size
-
-    def compute(self) -> torch.Tensor:
-        """Compute the final PSNR value.
-
-        Returns:
-            PSNR value in decibels (dB), averaged over all samples.
-        """
-        return self.sum_psnr / self.total_samples
+        return 10 * torch.log10((self.data_range**2) / (mse + self.eps))

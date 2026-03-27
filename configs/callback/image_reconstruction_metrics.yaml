@@ -5,19 +5,57 @@ _target_: callback.metrics_callback.MetricsCallback
 
 # Metrics to track - define as dict of name -> metric config
 # These will be wrapped in a MetricCollection
+#
+# All metrics inherit from BaseMetric and support optional extended statistics:
+#   compute_min: false        # minimum per-sample value
+#   compute_max: false        # maximum per-sample value
+#   compute_std: false        # standard deviation of per-sample values
+#   compute_median: false     # median per-sample value
+#   compute_percentiles: []   # e.g. [5.0, 95.0] for 5th/95th percentile
+#   compute_histogram: false  # histogram of per-sample value distribution
+#   num_buckets: 50           # target number of histogram buckets
+#   min_bucket_size: 0.0      # merge buckets narrower than this (0 = disabled)
+#
+# When any extended stat is enabled, the metric returns a dict with sub-keys
+# logged as "<phase>/<metric_name>/mean", "<phase>/<metric_name>/min", etc.
+# Histograms are logged as native wandb.Histogram objects.
 metrics:
   mse:
     _target_: metrics.mse.MSE
     data_range: 1.0
     normalize: false
+    # compute_min: false
+    # compute_max: false
+    # compute_std: false
+    # compute_median: false
+    # compute_percentiles: []
+    # compute_histogram: false
+    # num_buckets: 50
+    # min_bucket_size: 0.0
   psnr:
     _target_: metrics.psnr.PSNR
     data_range: 1.0
+    # compute_min: false
+    # compute_max: false
+    # compute_std: false
+    # compute_median: false
+    # compute_percentiles: []
+    # compute_histogram: false
+    # num_buckets: 50
+    # min_bucket_size: 0.0
   ssim:
     _target_: metrics.ssim.SSIM
     data_range: 1.0
     win_size: 11
     win_sigma: 1.5
+    # compute_min: false
+    # compute_max: false
+    # compute_std: false
+    # compute_median: false
+    # compute_percentiles: []
+    # compute_histogram: false
+    # num_buckets: 50
+    # min_bucket_size: 0.0
 
 # Phases to track metrics for with computation frequency
 # Key: phase name (train/val/test)
