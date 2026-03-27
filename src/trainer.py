@@ -11,7 +11,6 @@ import os
 import statistics
 from typing import Callable
 
-import fire
 import hydra
 import hydra.utils as hy_utils
 import torch
@@ -781,6 +780,7 @@ def run_train(
     config_file: str,
     test: bool = False,
     local_rank: int = int(os.environ.get("LOCAL_RANK", -1)),
+    overrides: list[str] | None = None,
 ) -> None:
     """Run model training, validation, and testing.
 
@@ -788,10 +788,11 @@ def run_train(
         config_file: Path to the configuration file
         test: Whether to run only in test mode
         local_rank: Local rank for distributed training (-1 for single GPU)
+        overrides: Hydra override strings (e.g. ["lr=0.001", "num_epochs=100"])
     """
     # Load configuration
     with hydra.initialize(version_base=None, config_path="../configs"):
-        config = hydra.compose(config_name=config_file)
+        config = hydra.compose(config_name=config_file, overrides=overrides or [])
 
     # Set up distributed training if requested
     use_distributed = config.get("distributed", False) and local_rank >= 0
@@ -1159,4 +1160,21 @@ def run_train(
 
 
 if __name__ == "__main__":
-    fire.Fire(run_train)
+    import typer
+
+    def _main(
+        config_file: str = typer.Argument(
+            ..., help="Hydra config name (e.g. experiment/autoencoder/compression_ae)"
+        ),
+        overrides: list[str] = typer.Argument(
+            default=None, help="Hydra overrides (e.g. lr=0.001 num_epochs=500)"
+        ),
+        test: bool = typer.Option(False, help="Run in test-only mode"),
+        local_rank: int = typer.Option(
+            int(os.environ.get("LOCAL_RANK", -1)), help="Local rank for distributed training"
+        ),
+    ) -> None:
+        """Train a model using the specified Hydra config, with optional overrides."""
+        run_train(config_file, test=test, local_rank=local_rank, overrides=overrides or [])
+
+    typer.run(_main)
