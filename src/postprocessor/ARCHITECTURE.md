@@ -42,6 +42,10 @@ Branching:
 
 Calls `model.generate(input_data[:, :prompt_length], max_new_tokens=...)`. Takes first `prompt_length` tokens as seed (default 1).
 
+## DegradationPostProcessor
+
+Iterates `model(pred)` for `num_iterations - 1` additional passes (trainer's forward pass is iteration 1). Returns final degraded tensor. No phase logic — enable only at test time via `+eval=degradation`.
+
 ## RunningTensorStatsPostProcessor
 
 Maintains two `deque(maxlen=window_size)` for means and stds. Each call: computes current `mean/std`, appends, returns `{"running_mean": mean_of_deque, "running_std": mean_of_deque}`. NaN/Inf stds replaced with 0.

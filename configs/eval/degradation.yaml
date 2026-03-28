@@ -1,0 +1,36 @@
+# @package _global_
+# Degradation evaluation: runs model N times and computes metrics on degraded output.
+#
+# Measures reconstruction stability by iteratively re-encoding the model's
+# prediction. The degradation post-processor feeds the output back as input
+# for num_iterations total passes, then degraded_image_reconstruction_metrics computes MSE,
+# PSNR, and SSIM on the final degraded output vs the original target.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/autoencoder/compression_ae \
+#     test=true +eval=degradation
+#
+# Override iteration count:
+#   uv run python src/trainer.py experiment/autoencoder/compression_ae \
+#     test=true +eval=degradation \
+#     postprocessors.steps.degradation.processor.num_iterations=50
+#
+# Note: If the experiment already defines postprocessors, this config will
+# replace them. To chain with existing post-processors, compose both in
+# the experiment config instead.
+
+defaults:
+  - /callback/degraded_image_reconstruction_metrics@callbacks.degraded_image_reconstruction_metrics
+
+postprocessors:
+  _target_: postprocessor.pipeline.PostProcessorPipeline
+  steps:
+    degradation:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.degradation.DegradationPostProcessor
+        num_iterations: 100
+      input_mapping:
+        model: model
+        pred: pred
+      output_key: post_processed/degraded_pred

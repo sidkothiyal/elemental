@@ -62,6 +62,17 @@ Tracks running mean and std over a sliding window of steps. Returns `{"running_m
 
 Computes per-batch mean and std of a tensor.
 
+### `degradation.py` — DegradationPostProcessor
+
+Runs the model N times, feeding each output back as input to measure reconstruction stability under repeated encoding/decoding. Designed for test-time evaluation via `+eval=degradation`.
+
+```yaml
+input_mapping:
+  "model": "model"
+  "pred": "pred"
+output_key: "post_processed/degraded_pred"
+```
+
 ### `tensor_slice.py` — TensorSlicePostProcessor
 
 Slices a tensor along a dimension (e.g., select first few action dimensions).

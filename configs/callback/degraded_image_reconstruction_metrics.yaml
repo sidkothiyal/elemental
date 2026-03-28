@@ -1,0 +1,40 @@
+# Degradation metrics callback configuration
+# Computes image quality metrics on iteratively degraded reconstructions.
+#
+# Expects the degradation post-processor to populate "post_processed/degraded_pred"
+# in the data container. Only runs during the test phase.
+#
+# Usage (standalone):
+#   +callback/degraded_image_reconstruction_metrics@callbacks.degraded_image_reconstruction_metrics=degraded_image_reconstruction_metrics
+#
+# Usage (bundled with post-processor — recommended):
+#   uv run python src/trainer.py experiment/autoencoder/compression_ae test=true +eval=degradation
+
+_target_: callback.metrics_callback.MetricsCallback
+
+metrics:
+  mse:
+    _target_: metrics.mse.MSE
+    data_range: 1.0
+    normalize: false
+  psnr:
+    _target_: metrics.psnr.PSNR
+    data_range: 1.0
+  ssim:
+    _target_: metrics.ssim.SSIM
+    data_range: 1.0
+    win_size: 11
+    win_sigma: 1.5
+
+# Only compute during test phase
+phases:
+  test: 1
+
+log_per_batch: false
+
+# Read degraded output from post-processor
+pred_key: post_processed/degraded_pred
+target_key: target
+
+transform_pred: null
+transform_target: null
