@@ -1,8 +1,10 @@
 """WandB artifact-based remote backup strategy."""
 
+import glob
 import logging
 import os
 import re
+import shutil
 
 from utils.remote_backup.base import RemoteBackupStrategy
 from utils.wandb_utils import WANDB_RUN_ID_FILENAME, download_artifact, upload_artifact
@@ -53,6 +55,49 @@ class WandbBackupStrategy(RemoteBackupStrategy):
             artifact_type="checkpoint",
             path=local_path,
         )
+        self._cleanup_artifact_cache()
+
+    @staticmethod
+    def _cleanup_artifact_cache() -> None:
+        """Clear wandb artifact staging and local cache after upload.
+
+        Wandb accumulates large files in two locations during artifact uploads:
+          - staging dir: files buffered before upload completes
+          - md5 cache:   content-addressed cache of downloaded/uploaded files
+
+        Both are safe to remove after the upload finishes; wandb will
+        re-download artifacts on demand if they are needed again.
+        """
+        # Clear staging directory (files buffered mid-upload)
+        wandb_data_dir = os.environ.get(
+            "WANDB_DATA_DIR",
+            os.path.join(os.path.expanduser("~"), ".local", "share", "wandb"),
+        )
+        staging_dir = os.path.join(wandb_data_dir, "artifacts", "staging")
+        if os.path.isdir(staging_dir):
+            for entry in glob.glob(os.path.join(staging_dir, "*")):
+                try:
+                    if os.path.isdir(entry):
+                        shutil.rmtree(entry)
+                    else:
+                        os.remove(entry)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.debug("Could not remove staging entry %s", entry, exc_info=True)
+            logger.info("Cleared wandb artifact staging dir: %s", staging_dir)
+
+        # Clear md5 object cache
+        wandb_cache_dir = os.environ.get(
+            "WANDB_CACHE_DIR",
+            os.path.join(os.path.expanduser("~"), ".cache", "wandb"),
+        )
+        md5_cache_dir = os.path.join(wandb_cache_dir, "artifacts", "obj", "md5")
+        if os.path.isdir(md5_cache_dir):
+            try:
+                shutil.rmtree(md5_cache_dir)
+                os.makedirs(md5_cache_dir, exist_ok=True)
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.debug("Could not clear md5 cache dir %s", md5_cache_dir, exc_info=True)
+            logger.info("Cleared wandb artifact md5 cache: %s", md5_cache_dir)
 
     # ------------------------------------------------------------------
     # Download
