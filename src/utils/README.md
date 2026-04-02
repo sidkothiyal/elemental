@@ -37,6 +37,52 @@ Thin wrappers around PyTorch DDP:
 - `get_distributed_dataloader(dataloader, rank, world_size)` — creates `DistributedSampler`
 - `is_main_process()` — True if rank 0 or not distributed
 
+### `s3_cache_backend.py` — S3 Remote Cache for torch.compile
+
+PyTorch's OSS inductor remote cache only supports Redis. This module provides S3-compatible alternatives for all five torch.compile cache artifacts.
+
+#### The five torch.compile cache artifacts
+
+When `torch.compile` runs, it produces five distinct cache artifacts across its compilation pipeline. Understanding their size and regeneration cost determines which ones are worth caching on a slow remote store (R2, cross-region S3):
+
+| Cache | Size | Regen cost | Remote ROI | Default |
+|---|---|---|---|---|
+| **AutotuningCache** | KB–low MB | 30–300s+ (GPU benchmark per kernel config) | **Best** — tiny to transfer, very expensive to regen | ✓ enabled |
+| **FXGraphCache** | 1–50 MB | 5–40s (Inductor optimization passes + codegen) | **Good** — skips all of Inductor on hit | ✓ enabled |
+| **AOTAutogradCache** | 1–20 MB | 2–30s (autograd tracing + min-cut partition) | **Good** — training only; works together with FXGraphCache | ✓ enabled |
+| **PGO cache** | KB | negligible | Nice-to-have — reduces recompilation count | ✗ disabled |
+| **TritonCache / cubins** | 50 MB–4+ GB | 10–120s+ (Triton → PTX → cubin pipeline) | **Risky** on slow networks — transfer may be slower than regen | ✗ disabled |
+
+**Note on Triton cubins:** PyTorch OSS bundles cubin files directly into FXGraphCache entries via `bundle_triton_into_fx_graph_cache` (enabled by default). So an FXGraphCache remote hit implicitly restores the cubins too — meaning you don't need the standalone Triton remote cache in most cases.
+
+#### Classes
+
+- `S3RemoteCacheBackend` — implements PyTorch inductor's `RemoteCacheBackend[bytes]` interface using boto3. Used for FXGraphCache, AutotuningCache, AOTAutogradCache, and PGO cache.
+- `TritonS3RemoteCacheBackend` — implements Triton's separate `RemoteCacheBackend` interface (different API: `get(filenames) -> dict`, `put(filename, data)`). Used only for the standalone Triton cubin cache.
+- `install_s3_cache_backend(fx_graph, autotune, aot_autograd, pgo, triton)` — patches inductor `RemoteCache` subclasses via `backend_override_cls` before `torch.compile` is called. Defaults enable the first three (best ROI), disable PGO and Triton.
+
+#### Configuration
+
+Two independent conditions must both be true:
+
+1. **S3 backend enabled** — set `TORCH_COMPILE_S3_REMOTE_CACHE=1` (env var, takes precedence) **or** `torch_compile.remote_cache.enabled: true` (config). Either suffices.
+2. **Inductor feature flags** — always required as env vars: `TORCHINDUCTOR_FX_GRAPH_REMOTE_CACHE=1`, `TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE=1`, `TORCHINDUCTOR_BUNDLED_AUTOTUNE_REMOTE_CACHE=1`.
+
+Per-cache flags (only take effect when the S3 backend is enabled):
+
+```yaml
+torch_compile:
+  remote_cache:
+    enabled: false  # override with TORCH_COMPILE_S3_REMOTE_CACHE=1
+    fx_graph: true       # default on
+    autotune: true       # default on
+    aot_autograd: true   # default on
+    pgo: false           # default off
+    triton: false        # default off (separate env var mechanism)
+```
+
+See `ENVIRONMENT_SETUP.md` and `beam.yaml` for the full env var list.
+
 ### `torch_np_utils.py` — Tensor/NumPy Conversions
 
 `to_numpy(tensor)` — moves to CPU, detaches, converts to numpy. Handles all dtypes including bfloat16 (cast to float32 first).

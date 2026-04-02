@@ -28,8 +28,41 @@ CPU/MPS fallback: `stream=None`, acts as a plain passthrough iterator.
 ## compile_model_and_optimizer_step
 
 When `torch_compile` config present with `enabled: true`:
+- Installs `S3RemoteCacheBackend` if `remote_cache.enabled: true` OR `TORCH_COMPILE_S3_REMOTE_CACHE=1` (must happen before `torch.compile`)
 - Wraps model with `torch.compile(model, **compile_kwargs)`
 - Optionally compiles `optimizer.step` if `compile_optimizer_step: true`
+
+## S3RemoteCacheBackend (s3_cache_backend.py)
+
+PyTorch's OSS inductor remote cache only supports Redis. This module provides S3-compatible backends for all five torch.compile cache artifacts.
+
+### Two cache systems, two backend classes
+
+**Inductor caches** (`S3RemoteCacheBackend`): FXGraphCache, AutotuningCache, AOTAutogradCache, PGO cache all share PyTorch's `RemoteCacheBackend[bytes]` interface. `install_s3_cache_backend()` patches `backend_override_cls` on the relevant `RemoteCache` subclasses. The `backend_override_cls` hook is PyTorch's built-in test/override mechanism — `RemoteCache.__init__` checks it and uses the override factory instead of constructing a Redis backend.
+
+**Triton cache** (`TritonS3RemoteCacheBackend`): Triton has a completely separate cache system in `triton.runtime.cache`. Its `RemoteCacheBackend` uses a different interface (`get(filenames) -> Dict[str, bytes]`, `put(filename, data)`). Activated by setting `TRITON_CACHE_MANAGER=triton.runtime.cache.RemoteCacheManager` and `TRITON_REMOTE_CACHE_BACKEND=utils.s3_cache_backend.TritonS3RemoteCacheBackend`.
+
+### Default cache selection
+
+Only the three highest-ROI caches are enabled by default for slow/high-latency stores:
+
+```
+AutotuningCache   KB–low MB  best ROI: tiny + very expensive to regen (GPU benchmarks)
+FXGraphCache      1–50 MB    good ROI: skips all Inductor passes on hit
+AOTAutogradCache  1–20 MB    good ROI: training only
+PGO cache         KB         disabled: low time savings
+TritonCache/cubin 50MB–4GB+  disabled: transfer may exceed regen time on slow networks
+                              (cubins are bundled into FXGraphCache entries anyway)
+```
+
+`install_s3_cache_backend(fx_graph, autotune, aot_autograd, pgo, triton)` accepts per-cache flags so experiment configs can opt into PGO or Triton caching explicitly.
+
+### Activation — two independent conditions
+
+Both must be true for remote caching to work:
+
+1. **S3 backend enabled** — `TORCH_COMPILE_S3_REMOTE_CACHE=1` (env var) **or** `torch_compile.remote_cache.enabled: true` (config). OR-ed in `initializer.py` so remote machines can activate it without changing config files.
+2. **Inductor feature flags** — `TORCHINDUCTOR_FX_GRAPH_REMOTE_CACHE=1`, `TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE=1`, `TORCHINDUCTOR_BUNDLED_AUTOTUNE_REMOTE_CACHE=1`. Tell inductor to call a remote backend at all; without these the S3 backend is installed but never invoked.
 
 ## Checkpoint (checkpoint.py)
 

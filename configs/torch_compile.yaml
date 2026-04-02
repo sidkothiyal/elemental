@@ -6,4 +6,32 @@ torch_compile:
   backend: "inductor"  # Options: "inductor", "cudagraphs", "eager", "aot_eager", etc.
   fullgraph: false  # Whether to require full graph compilation (stricter but faster)
   dynamic: null  # null = auto, true = dynamic shapes, false = static shapes
-  compile_optimizer_step: true  # Whether to compile optimizer.step()
+  compile_optimizer_step: false  # Whether to compile optimizer.step()
+  # NOTE: two guards that cause per-epoch retracing, and how they are fixed automatically:
+  #   1. Step counter guard: AdamW/Adam with capturable=False stores the step as a Python int;
+  #      torch.compile specialises on it → retrace at steps 0, 400, 800, … (once per epoch).
+  #      Fix: set capturable: true in optimizer_params.
+  #   2. LR guard: any LR scheduler writes a new Python float into param_groups['lr'] each step.
+  #      torch.compile guards on this value → retrace on every scheduler tick.
+  #      Fix (applied automatically): compile_model_and_optimizer_step() converts each
+  #      param_group['lr'] from float → torch.Tensor before compilation. PyTorch 2.2+ schedulers
+  #      detect an existing tensor and call fill_() (in-place update) instead of assignment, so
+  #      the same tensor object persists across all scheduler steps — no new guard, no retrace.
+  remote_cache:
+    # Two things must both be true for remote caching to work:
+    #   1. S3 backend enabled — either set enabled: true here OR set TORCH_COMPILE_S3_REMOTE_CACHE=1
+    #      (the env var lets you activate it without changing config files, e.g. on remote machines)
+    #   2. TORCHINDUCTOR_*_REMOTE_CACHE=1 env vars — tells inductor to attempt remote caching at all
+    # Either condition alone does nothing: env vars without the S3 backend → inductor tries Redis
+    # and fails; S3 backend without env vars → backend is installed but never called by inductor.
+    enabled: false  # override with TORCH_COMPILE_S3_REMOTE_CACHE=1
+    backend: "s3"   # Only "s3" is supported currently
+    # Per-cache flags — only take effect when enabled: true
+    # Defaults reflect remote-cache ROI on slow/high-latency object stores (R2, S3)
+    fx_graph: true      # FXGraphCache     — 1–50 MB, skips Inductor codegen
+    autotune: true      # AutotuningCache  — KB–low MB, best ROI (very expensive to regen)
+    aot_autograd: true  # AOTAutogradCache — 1–20 MB, training only; needs fx_graph: true too
+    pgo: false          # PGO cache        — KB, low priority; nice-to-have
+    triton: false       # TritonCache/cubins — 50 MB–4+ GB; risky on slow networks
+                        # (cubins are bundled into FXGraph entries anyway via
+                        #  bundle_triton_into_fx_graph_cache, so fx_graph: true is usually enough)

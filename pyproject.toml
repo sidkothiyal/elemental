@@ -33,6 +33,15 @@ dependencies = [
   "tqdm (>=4.66.5, <5)",
   "transformers (>=4.57)",
   "wandb (>=0.19.7, <0.20.0)",
+  # Remote dataset loading (Approach 1: remote files, Approach 2: dataset server)
+  "fsspec",
+  "pyzmq",
+  "sshfs",
+  "boto3",
+  "s3fs",
+  "aiohttp",
+  "zstandard",
+  "typer>=0.24.1",
 ]
 
 [tool.uv]

@@ -1,6 +1,7 @@
 """Utility functions for initializing the experiment."""
 
 import logging
+import os
 import random
 from typing import Any
 
@@ -13,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from utils import checkpoint, distributed  # pylint: disable=no-name-in-module
 from utils.remote_backup.base import RemoteBackupStrategy  # pylint: disable=no-name-in-module
+from utils.s3_cache_backend import install_s3_cache_backend
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +261,62 @@ def get_num_parameters(model: nn.Module) -> tuple[int, int, int]:
     return num_parameters, num_trainable_parameters, num_non_trainable_parameters
 
 
+def _warn_if_capturable_false(
+    optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
+) -> None:
+    """Warn when compiling an optimizer whose step counter is a Python integer.
+
+    AdamW, Adam, and similar optimizers support a ``capturable`` param-group
+    flag. When ``capturable=False`` (the default), the step counter is stored as
+    a Python integer. ``torch.compile`` specialises compiled graphs on Python
+    scalar values, so every distinct step count (0, 400, 800, …) that hasn't
+    been compiled yet triggers a retrace — typically once per epoch at batch 0.
+    Setting ``capturable=True`` moves the step counter to a CUDA tensor, making
+    the compiled graph invariant to the step count and eliminating per-epoch
+    recompilation.
+    """
+    opts = list(optimizer.values()) if isinstance(optimizer, dict) else [optimizer]
+    for opt in opts:
+        if not opt.param_groups:
+            continue
+        pg = opt.param_groups[0]
+        if "capturable" in pg and not pg["capturable"]:
+            logger.warning(
+                "compile_optimizer_step=True but %s has capturable=False. "
+                "torch.compile specialises on the Python-integer step counter, "
+                "causing a retrace (and S3 cache lookup) on the first batch of "
+                "every epoch. Set capturable=True in optimizer_params to fix this.",
+                type(opt).__name__,
+            )
+
+
+def _tensorize_optimizer_lr(
+    optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
+) -> None:
+    """Convert each param_group's ``lr`` from a Python float to a 0-dim ``torch.Tensor``.
+
+    This is required when compiling ``optimizer.step`` with ``torch.compile``.  Dynamo guards on
+    Python scalars, so any LR scheduler that writes a new float into ``param_groups['lr']`` each
+    step (e.g. ``CosineAnnealingLR``, ``StepLR``) would cause a guard failure and retrace on every
+    scheduler tick.
+
+    Converting to a tensor makes Dynamo treat the LR as a graph input rather than a specialization
+    constant.  PyTorch 2.2+ schedulers use ``_update_param_group_val``, which detects an existing
+    tensor and calls ``fill_()`` (in-place update) instead of assignment, so the same tensor object
+    persists across all scheduler steps — no new guard, no retrace.
+
+    Must be called before ``torch.compile(optimizer.step, ...)`` because the compiled graph is
+    built from the initial trace; if the LR is a float at trace time it will be baked in as a
+    constant.
+    """
+    opts = list(optimizer.values()) if isinstance(optimizer, dict) else [optimizer]
+    for opt in opts:
+        for pg in opt.param_groups:
+            if not isinstance(pg["lr"], torch.Tensor):
+                pg["lr"] = torch.tensor(pg["lr"], dtype=torch.float32)
+    logger.info("Converted optimizer param_group lr values to tensors for torch.compile")
+
+
 def compile_model_and_optimizer_step(
     model: nn.Module,
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
@@ -296,6 +354,23 @@ def compile_model_and_optimizer_step(
         logger.info("torch.compile is disabled")
         return model
 
+    # Install S3 remote cache backend if configured (must happen before torch.compile).
+    # Enabled when config says enabled: true OR when TORCH_COMPILE_S3_REMOTE_CACHE=1 is set.
+    # Either way, TORCHINDUCTOR_*_REMOTE_CACHE=1 env vars must also be set for inductor
+    # to actually call the backend (see configs/torch_compile.yaml for details).
+    remote_cache_config = compile_config.get("remote_cache", None) or {}
+    remote_cache_enabled = remote_cache_config.get("enabled", False) or (
+        os.environ.get("TORCH_COMPILE_S3_REMOTE_CACHE", "0") == "1"
+    )
+    if remote_cache_enabled:
+        install_s3_cache_backend(
+            fx_graph=remote_cache_config.get("fx_graph", True),
+            autotune=remote_cache_config.get("autotune", True),
+            aot_autograd=remote_cache_config.get("aot_autograd", True),
+            pgo=remote_cache_config.get("pgo", False),
+            triton=remote_cache_config.get("triton", False),
+        )
+
     # Extract compile options
     mode = compile_config.get("mode", "default")
     backend = compile_config.get("backend", "inductor")
@@ -328,6 +403,8 @@ def compile_model_and_optimizer_step(
     # model forward and compiled optimizer step conflict, causing
     # "accessing tensor output of CUDAGraphs that has been overwritten" errors.
     if compile_optim_step and optimizer is not None and mode != "reduce-overhead":
+        _warn_if_capturable_false(optimizer)
+        _tensorize_optimizer_lr(optimizer)
         logger.info(
             "Compiling optimizer.step with torch.compile (mode=%s, backend=%s)", mode, backend
         )

@@ -257,9 +257,9 @@ def cleanup_memory(
     """
     if isinstance(optim, dict):
         for opt in optim.values():
-            opt.zero_grad(set_to_none=True)
+            opt.zero_grad(set_to_none=False)
     else:
-        optim.zero_grad(set_to_none=True)
+        optim.zero_grad(set_to_none=False)
 
     clear_module_losses(model)
 
@@ -552,7 +552,9 @@ def batch_loop_gan(
             if scheduler and scheduler_step_per == "batch":
                 for sched in scheduler.values():
                     sched.step()
-                    callbacks.on_lr_update(epoch, float(statistics.mean(sched.get_lr())))
+                    callbacks.on_lr_update(
+                        epoch, float(statistics.mean([float(v) for v in sched.get_lr()]))
+                    )
 
         gen_loss_detached = gen_loss.detach()
         _accumulate_loss(running_loss_gpu, "generator", gen_loss_detached)
@@ -732,12 +734,14 @@ def batch_loop(
                         scaler.update()
                     else:
                         optim.step()
-                    optim.zero_grad()
+                    optim.zero_grad(set_to_none=False)
 
                 # Per-batch scheduler stepping
                 if scheduler and scheduler_step_per == "batch":
                     scheduler.step()
-                    callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
+                    callbacks.on_lr_update(
+                        epoch, float(statistics.mean([float(v) for v in scheduler.get_lr()]))
+                    )
 
         # Accumulate total loss on GPU (no .item() sync)
         batch_loss_detached = batch_loss.detach()
@@ -1068,11 +1072,15 @@ def run_train(
                     for key in scheduler:
                         scheduler[key].step()
                         callbacks.on_lr_update(
-                            epoch, float(statistics.mean(scheduler[key].get_lr())), key
+                            epoch,
+                            float(statistics.mean([float(v) for v in scheduler[key].get_lr()])),
+                            key,
                         )
                 else:
                     scheduler.step()
-                    callbacks.on_lr_update(epoch, float(statistics.mean(scheduler.get_lr())))
+                    callbacks.on_lr_update(
+                        epoch, float(statistics.mean([float(v) for v in scheduler.get_lr()]))
+                    )
             elif scheduler is None:
                 if isinstance(optim, dict):
                     for key, o in optim.items():
