@@ -3,7 +3,7 @@
 # simple_autoencoder, but wrapped in VQVAE with a vector-quantization bottleneck.
 # The codebook_dim must match the encoder output channels (256).
 model:
-  _target_: model.vq_vae.VQVAE
+  _target_: model.autoencoder.VQVAE
   codebook_size: 1024
   codebook_dim: 256   # must match encoder output channels
 

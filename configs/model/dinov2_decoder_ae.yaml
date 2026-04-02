@@ -13,7 +13,7 @@
 # Decoder:  4× bilinear-upsample + conv stages (14× total, matching patch_size),
 #           followed by a conv to RGB.
 model:
-  _target_: model.hf_vision.HFVisionEncoderDecoder
+  _target_: model.autoencoder.HFVisionAutoencoder
   patch_size: 14  # DINOv2 ViT-S/14 — patch grid is H//14 × W//14
 
   encoder:

@@ -1,0 +1,88 @@
+# @package _global_
+# DINOv3 ViT-H+/16 encoder (frozen) + ViT-based decoder autoencoder.
+#
+# Encoder:  facebook/dinov3-vith16plus-pretrain-lvd1689m  (patch_size=16, embed_dim=1280)
+#   32 layers, 16 heads, 1280 dim — frozen feature extractor.  ~632 M params.
+#
+# Decoder:  SpatialToTokens → ViT (token mode, 32 layers) → Unpatcher
+#   Matches the encoder capacity: 32 transformer layers with the same hidden
+#   dimension, heads, and feed-forward width.  Followed by convolutional
+#   refinement layers to eliminate patch-boundary blockiness.
+#
+# Total trainable decoder params: ~632 M.  Gradient checkpointing is mandatory.
+#
+# Positional embeddings: Learnable2DPositionalEmbedding with 14×14 base grid.
+# The decoder is trained from scratch so the base grid just sets the init size.
+model:
+  _target_: model.autoencoder.HFVisionAutoencoder
+  patch_size: 16
+  spatial_merge_size: 1
+
+  encoder:
+    _target_: model.hf_vision.HFVisionEncoder
+    model_name: "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+    return_layers: null
+    torch_dtype: "bfloat16"
+    attn_implementation: "sdpa"
+    device_map: "auto"
+    freeze_model: true
+    interpolate_pos_encoding: true
+    processor_kwargs:
+      do_resize: false
+      do_center_crop: false
+
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.nn_modules.SpatialToTokens
+      - _target_: model.vit.ViT
+        embed_dim: 1280
+        num_transformer_layers: 32
+        attn_heads: 16
+        ff_embed_dim: 5120
+        num_tokens: 196
+        pos_embedding:
+          _target_: model.positional_embeddings.Learnable2DPositionalEmbedding
+          grid_size: [14, 14]
+          embed_dim: 1280
+        dropout: 0.0
+        attention_dropout: 0.0
+        bias: false
+        checkpoint_transformer_layers: "all"
+      - _target_: model.patcher_unpatcher.Unpatcher
+        image_size: [40, 224, 224]
+        patch_size: [16, 16]
+        embed_dim: 1280
+        decoder_projection_dim: 40
+        conv_decoder:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: torch.nn.Conv2d
+              in_channels: 40
+              out_channels: 128
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 128
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 128
+              out_channels: 96
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 96
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 96
+              out_channels: 64
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 64
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 64
+              out_channels: 3
+              kernel_size: 3
+              padding: 1

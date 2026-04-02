@@ -16,20 +16,22 @@ Transformer(embed_dim=512, num_heads=8, num_layers=6, ff_embed_dim=2048, dropout
 
 ### `vit.py` — Vision Transformer (ViT)
 
-Patch-based image classifier/encoder. Rearranges image into patches, projects to embeddings, applies Transformer.
+Composable transformer block with two modes:
 
+**Patch mode** (image → tokens → transformer): rearranges image into patches, projects to embeddings, applies Transformer.
 ```python
 ViT(image_size=(3,224,224), patch_size=(16,16), embed_dim=768,
     num_transformer_layers=12, attn_heads=12, num_classes=1000)
 ```
 
-For feature extraction (no classification head): set `num_classes=None`.
+**Token mode** (pre-tokenised input → transformer): accepts `[B, N, D]` directly. Positional embeddings are injected via the `pos_embedding` arg (any `nn.Module` from `positional_embeddings.py`).
+```python
+ViT(embed_dim=384, num_transformer_layers=8, attn_heads=6,
+    ff_embed_dim=1536, num_tokens=196,
+    pos_embedding=Learnable2DPositionalEmbedding(grid_size=(14,14), embed_dim=384))
+```
 
-### `vit_decoder.py` — ViT Decoder
-
-Reconstructs images from spatial patch features produced by a frozen ViT encoder. Uses transformer self-attention + learned positional embeddings + convolutional refinement.
-
-Designed to pair with `HFVisionEncoder` inside `HFVisionEncoderDecoder` (which reshapes token sequences to spatial feature maps).
+For feature extraction (no classification head): set `num_classes=None`. Token mode + `Unpatcher` replaces the old `ViTDecoder`.
 
 ### `unet.py` — U-Net
 
@@ -74,18 +76,29 @@ AutoregressiveLM(encoder=Transformer(...), token_embedding=..., positional_embed
 
 Use with `ShiftedTeacherForcing` loss and `GeneratePostProcessor` for text generation at evaluation.
 
-### `vq_vae.py` — Vector Quantized VAE
+### `autoencoder.py` — Autoencoder Class Hierarchy
 
-Discrete latent space autoencoder.
+Base `Autoencoder` class with `encode -> bottleneck -> decode` pipeline, plus concrete subclasses:
 
-- `Quantizer` module: EMA or gradient-based codebook updates, codebook revival for dead codes, smart initialization from first batches, diversity loss
-- `VQVAE` (full model) = encoder + quantizer + decoder
+- **`Autoencoder`** — Base class. Stores encoder/decoder, exposes `losses` and `loss_args` properties for trainer integration.
+- **`ConditionalAutoencoder`** — Encoder-decoder where both receive timestep `t` and auxiliary features `aux_features`.
+- **`VQVAE`** — Vector-quantised bottleneck. Quantiser uses EMA codebook updates, codebook revival, smart initialisation, and diversity loss. Quantiser losses are collected automatically by `collect_module_losses()` in the trainer.
+- **`HFVisionAutoencoder`** — Frozen HuggingFace ViT encoder + custom decoder. Drops CLS/register tokens and reshapes to spatial feature map before decoding.
 
-Quantizer exposes `losses` dict (commitment + dictionary + diversity losses) which are collected by `collect_module_losses()` in the trainer automatically.
+```python
+Autoencoder(encoder=..., decoder=...)
+ConditionalAutoencoder(encoder=..., decoder=...)
+VQVAE(encoder=..., codebook_size=1024, codebook_dim=256, decoder=...)
+HFVisionAutoencoder(encoder=HFVisionEncoder(...), decoder=..., patch_size=16)
+```
+
+### `quantizer.py` — Vector Quantiser
+
+Standalone `Quantizer` module with EMA or gradient-based codebook updates, codebook revival for dead codes, smart initialisation from first batches, and diversity loss. Used by `VQVAE` in `autoencoder.py`.
 
 ### `masked_autoencoder.py` — Masked Autoencoder (MAE)
 
-Randomly masks image patches during training; reconstructs them using an asymmetric encoder-decoder.
+Randomly masks image patches during training; reconstructs them using an asymmetric encoder-decoder. Inherits from `Autoencoder` and uses `Patcher`/`Unpatcher` for patch handling.
 
 ```python
 MaskedAutoencoder(dropout_percentage=0.75, image_size=(3,224,224), patch_size=(16,16),
@@ -94,14 +107,14 @@ MaskedAutoencoder(dropout_percentage=0.75, image_size=(3,224,224), patch_size=(1
 
 ### `hf_vision.py` — HuggingFace Vision Encoder
 
-Wraps any HuggingFace image encoder (DINOv2, SAM, etc.) for feature extraction.
+Wraps any HuggingFace image encoder (DINOv2, DINOv3, SAM, Qwen3-VL, etc.) for feature extraction. Auto-detects 4D `[B, C, H, W]` tensor batches for efficient processing.
 
 ```python
 HFVisionEncoder(model_name="facebook/dinov2-base", freeze_model=True,
                 return_layers=[-2, -1])  # return intermediate hidden states
 ```
 
-When `return_layers` is set, returns a dict of hidden states. Optionally reshapes flat token sequences to spatial feature maps.
+When `return_layers` is set, returns a dict of hidden states. `extract_layer` supports any named model output attribute (e.g. `"pooler_output"`) or an integer for intermediate hidden states. `processor_output_filter` and `processor_to_model_key_map` handle VLM vision submodules where processor output keys differ from the model forward signature.
 
 ### `hf_llm.py` — HuggingFace VLM
 
@@ -111,9 +124,20 @@ Wraps vision-language models (e.g., Qwen3-VL) for hidden-state feature extractio
 HFVLM(model_name="Qwen/Qwen3-VL-2B-Thinking", freeze_model=True)
 ```
 
+### `positional_embeddings.py` — Positional Embeddings
+
+Additive learnable positional embeddings for token sequences. Injected into `ViT` and `Patcher` via Hydra configs.
+
+```python
+LearnablePositionalEmbedding(num_tokens=196, embed_dim=768)
+Learnable2DPositionalEmbedding(grid_size=(14, 14), embed_dim=768)  # bicubic interpolation
+```
+
+`Learnable2DPositionalEmbedding` stores embeddings as a 2-D grid and bicubic-interpolates when the input sequence length differs from the base grid — useful for variable-resolution inputs.
+
 ### `patcher_unpatcher.py` — Patcher / Unpatcher
 
-Converts images to patch token sequences and back. Supports overlapping patches for context.
+Converts images to patch token sequences and back. Supports overlapping patches for context. Accepts an optional `pos_embedding` module (defaults to `LearnablePositionalEmbedding`). `Patcher` supports `indices_to_keep` for masked autoencoder workflows.
 
 ```python
 Patcher(image_size=(3,224,224), patch_size=(16,16), embed_dim=768, overlap=4)
@@ -137,13 +161,11 @@ Use cases: VLA (VLM backbone → diffusion head), multi-task (encoder → multip
 
 Combines two tensor streams. `DiffusionCombiner` handles time-step modulation (feature-wise scaling via FiLM, or addition) and auxiliary feature injection.
 
-### `conditional_autoencoder.py` — Conditional Autoencoder
-
-Simple encoder-decoder where both receive time `t` and auxiliary features `aux_features`.
-
 ### `nn_modules.py` — NN Utility Modules
 
-`Unsqueeze`, `Add`, `Concat`, `Flatten`, `Permute`, `Mean`, `Squeeze` — simple wrappers for use in `nn.Sequential` or Hydra-instantiated pipelines.
+`Unsqueeze`, `Add`, `Concat`, `Flatten`, `Permute`, `Mean`, `Squeeze`, `SpatialToTokens` — simple wrappers for use in `nn.Sequential` or Hydra-instantiated pipelines. `SpatialToTokens` converts `[B, D, h, w]` spatial feature maps to `[B, h*w, D]` token sequences.
+
+**Design principle**: prefer composing existing atomic modules (ViT, Patcher, Unpatcher, Transformer, utility modules) via `nn.Sequential` or `MultiInputSequential` in configs rather than creating new wrapper classes. Only add a new module when it cannot be composed from existing pieces or when doing so would be very messy.
 
 ### `flash_attention.py` — Flash Attention
 

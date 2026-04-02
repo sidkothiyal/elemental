@@ -28,6 +28,10 @@ class HFVisionEncoder(nn.Module):
         freeze_model: bool = True,
         processor_kwargs: dict | None = None,
         interpolate_pos_encoding: bool = False,
+        extract_layer: int | str | None = None,
+        model_submodule: str | None = None,
+        processor_output_filter: list[str] | None = None,
+        processor_to_model_key_map: dict[str, str] | None = None,
     ) -> None:
         """Initialize the HuggingFace Vision Encoder wrapper.
 
@@ -46,6 +50,24 @@ class HFVisionEncoder(nn.Module):
                 the original image resolution).
             interpolate_pos_encoding: When True, passes ``interpolate_pos_encoding=True``
                 to the model forward to support variable / non-224 input resolutions.
+            extract_layer: Controls which representation is returned from the encoder.
+                ``None`` (default) → ``last_hidden_state``. A ``str`` (e.g.
+                ``"pooler_output"``, ``"last_hidden_state"``) → the named attribute from
+                the model output via ``getattr(outputs, extract_layer)``. An ``int``
+                (e.g. ``-1``, ``5``) → the hidden state at that transformer block index
+                via ``output_hidden_states=True``.
+            model_submodule: Dotted attribute path to extract from the loaded model, e.g.
+                ``"model.visual"`` for Qwen3-VL. When set, only that submodule is kept,
+                which avoids instantiating or running the rest of the model (e.g. the LLM
+                decoder) and saves VRAM.
+            processor_output_filter: If set, only these keys from the processor output are
+                passed to the model forward call. Useful when a processor returns extra
+                fields (e.g. ``input_ids``) that the vision submodule doesn't accept.
+                Example: ``["pixel_values", "image_grid_thw"]`` for Qwen3-VL.
+            processor_to_model_key_map: Rename processor output keys before passing to the model.
+                Example: ``{"pixel_values": "hidden_states", "image_grid_thw": "grid_thw"}``
+                for Qwen3-VL's vision submodule whose forward signature differs from the
+                full model.
         """
         super().__init__()
         self.model_name = model_name
@@ -53,6 +75,9 @@ class HFVisionEncoder(nn.Module):
         self.freeze_model = freeze_model
         self.processor_kwargs: dict = processor_kwargs or {}
         self.interpolate_pos_encoding = interpolate_pos_encoding
+        self.extract_layer = extract_layer
+        self.processor_output_filter = processor_output_filter
+        self.processor_to_model_key_map: dict[str, str] = processor_to_model_key_map or {}
 
         # Load vision processor and model directly
         self.processor = AutoImageProcessor.from_pretrained(
@@ -65,6 +90,19 @@ class HFVisionEncoder(nn.Module):
             device_map=device_map,
             trust_remote_code=trust_remote_code,
         )
+
+        # Optionally extract a specific submodule (e.g. vision tower of a VLM)
+        if model_submodule:
+            submod = self.model
+            for attr in model_submodule.split("."):
+                if not hasattr(submod, attr):
+                    available = [a for a in dir(submod) if not a.startswith("_")]
+                    raise AttributeError(
+                        f"model_submodule='{model_submodule}': attribute '{attr}' not found "
+                        f"on {type(submod).__name__}. Available: {available[:20]}"
+                    )
+                submod = getattr(submod, attr)
+            self.model = submod
 
         # Freeze model parameters if it's acting as a backbone encoder
         if self.freeze_model:
@@ -85,12 +123,17 @@ class HFVisionEncoder(nn.Module):
     def _load_image(self, image: str | Image.Image | torch.Tensor) -> Image.Image:
         """Load image into PIL format handled by the processor."""
         if isinstance(image, torch.Tensor):
-            # Convert tensor to PIL Image
+            # Handle 2-D grayscale tensors
+            if image.dim() == 2:
+                image = image.unsqueeze(0)  # (H, W) → (1, H, W)
             if image.dim() == 3:
                 if image.shape[0] in (1, 3, 4):  # (C, H, W)
                     image = image.permute(1, 2, 0)
-                # Now (H, W, C)
-                if image.dtype in (torch.float32, torch.float16, torch.bfloat16):
+                # Now (H, W, C) — strip alpha if 4-channel
+                if image.shape[-1] == 4:
+                    image = image[..., :3]
+                # Scale float tensors to [0, 255]
+                if image.is_floating_point():
                     if image.max() <= 1.0:
                         image = (image * 255).clamp(0, 255)
                     image = image.to(torch.uint8)
@@ -98,7 +141,7 @@ class HFVisionEncoder(nn.Module):
             return Image.fromarray(image)
         if isinstance(image, str):
             if image.startswith("http://") or image.startswith("https://"):
-                return Image.open(requests.get(image, stream=True).raw).convert("RGB")
+                return Image.open(requests.get(image, stream=True, timeout=10).raw).convert("RGB")
             return Image.open(image).convert("RGB")
         # Assume PIL Image
         return image.convert("RGB") if hasattr(image, "convert") else image
@@ -109,36 +152,91 @@ class HFVisionEncoder(nn.Module):
         output_all_hidden_states: bool,
     ) -> torch.Tensor | tuple[torch.Tensor, ...] | dict[str, torch.Tensor]:
         """Internal implementation for forward logic."""
-        # Always output hidden states if we need specific layers
-        requires_hidden_states = output_all_hidden_states or (self.return_layers is not None)
+        # Apply key filtering and remapping before forwarding to the model
+        if self.processor_output_filter:
+            inputs = {k: v for k, v in inputs.items() if k in self.processor_output_filter}
+        if self.processor_to_model_key_map:
+            inputs = {self.processor_to_model_key_map.get(k, k): v for k, v in inputs.items()}
+
+        # Extra kwargs applied to every model call
+        extra_kwargs: dict = {}
+        if self.interpolate_pos_encoding:
+            extra_kwargs["interpolate_pos_encoding"] = True
+
+        # Determine whether we need hidden_states from the model
+        needs_hidden_states = (
+            output_all_hidden_states
+            or self.return_layers is not None
+            or isinstance(self.extract_layer, int)
+        )
 
         outputs = self.model(
             **inputs,
             return_dict=True,
-            output_hidden_states=requires_hidden_states,
-            interpolate_pos_encoding=self.interpolate_pos_encoding,
+            output_hidden_states=needs_hidden_states,
+            **extra_kwargs,
         )
 
+        # Route based on extract_layer -------------------------------------------
+
+        # Named output attribute (e.g. "pooler_output", "last_hidden_state")
+        if isinstance(self.extract_layer, str):
+            if not hasattr(outputs, self.extract_layer):
+                available = list(outputs.keys()) if hasattr(outputs, "keys") else dir(outputs)
+                raise ValueError(
+                    f"extract_layer='{self.extract_layer}' not found in model outputs. "
+                    f"Available: {available}"
+                )
+            return getattr(outputs, self.extract_layer)
+
+        # Specific intermediate transformer block by index
+        if isinstance(self.extract_layer, int):
+            return outputs.hidden_states[self.extract_layer]
+
+        # All hidden states as tuple
         if output_all_hidden_states:
             return outputs.hidden_states
 
-        # If specific layers were requested, return a dictionary of those layers + final layer
+        # Multi-layer extraction (return_layers)
         if self.return_layers is not None:
             hidden_states = outputs.hidden_states
             out_dict = {"final": hidden_states[-1]}
             for idx in self.return_layers:
-                # Format layer keys nicely: e.g. "layer_0", "layer_-2", etc.
                 out_dict[f"layer_{idx}"] = hidden_states[idx]
             return out_dict
 
-        # Default behavior: return just the final hidden state or pooler output
-        if requires_hidden_states:
-            return outputs.hidden_states[-1]
-
+        # Default: last hidden state
         if hasattr(outputs, "last_hidden_state"):
             return outputs.last_hidden_state
 
         raise ValueError("Model did not return last_hidden_state")
+
+    def _forward_batch_tensor(
+        self,
+        x: torch.Tensor,
+        output_all_hidden_states: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...] | dict[str, torch.Tensor]:
+        """Run the encoder on a ``[B, C, H, W]`` tensor batch.
+
+        Converts the batch to PIL images for the processor, then forwards
+        through the model.  This avoids the per-image type-checking overhead
+        of ``_load_image`` and is the path used when the encoder is embedded
+        inside an autoencoder that passes raw tensor batches.
+        """
+        images_pil = [
+            Image.fromarray(img.mul(255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy())
+            for img in x
+        ]
+        inputs = self.processor(
+            images=images_pil,
+            return_tensors="pt",
+            **self.processor_kwargs,
+        ).to(self.device)
+
+        if self.freeze_model:
+            with torch.no_grad():
+                return self._forward_impl(inputs, output_all_hidden_states)
+        return self._forward_impl(inputs, output_all_hidden_states)
 
     def forward(
         self,
@@ -148,7 +246,10 @@ class HFVisionEncoder(nn.Module):
         """Forward pass to extract hidden state features from images.
 
         Args:
-            images: List of images (file paths, PIL images, or tensors) or a single image.
+            images: List of images (file paths, PIL images, or tensors), a
+                single image, or a 4-D ``[B, C, H, W]`` tensor batch.  When a
+                4-D tensor is detected, the efficient batch path is used
+                automatically (no per-image type checking).
             output_all_hidden_states: Whether to return all hidden layers as a tuple.
 
         Returns:
@@ -157,6 +258,10 @@ class HFVisionEncoder(nn.Module):
               layers and the "final" hidden state.
             - Otherwise: A single tensor of the final hidden state.
         """
+        # Auto-detect 4D batch tensor [B, C, H, W]
+        if isinstance(images, torch.Tensor) and images.dim() == 4:
+            return self._forward_batch_tensor(images, output_all_hidden_states)
+
         if not isinstance(images, list):
             images = [images]
 
@@ -172,95 +277,3 @@ class HFVisionEncoder(nn.Module):
                 return self._forward_impl(inputs, output_all_hidden_states)
         else:
             return self._forward_impl(inputs, output_all_hidden_states)
-
-
-class HFVisionEncoderDecoder(nn.Module):
-    """Frozen HuggingFace ViT encoder paired with a custom convolutional decoder.
-
-    The encoder produces a token sequence [B, 1 + H*W, D] (CLS + patch tokens).
-    The CLS token is dropped, the remaining patch tokens are reshaped to a 2-D
-    spatial feature map [B, D, H//patch_size, W//patch_size], and the decoder
-    maps that feature map back to a full-resolution image.
-
-    The patch grid dimensions are computed dynamically from the input tensor shape
-    at every forward pass, so the model works at any resolution as long as H and W
-    are divisible by ``patch_size`` and the encoder has ``interpolate_pos_encoding``
-    enabled (set via ``processor_kwargs`` / ``interpolate_pos_encoding`` on the encoder).
-
-    Examples:
-        DINOv3-ViT-S/16 on 224x224  →  feature map [B, 384, 14, 14]  →  16x upsample
-        DINOv3-ViT-S/16 on 640x1024 →  feature map [B, 384, 40, 64]  →  16x upsample
-    """
-
-    def __init__(
-        self,
-        encoder: "HFVisionEncoder",
-        decoder: nn.Module,
-        patch_size: int,
-    ) -> None:
-        """Initialise the encoder-decoder.
-
-        Args:
-            encoder: Frozen HFVisionEncoder backbone.
-            decoder: Convolutional decoder that accepts
-                [B, embed_dim, H//patch_size, W//patch_size] and returns a
-                reconstructed image tensor at the original HxW resolution.
-            patch_size: Patch size used by the ViT backbone (e.g. 16 for DINOv3,
-                14 for DINOv2).  Used to compute the patch grid from the input shape.
-        """
-        super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.patch_size = patch_size
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode a batch of images and reconstruct them via the convolutional decoder.
-
-        Args:
-            x: Input image batch [B, C, H, W] with pixel values in [0, 1].
-                H and W must be divisible by ``patch_size``.
-
-        Returns:
-            Reconstructed image tensor [B, C, H, W].
-        """
-        img_h, img_w = x.shape[2], x.shape[3]
-        patch_grid_h = img_h // self.patch_size
-        patch_grid_w = img_w // self.patch_size
-
-        # list(x) splits [B, C, H, W] → [B × (C, H, W)], which HFVisionEncoder handles
-        tokens = self.encoder(list(x))  # [B, 1 + patch_grid_h*patch_grid_w, embed_dim]
-
-        # Drop CLS token (index 0) to obtain only spatial patch tokens
-        patch_tokens = tokens[:, 1:, :]  # [B, patch_grid_h*patch_grid_w, embed_dim]
-
-        batch_size, _num_tokens, embed_dim = patch_tokens.shape
-        # Rearrange token sequence to a 2-D spatial feature map
-        features = patch_tokens.permute(0, 2, 1).reshape(
-            batch_size, embed_dim, patch_grid_h, patch_grid_w
-        )  # [B, embed_dim, patch_grid_h, patch_grid_w]
-
-        return self.decoder(features)
-
-
-if __name__ == "__main__":
-    import numpy as np
-
-    # Simple testing
-    print("Testing HFVisionEncoder with dinov2-small...")
-    sample_encoder = HFVisionEncoder(
-        model_name="facebook/dinov2-small",
-        return_layers=[-2, 2],  # Return second to last layer, and layer 2
-        torch_dtype=torch.float32,
-        device_map="cpu",  # For simple testing
-        freeze_model=True,
-    )
-
-    # Create dummy images
-    dummy_img1 = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
-    dummy_img2 = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
-
-    sample_outputs = sample_encoder.forward([dummy_img1, dummy_img2])
-    print(f"Output type: {type(sample_outputs)}")
-    if isinstance(sample_outputs, dict):
-        for k, v in sample_outputs.items():
-            print(f"  {k} shape: {v.shape}")

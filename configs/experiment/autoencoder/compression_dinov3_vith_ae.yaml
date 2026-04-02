@@ -1,0 +1,66 @@
+# @package _global_
+# Compression Autoencoder — DINOv3 ViT-H+/16 frozen encoder + ViT-based decoder
+# on DIV2K.  Only the decoder is trained; the encoder acts as a fixed feature extractor.
+#
+# The decoder mirrors the encoder's full ViT-H architecture: 32 transformer layers
+# with 1280-dim embeddings and 16 attention heads, followed by convolutional refinement.
+#
+# Decoder is ~632 M trainable params.  Gradient checkpointing is mandatory.
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_dinov3_vith_ae
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: dinov3_vith_decoder_ae
+  - /loss: mse
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+dataloader:
+  train:
+    drop_last: true
+  val:
+    drop_last: true
+
+torch_compile:
+  enabled: true
+  mode: "max-autotune-no-cudagraphs"
+  dynamic: false
+  compile_optimizer_step: true
+  remote_cache:
+    enabled: false  # or set TORCH_COMPILE_S3_REMOTE_CACHE=1
+
+optimizer_params:
+  capturable: true
+
+experiment_name: compression_dinov3_vith_ae_mse_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+# resume_training: true
+# load_checkpoint_path: latest
+
+mode: "autoencoder"
+
+target_shape: [320, 480] # [480, 640]
+
+lr: 0.0001
+num_epochs: 1000
+validation_interval: 100
+batch_size: 2 #6
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+callbacks:
+  wandb:
+    logging_interval: 100
+  checkpoint:
+    save_every_n_epochs: 10

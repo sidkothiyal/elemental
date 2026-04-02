@@ -1,7 +1,6 @@
-"""Vector Quantized Variational Autoencoder."""
+"""Vector quantiser with EMA codebook updates and codebook management."""
 
 import logging
-from typing import Any, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -93,7 +92,11 @@ class Quantizer(nn.Module):
         else:
             self.codebook = nn.Parameter(torch.randn(codebook_size, codebook_dim))
 
-        # Tracking buffers
+        # Tracking buffers — typed declarations so pylint/mypy recognise the attrs
+        self.codebook_hits: torch.Tensor
+        self.codebook_cumulative_hits: torch.Tensor
+        self.codebook_initialized: torch.Tensor
+        self.codebook_batches_survived: torch.Tensor
         self.register_buffer("codebook_hits", torch.zeros(codebook_size))
         # Cumulative hits for smart init (not reset at summary frequency)
         self.register_buffer("codebook_cumulative_hits", torch.zeros(codebook_size))
@@ -456,116 +459,3 @@ class Quantizer(nn.Module):
 
         # Straight-through estimator: gradients flow through quantized
         return x + (quantized - x).detach()
-
-
-class VQVAE(nn.Module):
-    """Vector Quantized Variational Autoencoder."""
-
-    def __init__(
-        self,
-        encoder: nn.Module,
-        codebook_size: int,
-        codebook_dim: int,
-        decoder: nn.Module | None = None,
-        quantizer_kwargs: Mapping[str, Any] = {},
-    ):
-        """Initialize the VQVAE.
-
-        Args:
-            encoder: The encoder module.
-            codebook_size: The size of the codebook.
-            codebook_dim: The dimension of the codebook.
-            decoder: The decoder module. If None, the decoder will not be used.
-            quantizer_kwargs: Keyword arguments for the Quantizer.
-        """
-        super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.quantizer = Quantizer(codebook_size, codebook_dim, **quantizer_kwargs)
-
-    @property
-    def losses(self) -> dict[str, torch.Tensor]:
-        """Losses of the VQVAE with applied weights."""
-        losses: dict[str, torch.Tensor] = {}
-        if self.quantizer.dictionary_loss is not None:
-            losses["dictionary_loss"] = (
-                self.quantizer.dictionary_loss * self.quantizer.dictionary_loss_weight
-            )
-        if self.quantizer.commitment_loss is not None:
-            losses["commitment_loss"] = (
-                self.quantizer.commitment_loss * self.quantizer.commitment_loss_weight
-            )
-        if self.quantizer.diversity_loss is not None:
-            losses["diversity_loss"] = (
-                self.quantizer.diversity_loss * self.quantizer.diversity_loss_weight
-            )
-        return losses
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the VQVAE.
-
-        Args:
-            x: The input tensor.
-        """
-        encoded = self.encoder(x)
-        quantized = self.quantizer(encoded)
-        if not self.decoder:
-            return quantized
-        return self.decoder(quantized)
-
-
-if __name__ == "__main__":
-    model = VQVAE(
-        encoder=nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(256, 512, kernel_size=3, padding=1, stride=2),
-            nn.ReLU(),
-        ),
-        decoder=nn.Sequential(
-            nn.ConvTranspose2d(512, 256, kernel_size=4, padding=1, stride=2),
-            nn.ReLU(),
-            nn.ConvTranspose2d(256, 128, kernel_size=4, padding=1, stride=2),
-            nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, padding=1, stride=2),
-            nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, kernel_size=4, padding=1, stride=2),
-            nn.ReLU(),
-            nn.ConvTranspose2d(32, 3, kernel_size=4, padding=1, stride=2),
-            nn.Sigmoid(),
-        ),
-        codebook_size=128,
-        codebook_dim=512,
-        quantizer_kwargs={
-            "diversity_loss_enabled": True,
-            "diversity_loss_weight": 0.1,
-            "diversity_loss_margin": 0.5,
-            "smart_init_enabled": True,
-            "smart_init_steps": 50,
-            "smart_init_initial_resample_pct": 0.3,
-        },
-    )
-
-    input_data = torch.randn(2, 3, 480, 640).to("cuda")
-    model.to("cuda")
-    output_data = model(input_data)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
-    print(f"Output shape: {output_data.shape}")
-
-    for step in range(10):
-        output_data = model(input_data)
-        print(f"\nStep {step + 1} losses: {model.losses}")
-
-        loss = sum(list(model.losses.values())) + F.mse_loss(output_data, input_data)
-        loss.backward()
-        print(f"Total loss: {loss.item():.6f}")
-        optimizer.step()
-        optimizer.zero_grad()
-        print("=" * 80)

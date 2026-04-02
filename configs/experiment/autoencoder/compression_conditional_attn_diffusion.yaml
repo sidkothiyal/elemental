@@ -139,7 +139,7 @@ model:
       - _target_: model.nn_modules.Permute
         _args_: [0, 2, 1]
   model:
-    _target_: model.conditional_autoencoder.ConditionalAutoencoder
+    _target_: model.autoencoder.ConditionalAutoencoder
     encoder:
       _target_: model.combiner.DiffusionCombiner
       pass_through_args: true

@@ -42,7 +42,7 @@ model:
         groups: 1
         dilation: 1
   model:
-    _target_: model.vq_vae.VQVAE
+    _target_: model.autoencoder.VQVAE
     encoder:
       _target_: model.transformer.Transformer
       embed_dim: 256

@@ -2,18 +2,22 @@
 Masked Autoencoder
 Paper: https://arxiv.org/pdf/2111.06377
 """
+
 from typing import Any
 
 import einops
 import numpy as np
 import torch
-from einops.layers.torch import Rearrange
 from torch import nn
 
-from model import transformer
+from model.autoencoder import Autoencoder
+from model.patcher_unpatcher import Patcher, Unpatcher
+from model.positional_embeddings import LearnablePositionalEmbedding
 
 
-class MaskedAutoencoder(nn.Module):
+class MaskedAutoencoder(Autoencoder):
+    """Masked Autoencoder (MAE) with asymmetric encoder-decoder."""
+
     def __init__(
         self,
         dropout_percentage: float,
@@ -25,25 +29,22 @@ class MaskedAutoencoder(nn.Module):
         decoder_projection_dim: int | None = None,
         conv_decoder: nn.Module | None = None,
         return_image: bool = True,
-        *args,
-        **kwargs,
     ):
         """Masked Autoencoder.
 
         Args:
-            dropout_percentage: The percentage of dropout.
-            image_size: The size of the image.
-            patch_size: The size of the patch.
+            dropout_percentage: The percentage of patches to mask.
+            image_size: The size of the image (channels, height, width).
+            patch_size: The size of the patch (patch_height, patch_width).
             embed_dim: The dimension of the embedding.
             encoder: The transformer encoder.
             decoder: The transformer decoder.
             decoder_projection_dim: The dimension of the projection in the decoder. If None,
-                the dimension of the embedding is used.
-            conv_decoder: Whether to use a convolutional decoder at the end of the
-                transformer decoder.
+                the number of image channels is used.
+            conv_decoder: Optional convolutional decoder applied after unpatchifying.
             return_image: Whether to return the image after the decoder.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(encoder=encoder, decoder=decoder)
         self.dropout_percentage = dropout_percentage
         channels, height, width = image_size
         self.channels = channels
@@ -55,8 +56,6 @@ class MaskedAutoencoder(nn.Module):
         self.patch_width = patch_width
 
         self.decoder_projection_dim = decoder_projection_dim or channels
-        self.encoder = encoder
-        self.decoder = decoder
         self.conv_decoder = conv_decoder
         self.return_image = return_image
 
@@ -69,37 +68,32 @@ class MaskedAutoencoder(nn.Module):
 
         self.num_patches = (height // patch_height) * (width // patch_width)
         self.num_patches_to_keep = int(self.num_patches * (1 - dropout_percentage))
-        patch_dim = channels * patch_height * patch_width
 
-        self.to_patch_embedding = nn.Sequential(
-            # Patchifies (h w = num_patches) and flatten the patches (pH pW C)
-            # (B, C, H , W) = b c (h pH) (w pW)
-            # h = H/pH, w = W/pW
-            Rearrange("b c (h pH) (w pW) -> b (h w) (pH pW c)", pH=patch_height, pW=patch_width),
-            nn.LayerNorm(patch_dim),
-            # Linear projection (to map to D dimensions) --> patch embeddings
-            nn.Linear(patch_dim, embed_dim),
-            nn.LayerNorm(embed_dim),
+        self.patcher = Patcher(
+            image_size=image_size,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            pos_embedding=LearnablePositionalEmbedding(self.num_patches, embed_dim),
         )
-
-        num_pos_embeddings = self.num_patches
-        # 1D sequence of token embeddings
-        self.pos_embeddings = nn.Parameter(torch.randn(1, num_pos_embeddings, embed_dim))
 
         self.masked_token = nn.Parameter(torch.randn(1, 1, embed_dim))
 
-        decoded_patch_dim = self.decoder_projection_dim * patch_height * patch_width
-        self.embedding_to_patch_projection = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, decoded_patch_dim),
+        self.unpatcher = Unpatcher(
+            image_size=(self.decoder_projection_dim, height, width),
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            decoder_projection_dim=self.decoder_projection_dim,
+            conv_decoder=conv_decoder,
         )
+
+        self.neg_image_mask: torch.Tensor | None = None
 
     @property
     def loss_args(self) -> dict[str, Any]:
         """Loss arguments"""
         return {"neg_mask": self.neg_image_mask}
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:  # type: ignore[override]
         """Forward pass of the Masked Autoencoder.
 
         Args:
@@ -115,9 +109,8 @@ class MaskedAutoencoder(nn.Module):
         ).to(x.device)
         indices_to_keep = torch.from_numpy(indices_to_keep).to(x.device)
 
-        # Patchify and add positional embeddings
-        patched_x = self.to_patch_embedding(x)
-        patched_x += self.pos_embeddings
+        # Patchify, add positional embeddings, and keep only visible patches
+        patched_x = self.patcher(x, indices_to_keep=indices_to_keep)
 
         masked_tokens = einops.repeat(
             self.masked_token,
@@ -125,10 +118,7 @@ class MaskedAutoencoder(nn.Module):
             b=x.shape[0],
             p=self.num_patches,
         )
-        embedded_masked_tokens = self.pos_embeddings + masked_tokens
-
-        if indices_to_keep is not None:
-            patched_x = patched_x[:, indices_to_keep, ...]
+        embedded_masked_tokens = self.patcher.pos_embedding(masked_tokens)
 
         # Encoder
         encoded_tokens = self.encoder(patched_x)
@@ -161,28 +151,15 @@ class MaskedAutoencoder(nn.Module):
         # Decoder
         decoded_tokens = self.decoder(tokens)
 
-        # Embedding to patch projection
-        decoded_tokens = self.embedding_to_patch_projection(decoded_tokens)
-
         if self.return_image:
-            image = einops.rearrange(
-                decoded_tokens,
-                "b (h w) (pH pW c) -> b c (h pH) (w pW)",
-                pH=self.patch_height,
-                pW=self.patch_width,
-                h=self.height // self.patch_height,
-                w=self.width // self.patch_width,
-            )
-
-            if self.conv_decoder:
-                image = self.conv_decoder(image)
-
-            return image
+            return self.unpatcher(decoded_tokens)
 
         return decoded_tokens
 
 
 if __name__ == "__main__":
+    from model import transformer
+
     model = MaskedAutoencoder(
         dropout_percentage=0.1,
         image_size=(3, 224, 224),

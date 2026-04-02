@@ -64,6 +64,18 @@ class Permute(nn.Module):
         return x.permute(*self.dims)
 
 
+class SpatialToTokens(nn.Module):
+    """Convert a spatial feature map [B, D, h, w] to a token sequence [B, h*w, D].
+
+    Useful for bridging spatial encoder outputs (e.g. from ``HFVisionAutoencoder``)
+    into token-based modules like ``ViT`` (token mode) or ``Unpatcher``.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Flatten spatial dims and transpose to token sequence."""
+        return x.flatten(2).transpose(1, 2)
+
+
 class MultiInputSequential(nn.Sequential):
     """A Sequential container that allows multiple inputs to the first module.
 

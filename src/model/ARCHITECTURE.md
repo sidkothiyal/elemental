@@ -20,7 +20,13 @@ Custom attention: inject via `attn_module` constructor arg and `attn_module_kwar
 
 ## ViT (vit.py)
 
-Patch embedding via `einops.Rearrange` (`b c (h pH) (w pW) -> b (h w) (pH pW c)`) + LayerNorm + Linear. Learnable CLS token prepended. Sine/cosine positional embedding added after projection. Final classification head is an MLP.
+Two modes:
+
+**Patch mode** (default): patch embedding via `einops.Rearrange` (`b c (h pH) (w pW) -> b (h w) (pH pW c)`) + LayerNorm + Linear. Learnable CLS token prepended when `num_classes` is set. Positional embedding added after projection. Final classification head is an MLP.
+
+**Token mode** (`image_size`/`patch_size` omitted, `num_tokens` provided): accepts `[B, N, D]` token sequences directly. Positional embeddings are injected via `pos_embedding` arg (any module from `positional_embeddings.py`, e.g. `Learnable2DPositionalEmbedding` for bicubic interpolation support). Composable via `nn.Sequential(SpatialToTokens, ViT, Unpatcher)` to build ViT-based decoders.
+
+Both ViT and Patcher delegate positional embeddings to an injectable `pos_embedding` module. This avoids duplicating pos embed logic and allows swapping strategies (fixed-count, 2D-interpolatable, etc.) via config.
 
 ## UNet (unet.py)
 
@@ -46,15 +52,28 @@ When `use_conditional_blocks=True`: replaces `ConvBlock` with `ConditionalConvBl
 
 Iterative denoising with `num_denoising_steps` steps. DDIM update uses `eta` for stochasticity (0=deterministic). `start_timestep` allows starting from an intermediate noise level (useful for image-to-image).
 
-## VQVAE / Quantizer (vq_vae.py)
+## Autoencoder Hierarchy (autoencoder.py)
 
-### Quantizer design
+Base `Autoencoder` class provides the `encode → bottleneck → decode` pipeline. Subclasses override specific stages:
+
+```
+Autoencoder(encoder, decoder)
+├── ConditionalAutoencoder    — passes t, aux_features to encoder and decoder
+├── VQVAE                     — bottleneck() runs Quantizer
+└── HFVisionAutoencoder       — forward() handles CLS/register token stripping + spatial reshape
+```
+
+All autoencoders expose:
+- `losses` property → auxiliary losses (e.g. VQVAE commitment/dictionary/diversity)
+- `loss_args` property → extra tensors for loss function (e.g. MAE neg_mask)
+
+### Quantizer (quantizer.py)
 
 - Codebook: `nn.Embedding(codebook_size, codebook_dim)`
 - EMA updates (when `use_ema=True`): maintains `ema_cluster_size` and `ema_w` buffers
 - Smart init: first `smart_init_steps` batches resample some codebook entries from actual data
 - Dead code revival: entries used fewer than `codebook_revival_threshold` times are reset to random encoder outputs
-- Losses stored in `self.losses` dict → collected by `collect_module_losses()` in trainer
+- Losses stored as instance attributes → collected by `VQVAE.losses` property → `collect_module_losses()` in trainer
 
 ### Commitment + Dictionary losses
 
@@ -71,16 +90,22 @@ Iterative denoising with `num_denoising_steps` steps. DDIM update uses `eta` for
 
 ## MaskedAutoencoder (masked_autoencoder.py)
 
-- Masking: random permutation of patch indices, keep `num_patches_to_keep`
+Inherits from `Autoencoder`, uses `Patcher` and `Unpatcher` for patch handling:
+
+- `Patcher` with `indices_to_keep`: patchifies, adds positional embeddings, then selects visible patches
 - Encoder sees only unmasked patches (no CLS token)
-- Decoder: `mask_token` (learnable) fills masked positions; full sequence fed to decoder transformer
-- Output rearranged back to image if `return_image=True`
+- Decoder: `masked_token` (learnable) fills masked positions; full sequence fed to decoder transformer
+- `Unpatcher` converts decoded tokens back to image (with optional `conv_decoder`)
+- `loss_args` returns `{"neg_mask": ...}` for masked-only loss computation
 
 ## HFVisionEncoder (hf_vision.py)
 
+- Auto-detects 4D `[B, C, H, W]` tensor batches → efficient batch processing path
 - Uses `model.forward(..., output_hidden_states=True)` to access intermediate layers
 - Negative indices for `return_layers` resolved against `len(hidden_states)`
-- Optional spatial reshape: reshapes `[B, h*w, D]` → `[B, D, h, w]`
+- `extract_layer`: string → `getattr(outputs, name)` for any named output (e.g. `"pooler_output"`), int → `hidden_states[idx]`, None → `last_hidden_state`
+- `processor_output_filter` / `processor_to_model_key_map`: filter and rename processor output keys before forwarding to the model (useful for VLM vision submodules)
+- `model_submodule`: dotted path to extract a submodule (e.g. `"model.visual"` for Qwen3-VL)
 
 ## Router (router.py)
 
@@ -95,6 +120,12 @@ forward(input, **kwargs)
        rename output per rename_head_output[head_name]
   5. return dict of all head outputs
 ```
+
+## Design Principles
+
+1. **Atomic modules only** — `src/model/` should contain only atomic, composable building blocks. Do not add a new module if it can be constructed by composing existing pieces (e.g. via `nn.Sequential` or `MultiInputSequential` in Hydra configs). Only add a new module when composition would be very messy or when the module represents genuinely new functionality.
+
+2. **Compose in configs** — Complex architectures (e.g. ViT-based decoders) are built by composing atomic modules in YAML configs rather than creating wrapper classes. Example: `Sequential(SpatialToTokens, ViT, Unpatcher)` replaces a dedicated `ViTDecoder` class.
 
 ## Key Design Decisions
 

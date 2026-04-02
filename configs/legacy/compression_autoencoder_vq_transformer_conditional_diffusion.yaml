@@ -135,7 +135,7 @@ model:
         embedding_dim: 64
   prediction_type: "x0"
   conditional_model:
-    _target_: model.vq_vae.VQVAE
+    _target_: model.autoencoder.VQVAE
     encoder:
       _target_: torch.nn.Sequential
       _args_:
@@ -155,7 +155,7 @@ model:
       dictionary_loss_weight: 1.0
       commitment_loss_weight: 0.25
   model:
-    _target_: model.conditional_autoencoder.ConditionalAutoencoder
+    _target_: model.autoencoder.ConditionalAutoencoder
     encoder:
       _target_: model.combiner.DiffusionCombiner
       model:

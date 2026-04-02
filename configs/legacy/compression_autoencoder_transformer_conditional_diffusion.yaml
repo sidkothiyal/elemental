@@ -147,7 +147,7 @@ model:
         num_layers: 8
         ff_embed_dim: 192
   model:
-    _target_: model.conditional_autoencoder.ConditionalAutoencoder
+    _target_: model.autoencoder.ConditionalAutoencoder
     encoder:
       _target_: model.combiner.DiffusionCombiner
       model:

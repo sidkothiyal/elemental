@@ -142,7 +142,7 @@ model:
     strides: [2, 2, 2, 2, 2]
     paddings: [1, 1, 1, 1, 1]
   model:
-    _target_: model.conditional_autoencoder.ConditionalAutoencoder
+    _target_: model.autoencoder.ConditionalAutoencoder
     encoder:
       _target_: model.combiner.DiffusionCombiner
       model:

@@ -1,0 +1,92 @@
+# @package _global_
+# DINOv3 ViT-S/16 encoder (frozen) + ViT-based decoder autoencoder.
+#
+# Encoder:  facebook/dinov3-vits16-pretrain-lvd1689m  (patch_size=16, embed_dim=384)
+#   12 layers, 6 heads, 384 dim — frozen feature extractor.
+#
+# Decoder:  SpatialToTokens → ViT (token mode, 8 layers) → Unpatcher
+#   Processes patch tokens through self-attention, un-patchifies via a linear
+#   projection to 32 intermediate channels at full resolution, then refines
+#   with 3 conv layers (64→64→32) to eliminate patch-boundary blockiness.
+#   Final 3×3 conv projects to RGB.
+#
+# Total trainable decoder params: ~17 M  (vs ~1 M for the conv-only decoder).
+#
+# Positional embeddings: Learnable2DPositionalEmbedding with 14×14 base grid.
+# The decoder is trained from scratch so the base grid just sets the init size
+# for bicubic interpolation if the training resolution differs.
+model:
+  _target_: model.autoencoder.HFVisionAutoencoder
+  patch_size: 16
+
+  encoder:
+    _target_: model.hf_vision.HFVisionEncoder
+    model_name: "facebook/dinov3-vits16-pretrain-lvd1689m"
+    return_layers: null
+    torch_dtype: "bfloat16"
+    attn_implementation: "sdpa"
+    device_map: "auto"
+    freeze_model: true
+    interpolate_pos_encoding: true
+    processor_kwargs:
+      do_resize: false
+      do_center_crop: false
+
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      # Spatial [B, D, h, w] → tokens [B, h*w, D]
+      - _target_: model.nn_modules.SpatialToTokens
+      # Transformer with positional embeddings (token mode, no patching)
+      - _target_: model.vit.ViT
+        embed_dim: 384
+        num_transformer_layers: 8
+        attn_heads: 6
+        ff_embed_dim: 1536
+        num_tokens: 196
+        pos_embedding:
+          _target_: model.positional_embeddings.Learnable2DPositionalEmbedding
+          grid_size: [14, 14]
+          embed_dim: 384
+        dropout: 0.0
+        attention_dropout: 0.0
+        bias: false
+      # Tokens → image with conv refinement
+      - _target_: model.patcher_unpatcher.Unpatcher
+        image_size: [32, 224, 224]  # [unpatch_channels, 14×16, 14×16]
+        patch_size: [16, 16]
+        embed_dim: 384
+        decoder_projection_dim: 32
+        conv_decoder:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: torch.nn.Conv2d
+              in_channels: 32
+              out_channels: 64
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 64
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 64
+              out_channels: 64
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 64
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 64
+              out_channels: 32
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 32
+            - _target_: torch.nn.GELU
+            # Final projection to RGB
+            - _target_: torch.nn.Conv2d
+              in_channels: 32
+              out_channels: 3
+              kernel_size: 3
+              padding: 1

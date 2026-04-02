@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from torch import nn
 
+from model.positional_embeddings import LearnablePositionalEmbedding
+
 
 class Patcher(nn.Module):
     """Patcher: convert images to patch embeddings.
@@ -22,6 +24,7 @@ class Patcher(nn.Module):
         embed_dim: int,
         conv_encoder: nn.Module | None = None,
         overlap: int = 0,
+        pos_embedding: nn.Module | None = None,
     ):
         """Initialize the Patcher.
 
@@ -33,6 +36,9 @@ class Patcher(nn.Module):
             overlap: Number of pixels to overlap between adjacent patches (each side).
                      When > 0, extracts larger patches with context from neighbors.
                      Typical values: 2-8 pixels (must be < patch_size // 2).
+            pos_embedding: Positional embedding module (e.g.
+                ``LearnablePositionalEmbedding``).  When *None*, a default
+                ``LearnablePositionalEmbedding`` is created internally.
         """
         super().__init__()
         channels, height, width = image_size
@@ -69,7 +75,7 @@ class Patcher(nn.Module):
             self.patch_norm = nn.LayerNorm(patch_dim)
             self.patch_proj = nn.Linear(patch_dim, embed_dim)
             self.embed_norm = nn.LayerNorm(embed_dim)
-            self.to_patch_embedding = None  # Not used in overlap mode
+            self.to_patch_embedding: nn.Module | None = None  # Not used in overlap mode
         else:
             self.kernel_h = patch_height
             self.kernel_w = patch_width
@@ -80,7 +86,9 @@ class Patcher(nn.Module):
                 # (B, C, H , W) = b c (h pH) (w pW)
                 # h = H/pH, w = W/pW
                 Rearrange(
-                    "b c (h pH) (w pW) -> b (h w) (pH pW c)", pH=patch_height, pW=patch_width
+                    "b c (h pH) (w pW) -> b (h w) (pH pW c)",
+                    pH=patch_height,
+                    pW=patch_width,
                 ),
                 nn.LayerNorm(patch_dim),
                 # Linear projection (to map to D dimensions) --> patch embeddings
@@ -91,8 +99,11 @@ class Patcher(nn.Module):
             self.patch_proj = None
             self.embed_norm = None
 
-        # 1D sequence of token embeddings
-        self.pos_embeddings = nn.Parameter(torch.randn(1, num_patches, embed_dim))
+        # Positional embeddings — injected or default
+        if pos_embedding is not None:
+            self.pos_embedding = pos_embedding
+        else:
+            self.pos_embedding = LearnablePositionalEmbedding(num_patches, embed_dim)
 
     def _extract_overlapping_patches(self, x: torch.Tensor) -> torch.Tensor:
         """Extract overlapping patches using F.unfold.
@@ -124,17 +135,32 @@ class Patcher(nn.Module):
 
         return patches
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass: convert image to patch embeddings."""
+    def forward(
+        self,
+        x: torch.Tensor,
+        indices_to_keep: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forward pass: convert image to patch embeddings.
+
+        Args:
+            x: Input image ``[B, C, H, W]``.
+            indices_to_keep: Optional 1-D index tensor to select a subset of
+                patches after positional embedding (e.g. for masked autoencoders).
+        """
         if self.conv_encoder:
             x = self.conv_encoder(x)
 
         if self.overlap > 0:
             patched_x = self._extract_overlapping_patches(x)
         else:
+            assert self.to_patch_embedding is not None
             patched_x = self.to_patch_embedding(x)
 
-        patched_x = patched_x + self.pos_embeddings
+        patched_x = self.pos_embedding(patched_x)
+
+        if indices_to_keep is not None:
+            patched_x = patched_x[:, indices_to_keep, ...]
+
         return patched_x
 
 
@@ -233,9 +259,10 @@ class Unpatcher(nn.Module):
         self.stride_h = effective_patch_h
         self.stride_w = effective_patch_w
 
-        # Register blend window as buffer (created on first forward)
+        # Blend window and fold divisor buffers (lazily initialised on first forward)
+        self._blend_window: torch.Tensor | None = None
+        self._fold_divisor: torch.Tensor | None = None
         self.register_buffer("_blend_window", None, persistent=False)
-        # Pre-computed divisor for normalization (created on first forward)
         self.register_buffer("_fold_divisor", None, persistent=False)
 
     def _ensure_blend_buffers(self, device: torch.device, dtype: torch.dtype) -> None:
@@ -296,6 +323,7 @@ class Unpatcher(nn.Module):
         patches = patches.permute(0, 2, 3, 1)  # (B, C, pH*pW, num_patches)
 
         # Apply blend window weights
+        assert self._blend_window is not None
         blend_window = self._blend_window.to(dtype=dtype)
         patches_weighted = patches * blend_window  # (B, C, pH*pW, num_patches)
 
@@ -333,6 +361,7 @@ class Unpatcher(nn.Module):
         ]
 
         # Normalize by accumulated weights
+        assert self._fold_divisor is not None
         output = output / self._fold_divisor.to(dtype=dtype)
 
         return output

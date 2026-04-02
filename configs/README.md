@@ -21,6 +21,7 @@ configs/
 ├── scheduler/               # LR scheduler configurations
 ├── profiler/                # PyTorch profiler presets
 ├── remote_backup/           # Remote backup strategy configs
+├── eval/                    # Evaluation overlays (e.g., degradation metrics)
 ├── legacy/                  # Old flat configs (kept for reference)
 └── checkpoint_surgery/      # Checkpoint rename/migration configs
 ```
@@ -83,3 +84,20 @@ See `configs/experiment/README.md` (each subdirectory has its own README).
 | `full` | All activities + shapes + stack |
 | `cpu_only` | CPU-only profiling |
 | `debug` | Minimal (dev use) |
+
+## Evaluation Overlays (`eval/`)
+
+Composable configs that add test-time evaluation pipelines via a single Hydra override.
+
+| Config | Purpose | Usage |
+|--------|---------|-------|
+| `degradation` | Run model N times, compute metrics on degraded output | `+eval=degradation` |
+
+```bash
+# Degradation evaluation (100 iterations, default)
+uv run python src/trainer.py experiment/autoencoder/compression_ae test=true +eval=degradation
+
+# Custom iteration count
+uv run python src/trainer.py experiment/autoencoder/compression_ae test=true +eval=degradation \
+  postprocessors.steps.degradation.processor.num_iterations=50
+```
