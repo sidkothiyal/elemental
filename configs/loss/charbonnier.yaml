@@ -1,0 +1,12 @@
+# @package _global_
+# Charbonnier loss — smooth L1 approximation: mean(sqrt((pred-target)^2 + eps^2))
+# Produces sharper outputs than MSE; differentiable everywhere unlike L1.
+# Used in SRResNet, EDSR, RDN for image super-resolution.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.charbonnier_loss.CharbonnierLoss
+        eps: 1.0e-3
