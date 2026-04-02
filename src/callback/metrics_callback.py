@@ -6,7 +6,9 @@ from collections.abc import Callable
 import torch
 from torchmetrics import Metric, MetricCollection
 
+import wandb
 from callback import callback
+from metrics.base_metric import HistogramData
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +175,9 @@ class MetricsCallback(callback.Callback):
         # Update all metrics for this phase
         try:
             self._metrics[phase].update(preds, targets)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning(
-                "Failed to update metrics for phase %s: %s. " "Pred shape: %s, Target shape: %s",
+                "Failed to update metrics for phase %s: %s. Pred shape: %s, Target shape: %s",
                 phase,
                 e,
                 preds.shape if hasattr(preds, "shape") else type(preds),
@@ -197,21 +199,59 @@ class MetricsCallback(callback.Callback):
         try:
             computed = self._metrics[phase].compute()
 
-            # Convert to float dict for logging
             self.last_computed[phase] = {}
             for name, value in computed.items():
-                if isinstance(value, torch.Tensor):
-                    if value.numel() == 1:
-                        self.last_computed[phase][name] = value.item()
-                    else:
-                        # For multi-value metrics (e.g., per-class), log mean
-                        self.last_computed[phase][name] = value.mean().item()
-                else:
-                    self.last_computed[phase][name] = float(value)
+                self.last_computed[phase].update(self._flatten_metric_result(name, value))
 
             logger.info("Epoch %d [%s] metrics: %s", epoch, phase, self.last_computed[phase])
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to compute metrics for phase %s: %s", phase, e)
+
+    def _flatten_metric_result(
+        self,
+        metric_name: str,
+        value: torch.Tensor | dict | HistogramData,
+    ) -> dict:
+        """Flatten a metric compute() result into a flat dict suitable for logging.
+
+        Handles three cases:
+        - ``dict``: recursively flattens sub-keys using ``/``-separated names.
+        - :class:`~metrics.base_metric.HistogramData`: converts to a
+          ``wandb.Histogram`` if wandb is available, otherwise skips with a warning.
+        - ``torch.Tensor`` or scalar: extracts a single float value (mean for
+          multi-element tensors).
+
+        Args:
+            metric_name: The metric's key as returned by MetricCollection.
+            value: The value returned by the metric's ``compute()`` method.
+
+        Returns:
+            Flat ``dict[str, float | wandb.Histogram]`` ready for logging.
+        """
+        if isinstance(value, dict):
+            result = {}
+            for sub_key, sub_value in value.items():
+                full_key = f"{metric_name}/{sub_key}"
+                result.update(self._flatten_metric_result(full_key, sub_value))
+            return result
+
+        if isinstance(value, HistogramData):
+            return {
+                metric_name: wandb.Histogram(
+                    np_histogram=(
+                        value.counts.cpu().numpy(),
+                        value.bin_edges.cpu().numpy(),
+                    )
+                )
+            }
+
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 1:
+                return {metric_name: value.item()}
+            # Multi-element tensor (e.g. per-class IoU): log mean
+            return {metric_name: value.mean().item()}
+
+        return {metric_name: float(value)}
 
     def log_metrics(
         self,
