@@ -1,0 +1,16 @@
+# @package _global_
+# OneCycleLR scheduler with built-in linear warmup + cosine annealing.
+#
+# Phases: linear warmup (pct_start) → cosine decay → final cooldown
+# Requires scheduler_step_per: "batch" in the experiment config.
+#
+# total_steps = num_epochs * max_steps_per_epoch (set in experiment config)
+lr_scheduler: "OneCycleLR"
+scheduler_step_per: "batch"
+lr_scheduler_params:
+  T_max: null              # Clear CosineAnnealingLR default from default.yaml
+  max_lr: ${lr}
+  pct_start: 0.02          # 2% of training for linear warmup
+  anneal_strategy: "cos"
+  div_factor: 25            # initial_lr = max_lr / 25
+  final_div_factor: 1000    # final_lr = initial_lr / 1000
