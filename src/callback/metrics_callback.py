@@ -124,6 +124,9 @@ class MetricsCallback(callback.Callback):
         if phase not in self.phases:
             return False
         interval = self.phases[phase]
+        # -1 means disabled for this phase
+        if interval < 0:
+            return False
         # Always compute on the last epoch of training
         if self._num_epochs is not None and epoch == self._num_epochs - 1:
             return True
