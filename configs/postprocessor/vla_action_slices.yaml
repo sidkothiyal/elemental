@@ -1,0 +1,136 @@
+# @package _global_
+# Post-processor pipeline for VLA action diffusion experiments.
+# Slices the 7-DOF action vector into named components for per-slice loss, visualization,
+# and running statistics. Assumes actions are laid out as:
+#   [0:3] world_vector, [3:6] rotation_delta, [6:7] gripper_closedness_action
+
+to_log:
+  - input/input
+  - input/cond/image
+  - target
+  - pred/pred_x0
+  # x0 (clean action) slices — target vs predicted
+  - post_processed/world_vector_target
+  - post_processed/world_vector_pred
+  - post_processed/rotation_delta_target
+  - post_processed/rotation_delta_pred
+  - post_processed/gripper_closedness_action_target
+  - post_processed/gripper_closedness_action_pred
+  # Running stats for target x0
+  - post_processed/stats/world_vector_target
+  - post_processed/stats/rotation_delta_target
+  - post_processed/stats/gripper_closedness_action_target
+  # Running stats for predicted x0
+  - post_processed/stats/world_vector_pred
+  - post_processed/stats/rotation_delta_pred
+  - post_processed/stats/gripper_closedness_action_pred
+
+postprocessors:
+  _target_: postprocessor.pipeline.PostProcessorPipeline
+  steps:
+    # ── Target slices ──
+    world_vector_target:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.tensor_slice.TensorSlicePostProcessor
+        slice_start: 0
+        slice_end: 3
+      input_mapping:
+        "target": "x"
+      output_key: "post_processed/world_vector_target"
+    rotation_delta_target:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.tensor_slice.TensorSlicePostProcessor
+        slice_start: 3
+        slice_end: 6
+      input_mapping:
+        "target": "x"
+      output_key: "post_processed/rotation_delta_target"
+    gripper_closedness_action_target:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.tensor_slice.TensorSlicePostProcessor
+        slice_start: 6
+        slice_end: 7
+      input_mapping:
+        "target": "x"
+      output_key: "post_processed/gripper_closedness_action_target"
+    # ── Predicted x0 slices ──
+    world_vector_pred:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.tensor_slice.TensorSlicePostProcessor
+        slice_start: 0
+        slice_end: 3
+      input_mapping:
+        "pred/pred_x0": "x"
+      output_key: "post_processed/world_vector_pred"
+    rotation_delta_pred:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.tensor_slice.TensorSlicePostProcessor
+        slice_start: 3
+        slice_end: 6
+      input_mapping:
+        "pred/pred_x0": "x"
+      output_key: "post_processed/rotation_delta_pred"
+    gripper_closedness_action_pred:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.tensor_slice.TensorSlicePostProcessor
+        slice_start: 6
+        slice_end: 7
+      input_mapping:
+        "pred/pred_x0": "x"
+      output_key: "post_processed/gripper_closedness_action_pred"
+    # ── Running stats (target) ──
+    stats_world_vector_target:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.running_tensor_stats.RunningTensorStatsPostProcessor
+        window_size: 100
+      input_mapping:
+        "post_processed/world_vector_target": "x"
+      output_key: "post_processed/stats/world_vector_target"
+    stats_rotation_delta_target:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.running_tensor_stats.RunningTensorStatsPostProcessor
+        window_size: 100
+      input_mapping:
+        "post_processed/rotation_delta_target": "x"
+      output_key: "post_processed/stats/rotation_delta_target"
+    stats_gripper_closedness_action_target:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.running_tensor_stats.RunningTensorStatsPostProcessor
+        window_size: 100
+      input_mapping:
+        "post_processed/gripper_closedness_action_target": "x"
+      output_key: "post_processed/stats/gripper_closedness_action_target"
+    # ── Running stats (predicted) ──
+    stats_world_vector_pred:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.running_tensor_stats.RunningTensorStatsPostProcessor
+        window_size: 100
+      input_mapping:
+        "post_processed/world_vector_pred": "x"
+      output_key: "post_processed/stats/world_vector_pred"
+    stats_rotation_delta_pred:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.running_tensor_stats.RunningTensorStatsPostProcessor
+        window_size: 100
+      input_mapping:
+        "post_processed/rotation_delta_pred": "x"
+      output_key: "post_processed/stats/rotation_delta_pred"
+    stats_gripper_closedness_action_pred:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.running_tensor_stats.RunningTensorStatsPostProcessor
+        window_size: 100
+      input_mapping:
+        "post_processed/gripper_closedness_action_pred": "x"
+      output_key: "post_processed/stats/gripper_closedness_action_pred"

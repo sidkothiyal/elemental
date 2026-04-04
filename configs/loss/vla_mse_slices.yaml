@@ -1,0 +1,33 @@
+# @package _global_
+# MSE loss on post-processed action slices for VLA: world_vector, rotation_delta, gripper_closedness_action.
+# Uses pred_x0 slices (predicted clean actions) matched against target (clean action x0).
+# Post-processors must run before loss so that post_processed/*_pred and post_processed/*_target exist.
+#
+# Loss weights reflect dimensionality and importance:
+#   world_vector (3D position):    weight 1.0 — primary manipulation signal
+#   rotation_delta (3D rotation):  weight 1.0 — equally important for dexterous tasks
+#   gripper (1D binary-ish):       weight 0.5 — lower weight since it's 1 dim vs 3
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    world_vector:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      pred_key: post_processed/world_vector_pred
+      target_key: post_processed/world_vector_target
+      weight: 1.0
+    rotation_delta:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      pred_key: post_processed/rotation_delta_pred
+      target_key: post_processed/rotation_delta_target
+      weight: 1.0
+    gripper_closedness_action:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      pred_key: post_processed/gripper_closedness_action_pred
+      target_key: post_processed/gripper_closedness_action_target
+      weight: 0.5

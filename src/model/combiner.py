@@ -1,5 +1,4 @@
-"""Combiner module"""
-
+"""Combiner modules for fusing tensors in model pipelines."""
 
 import torch
 from torch import nn
@@ -123,17 +122,119 @@ class DiffusionCombiner(nn.Module):
         return self.model(x, *model_args)
 
 
-class CrossAttentionCombiner(nn.Module):
-    """Cross Attention Combiner module"""
+class CrossAttentionBlock(nn.Module):
+    """Configurable cross-attention block with optional self-attention, feedforward, and AdaLN.
 
-    def __init__(self, embed_dim: int, num_heads: int):
-        """Initialize the Cross Attention Combiner module."""
+    Can be configured from a minimal cross-attention-only block (matching the
+    old ``CrossAttentionCombiner`` behaviour) up to a full DiT-style
+    transformer layer with self-attention, cross-attention, feedforward, and
+    AdaLN timestep modulation.
+
+    Args:
+        embed_dim: Hidden dimension.
+        num_heads: Number of attention heads.
+        self_attention: If True, prepend a self-attention sub-layer before
+            cross-attention.
+        ff_dim: Feedforward hidden dimension. If None, the feedforward
+            sub-layer is omitted.
+        adaln: If True, enable AdaLN modulation on self-attention and
+            feedforward sub-layers (requires both to be present). Modulation
+            params are passed via ``adaln_modulation`` in ``forward``.
+        dropout: Dropout rate for attention and feedforward layers.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        self_attention: bool = False,
+        ff_dim: int | None = None,
+        adaln: bool = False,
+        dropout: float = 0.0,
+    ) -> None:
         super().__init__()
-        self.cross_attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
-        self.ln = nn.LayerNorm(embed_dim)
+        self.use_self_attention = self_attention
+        self.use_ff = ff_dim is not None
+        self.use_adaln = adaln
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the Cross Attention Combiner module."""
+        if adaln and not (self_attention and ff_dim):
+            raise ValueError("AdaLN requires both self_attention=True and ff_dim to be set")
 
-        attn, _ = self.cross_attention(x, y, y)
-        return self.ln(x + attn)
+        # ── Self-attention (optional) ──
+        if self_attention:
+            # When AdaLN is active, affine params come from modulation, not LayerNorm
+            self.self_attn_norm = nn.LayerNorm(embed_dim, elementwise_affine=not adaln)
+            self.self_attn = nn.MultiheadAttention(
+                embed_dim, num_heads, dropout=dropout, batch_first=True
+            )
+
+        # ── Cross-attention (always present) ──
+        self.cross_attn_norm = nn.LayerNorm(embed_dim)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim, num_heads, dropout=dropout, batch_first=True
+        )
+
+        # ── Feedforward (optional) ──
+        if ff_dim is not None:
+            self.ff_norm = nn.LayerNorm(embed_dim, elementwise_affine=not adaln)
+            self.ff = nn.Sequential(
+                nn.Linear(embed_dim, ff_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(ff_dim, embed_dim),
+                nn.Dropout(dropout),
+            )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        context: torch.Tensor | None = None,
+        adaln_modulation: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor, shape ``(B, L, D)``.
+            context: Cross-attention context, shape ``(B, S, D)``. If None,
+                the cross-attention sub-layer is skipped.
+            adaln_modulation: AdaLN modulation params from timestep, shape
+                ``(B, 6, D)`` — ``[scale₁, shift₁, gate₁, scale₂, shift₂, gate₂]``.
+                Only used when ``adaln=True``. If None, falls back to plain
+                pre-norm (identity modulation).
+        """
+        if self.use_adaln and adaln_modulation is not None:
+            scale1, shift1, gate1, scale2, shift2, gate2 = adaln_modulation.unbind(dim=1)
+        else:
+            scale1 = shift1 = scale2 = shift2 = None
+            gate1 = gate2 = None
+
+        # ── Self-attention ──
+        if self.use_self_attention:
+            residual = x
+            x_norm = self.self_attn_norm(x)
+            if scale1 is not None:
+                x_norm = x_norm * (1 + scale1.unsqueeze(1)) + shift1.unsqueeze(1)
+            attn_out, _ = self.self_attn(x_norm, x_norm, x_norm)
+            if gate1 is not None:
+                attn_out = attn_out * gate1.unsqueeze(1)
+            x = residual + attn_out
+
+        # ── Cross-attention (plain pre-norm, no timestep modulation) ──
+        if context is not None:
+            residual = x
+            x_norm = self.cross_attn_norm(x)
+            attn_out, _ = self.cross_attn(x_norm, context, context)
+            x = residual + attn_out
+
+        # ── Feedforward ──
+        if self.use_ff:
+            residual = x
+            x_norm = self.ff_norm(x)
+            if scale2 is not None:
+                x_norm = x_norm * (1 + scale2.unsqueeze(1)) + shift2.unsqueeze(1)
+            ff_out = self.ff(x_norm)
+            if gate2 is not None:
+                ff_out = ff_out * gate2.unsqueeze(1)
+            x = residual + ff_out
+
+        return x
