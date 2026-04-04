@@ -1,0 +1,95 @@
+# @package _global_
+# Open X-Embodiment dataset configuration for behavior cloning
+data_dir: data/open_x_embodiment/fractal20220817_data/0.1.0
+
+# Dataset parameters
+num_episodes: null        # null = all episodes, set to a number for quick testing
+image_size: null          # null = original size (256, 320), or tuple like [224, 224]
+normalize_images: true
+include_images: true
+language_mode: raw        # embedding, raw, both, or none
+successful_only: true     # only use successful episodes
+normalize_actions: true
+action_normalization_method: quantile  # quantile (default), gaussian, or minmax
+stats_path: null          # null = auto-detect in data_dir
+num_action_chunks: 20     # number of future actions to predict (1 = single action)
+
+# Dimensions
+action_dim: 7             # 3D position + 3D rotation + 1D gripper
+proprioception_dim: 8     # 7D end-effector pose + 1D gripper
+language_dim: 512
+
+# Field renaming for trainer compatibility
+rename_outputs:
+  proprioception: input
+  action: target
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      # Use OpenXEmbodimentDataset for lazy loading (memory efficient)
+      # Use OpenXEmbodimentCachedDataset for pre-loading (faster but more memory)
+      _target_: dataset.open_x_embodiment.OpenXEmbodimentDataset
+      data_dir: ${data_dir}
+      split: train  # Uses train[:90%] automatically
+      num_episodes: ${num_episodes}
+      image_size: ${image_size}
+      normalize_images: ${normalize_images}
+      include_images: ${include_images}
+      language_mode: ${language_mode}
+      successful_only: ${successful_only}
+      normalize_actions: ${normalize_actions}
+      action_normalization_method: ${action_normalization_method}
+      stats_path: ${stats_path}
+      num_action_chunks: ${num_action_chunks}
+      rename_outputs: ${rename_outputs}
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 12
+    pin_memory: true
+    persistent_workers: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.open_x_embodiment.OpenXEmbodimentDataset
+      data_dir: ${data_dir}
+      split: val  # Uses train[90%:] automatically
+      num_episodes: ${num_episodes}
+      image_size: ${image_size}
+      normalize_images: ${normalize_images}
+      include_images: ${include_images}
+      language_mode: ${language_mode}
+      successful_only: ${successful_only}
+      normalize_actions: ${normalize_actions}
+      action_normalization_method: ${action_normalization_method}
+      stats_path: ${stats_path}
+      num_action_chunks: ${num_action_chunks}
+      rename_outputs: ${rename_outputs}
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 12
+    pin_memory: true
+    persistent_workers: true
+  test:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.open_x_embodiment.OpenXEmbodimentDataset
+      data_dir: ${data_dir}
+      split: val  # Uses train[90%:] for test
+      num_episodes: ${num_episodes}
+      image_size: ${image_size}
+      normalize_images: ${normalize_images}
+      include_images: ${include_images}
+      language_mode: ${language_mode}
+      successful_only: ${successful_only}
+      normalize_actions: ${normalize_actions}
+      action_normalization_method: ${action_normalization_method}
+      stats_path: ${stats_path}
+      num_action_chunks: ${num_action_chunks}
+      rename_outputs: ${rename_outputs}
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 12
+    pin_memory: true
+    persistent_workers: true
