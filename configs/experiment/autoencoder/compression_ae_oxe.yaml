@@ -1,0 +1,48 @@
+# @package _global_
+# Compression Autoencoder on Open X-Embodiment images (256×320 RGB).
+# Trains a ConvBlock encoder + UpsampleBlock decoder to reconstruct robot observation images.
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_ae_oxe
+
+defaults:
+  - /default
+  - /dataset: open_x_embodiment_image
+  - /model: simple_autoencoder
+  - /loss: phased_mse_ssim
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_ae_oxe_8x_phased_mse_ssim_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+resume_training: true
+load_checkpoint_path: latest
+
+mode: "autoencoder"
+
+# ─── Dataset overrides ───────────────────────────────────────────────────────
+data_dir: data/open_x_embodiment/fractal20220817_data/0.1.0
+num_episodes: null  # null = all episodes
+
+# ─── Training hyper-parameters ───────────────────────────────────────────────
+lr: 0.0003
+num_epochs: 2500
+validation_interval: 500
+batch_size: 48
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# ─── Callbacks ───────────────────────────────────────────────────────────────
+callbacks:
+  wandb:
+    logging_interval: 500
+  checkpoint:
+    save_every_n_epochs: 10
