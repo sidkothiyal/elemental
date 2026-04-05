@@ -8,6 +8,8 @@ import torch
 from torch import nn
 from torchvision.utils import save_image
 
+from model.utils import cosine_beta_schedule
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +46,9 @@ class DenoisingDiffusionModel(nn.Module):
         debug_save_interval: int = 50,
         # Data normalization - set to True if data is in [-1, 1], False if in [0, 1]
         data_normalized_minus1_1: bool = True,
+        # Whether to clamp predictions during forward pass
+        # Set to False if your data is not strictly bounded (e.g. normalized actions)
+        clamp_predictions: bool = True,
         # If True, skip iterative denoising and directly predict x0 (useful for debugging)
         direct_prediction: bool = False,
     ):
@@ -85,6 +90,7 @@ class DenoisingDiffusionModel(nn.Module):
         self.timestep_model = timestep_model
         self.num_timesteps = num_timesteps
         self.prediction_type = prediction_type
+        self.clamp_predictions = clamp_predictions
 
         # Inference settings
         self.start_timestep = start_timestep
@@ -122,15 +128,13 @@ class DenoisingDiffusionModel(nn.Module):
         if noise_schedule == "linear":
             betas = torch.linspace(beta_start, beta_end, num_timesteps)
         elif noise_schedule == "cosine":
-            betas = self._cosine_beta_schedule(num_timesteps)
+            betas = cosine_beta_schedule(num_timesteps)
         else:
             raise ValueError(f"Unknown noise schedule: {noise_schedule}")
         self._init_noise_coefficients(betas)
 
     def _init_inference_settings(self):
-        """
-        Initialize inference settings.
-        """
+        """Initialize inference settings."""
         if self.start_timestep is None:
             self.start_timestep = self.num_timesteps - 1
         # Clamp start_timestep to valid range [0, num_timesteps - 1]
@@ -148,14 +152,16 @@ class DenoisingDiffusionModel(nn.Module):
             self.denoising_delta = 0.001
 
         if self.inference_method == "ddim":
-            self.timesteps = torch.linspace(
+            timesteps = torch.linspace(
                 self.start_timestep, 0, self.num_denoising_steps, dtype=torch.long
             )
         elif self.inference_method == "ddpm":
-            self.timesteps = torch.arange(self.start_timestep, -1, -1, dtype=torch.long)
-            self.timesteps = self.timesteps[: self.num_denoising_steps]
+            timesteps = torch.arange(self.start_timestep, -1, -1, dtype=torch.long)
+            timesteps = timesteps[: self.num_denoising_steps]
         else:
             raise ValueError(f"Unknown inference method: {self.inference_method}")
+
+        self.register_buffer("timesteps", timesteps)
 
     def _init_noise_coefficients(self, betas: torch.Tensor):
         """
@@ -193,24 +199,6 @@ class DenoisingDiffusionModel(nn.Module):
             )
             self.register_buffer("posterior_mean_coef1", posterior_mean_coef1)
             self.register_buffer("posterior_mean_coef2", posterior_mean_coef2)
-
-    def _cosine_beta_schedule(self, timesteps: int, s: float = 0.008) -> torch.Tensor:
-        """
-        Create cosine beta schedule.
-
-        Args:
-            timesteps: Number of timesteps.
-            s: Small offset to prevent beta from being too small.
-
-        Returns:
-            Beta schedule tensor.
-        """
-        steps = timesteps + 1
-        x = torch.linspace(0, timesteps, steps)
-        alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
-        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
-        betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-        return torch.clip(betas, 0.0001, 0.9999)
 
     def predict_noise_from_x0(
         self, x_t: torch.Tensor, t: torch.Tensor, x0: torch.Tensor
@@ -289,34 +277,32 @@ class DenoisingDiffusionModel(nn.Module):
         if cond is not None:
             aux_features = cond
             if self.conditional_model is not None:
-                aux_features = self.conditional_model(aux_features)
+                if isinstance(aux_features, dict):
+                    aux_features = self.conditional_model(**aux_features)
+                else:
+                    aux_features = self.conditional_model(aux_features)
             model_args["aux_features"] = aux_features
 
         if self.timestep_model:
             model_args["t"] = self.timestep_model(t)
         model_output = self.model(x_t, **model_args)
 
-        # Convert model output to noise and x0 predictions based on prediction type
+        if self.clamp_predictions:
+            clamp_range = (-1.0, 1.0) if self.data_normalized_minus1_1 else (0.0, 1.0)
+
         if self.prediction_type == "epsilon":
-            # Model predicts noise
             pred_noise = model_output
             pred_x0 = self.predict_x0_from_noise(x_t, t, pred_noise)
+            if self.clamp_predictions:
+                pred_x0 = torch.clamp(pred_x0, *clamp_range)
         elif self.prediction_type == "x0":
-            # Model predicts clean image
             pred_x0 = model_output
+            if self.clamp_predictions:
+                # Clamp first, then derive pred_noise from the clamped x0 for DDIM consistency
+                pred_x0 = torch.clamp(pred_x0, *clamp_range)
+            pred_noise = self.predict_noise_from_x0(x_t, t, pred_x0)
         else:
             raise ValueError(f"Unknown prediction type: {self.prediction_type}")
-
-        # Clip x0 to valid range for stability (depends on data normalization)
-        if self.data_normalized_minus1_1:
-            pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
-        else:
-            pred_x0 = torch.clamp(pred_x0, 0.0, 1.0)
-
-        # IMPORTANT: Compute pred_noise AFTER clamping pred_x0
-        # This ensures consistency between pred_x0 and pred_noise in DDIM
-        if self.prediction_type == "x0":
-            pred_noise = self.predict_noise_from_x0(x_t, t, pred_x0)
 
         return pred_noise, pred_x0
 
@@ -487,6 +473,13 @@ class DenoisingDiffusionModel(nn.Module):
                 if not os.path.exists(cond_path):
                     save_image(cond_vis[sample_idx : sample_idx + 1], cond_path)
 
+    def _get_batch_idx(self, batch_idx: int | None) -> int:
+        """Return batch_idx, auto-incrementing the internal counter if not provided."""
+        if batch_idx is None:
+            batch_idx = self._debug_batch_counter
+            self._debug_batch_counter += 1
+        return batch_idx
+
     def _compute_timesteps_from_start(self, start_t: int, device: torch.device) -> torch.Tensor:
         """
         Compute the denoising timestep schedule starting from a specific timestep.
@@ -503,7 +496,7 @@ class DenoisingDiffusionModel(nn.Module):
 
         if self.inference_method == "ddim":
             # For DDIM, create evenly spaced steps from start_t to 0
-            num_steps = min(self.num_denoising_steps, start_t + 1)
+            num_steps = min(self.num_denoising_steps or (start_t + 1), start_t + 1)
             timesteps = torch.linspace(start_t, 0, num_steps, dtype=torch.long, device=device)
         elif self.inference_method == "ddpm":
             # For DDPM, go from start_t down to 0, one step at a time
@@ -521,17 +514,16 @@ class DenoisingDiffusionModel(nn.Module):
         cond: torch.Tensor | None = None,
         return_intermediates: bool = False,
         batch_idx: int | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
+    ) -> dict[str, torch.Tensor] | tuple[dict[str, torch.Tensor], list[torch.Tensor]]:
         """
         Forward pass for training and inference.
 
-        During training, this method predicts either noise (epsilon) or
-        the clean image (x0) from a noisy input at a given timestep.
+        During training, returns a dict with both ``pred_noise`` and
+        ``pred_x0`` so that downstream consumers (loss, metrics,
+        visualisation) can each choose the appropriate prediction.
 
-        During inference (eval mode), this method performs iterative denoising.
-        If `t` is provided, denoising starts from that timestep (useful when input
-        is already noised at a specific level). If `t` is None, denoising starts
-        from `self.start_timestep` (useful for generation from pure noise).
+        During inference (eval mode), performs iterative denoising and
+        returns ``{"pred_x0": denoised_result}``.
 
         Args:
             x: Noisy input image tensor [B, C, H, W], normalized to [-1, 1].
@@ -544,9 +536,12 @@ class DenoisingDiffusionModel(nn.Module):
                       will use an internal counter.
 
         Returns:
-            During training: Predicted noise (if prediction_type="epsilon") or
-                           clean image (if prediction_type="x0").
-            During inference: Denoised image tensor.
+            A dict ``{"pred_noise": ..., "pred_x0": ...}``.  During
+            training both come from a single-step prediction; during
+            inference ``pred_x0`` is the iterative-denoising result while
+            ``pred_noise`` is a single-step prediction at the initial
+            timestep.  When *return_intermediates* is True, returns
+            ``(pred_dict, intermediates_list)``.
         """
         # Get model predictions for training or direct prediction mode
         # Direct prediction mode: skip iterative denoising, just predict x0 directly
@@ -554,32 +549,21 @@ class DenoisingDiffusionModel(nn.Module):
         if self.training or self.direct_prediction:
             pred_noise, pred_x0 = self.predict_from_model(x, t, cond)
 
-            # Direct prediction mode: return x0 with optional debug logging
+            # Direct prediction mode: optional debug logging
             if self.debug_mode and self.direct_prediction:
-                # Get batch index for debugging
-                if batch_idx is None:
-                    batch_idx = self._debug_batch_counter
-                    self._debug_batch_counter += 1
+                batch_idx = self._get_batch_idx(batch_idx)
                 t_val = t[0].item() if t is not None else 0
                 logger.info("Direct prediction mode: single-step x0 prediction at t=%d", t_val)
-                # Save input (noisy), prediction, and conditioning
                 self._save_debug_images(x, batch_idx, int(t_val), cond, force_save=True)
                 self._save_debug_images(pred_x0, batch_idx, 0, None, force_save=True)
 
-            if self.prediction_type == "epsilon":
-                return pred_noise
-            if self.prediction_type == "x0":
-                return pred_x0
-            raise ValueError(f"Unknown prediction type: {self.prediction_type}")
+            return {"pred_noise": pred_noise, "pred_x0": pred_x0}
 
         # Inference mode: iterative denoising
         batch_size = x.shape[0]
         device = x.device
 
-        # Get batch index for debugging
-        if batch_idx is None:
-            batch_idx = self._debug_batch_counter
-            self._debug_batch_counter += 1
+        batch_idx = self._get_batch_idx(batch_idx)
 
         # Determine starting timestep for inference
         # If t is provided, use it as the starting point (input is noised at that level)
@@ -587,10 +571,7 @@ class DenoisingDiffusionModel(nn.Module):
         if t is not None:
             # Use the provided timestep as starting point
             # For batched inference, use the max timestep in the batch for safety
-            if t.numel() > 1:
-                actual_start_t = int(t.max().item())
-            else:
-                actual_start_t = int(t.item())
+            actual_start_t = int(t.max().item()) if t.numel() > 1 else int(t.item())
             timesteps = self._compute_timesteps_from_start(actual_start_t, device)
         else:
             # No timestep provided - use pre-computed schedule from start_timestep
@@ -600,6 +581,12 @@ class DenoisingDiffusionModel(nn.Module):
         # Initialize
         x_t = x
         intermediates = [x_t.cpu()] if return_intermediates else []
+
+        # Single-step prediction at the initial timestep so that pred_noise
+        # is available during inference (e.g. for the loss that compares
+        # predicted noise against noise targets during validation).
+        t_initial = torch.full((batch_size,), timesteps[0], device=device, dtype=torch.long)
+        pred_noise, _ = self.predict_from_model(x_t, t_initial, cond)
 
         # Save initial state if debugging (force save start)
         if self.debug_mode:
@@ -622,39 +609,17 @@ class DenoisingDiffusionModel(nn.Module):
             t_curr = torch.full((batch_size,), t_curr, device=x_t.device, dtype=torch.long)
             t_curr_val = t_curr[0].item()
 
-            # Determine target timestep
             if self.inference_method == "ddpm":
-                # For DDPM, we go from t to t-1
                 t_prev_val = t_curr_val - 1 if t_curr_val > 0 else 0
-            else:  # DDIM
-                # For DDIM, get the next timestep in the schedule
-                if i < len(timesteps) - 1:
-                    t_prev_val = timesteps[i + 1].item()
-                else:
-                    t_prev_val = 0
-
-            # Log timestep start
-            if self.debug_mode:
-                logger.info(
-                    "Debug: Batch %d, Step %d/%d, Starting timestep %d -> %d",
-                    batch_idx,
-                    i + 1,
-                    len(timesteps),
-                    t_curr_val,
-                    t_prev_val,
-                )
-
-            # Perform denoising step
-            if self.inference_method == "ddpm":
                 x_t_prev = self.ddpm_step(x_t, t_curr, cond)
             elif self.inference_method == "ddim":
-                # Get next timestep
-                if i < len(timesteps) - 1:
-                    t_prev = timesteps[i + 1]
-                else:
-                    t_prev = torch.tensor(0, device=device, dtype=torch.long)
-                t_prev = torch.full((batch_size,), t_prev, device=x_t.device, dtype=torch.long)
-
+                t_next_raw = (
+                    timesteps[i + 1]
+                    if i < len(timesteps) - 1
+                    else torch.tensor(0, dtype=torch.long, device=device)
+                )
+                t_prev_val = t_next_raw.item()
+                t_prev = torch.full((batch_size,), t_next_raw, device=x_t.device, dtype=torch.long)
                 x_t_prev = self.ddim_step(x_t, t_curr, t_prev, cond, self.eta)
             else:
                 raise ValueError(f"Unknown inference method: {self.inference_method}")
@@ -664,8 +629,6 @@ class DenoisingDiffusionModel(nn.Module):
             max_change = change.max().item()
             mean_change = change.mean().item()
 
-            # Log change metrics
-            # Save debug images at the target timestep (what the image represents after denoising)
             if self.debug_mode:
                 logger.info(
                     "Debug: Batch %d, Timestep %d -> %d, Max change: %.6f, Mean change: %.6f",
@@ -702,9 +665,10 @@ class DenoisingDiffusionModel(nn.Module):
         if self.debug_mode:
             logger.info("Debug: Batch %d, Denoising complete", batch_idx)
 
+        result = {"pred_noise": pred_noise, "pred_x0": x_t}
         if return_intermediates:
-            return x_t, intermediates
-        return x_t
+            return result, intermediates
+        return result
 
 
 if __name__ == "__main__":

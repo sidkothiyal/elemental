@@ -116,6 +116,16 @@ HFVisionEncoder(model_name="facebook/dinov2-base", freeze_model=True,
 
 When `return_layers` is set, returns a dict of hidden states. `extract_layer` supports any named model output attribute (e.g. `"pooler_output"`) or an integer for intermediate hidden states. `processor_output_filter` and `processor_to_model_key_map` handle VLM vision submodules where processor output keys differ from the model forward signature.
 
+### `cached_module.py` — CachedModule
+
+Transparent caching wrapper for deterministic (frozen) modules. Hashes all input args/kwargs to generate cache keys, stores outputs in an in-memory LRU cache with optional disk persistence and lz4 compression.
+
+```python
+CachedModule(module=HFVLM(...), max_memory_items=0, cache_dir=None, compress=False)
+```
+
+Wrap any frozen model in config to skip redundant forward passes across epochs. Supports batched inputs with partial cache hits (only uncached samples are computed).
+
 ### `hf_llm.py` — HuggingFace VLM
 
 Wraps vision-language models (e.g., Qwen3-VL) for hidden-state feature extraction from text+image inputs.

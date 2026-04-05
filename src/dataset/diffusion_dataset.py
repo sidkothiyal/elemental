@@ -3,8 +3,11 @@
 import logging
 
 import torch
+from omegaconf import ListConfig
 from torch import nn
 from torch.utils import data
+
+from model.utils import cosine_beta_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,8 @@ class DiffusionDataset(data.Dataset):
         timestep_loss: nn.Module | None = None,
         loss_ema_decay: float = 0.99,
         loss_aware_warmup: int = 1000,
+        cond_key: str | list[str] | None = None,
+        passthrough_keys: list[str] | None = None,
     ):
         """DiffusionDataset constructor.
 
@@ -60,8 +65,28 @@ class DiffusionDataset(data.Dataset):
             loss_aware_warmup: Number of compute_losses() calls before switching from uniform
                               sampling to loss-aware sampling. Ensures enough loss data is
                               collected before biasing. Default: 1000.
+            cond_key: Key(s) from the base dataset to use as conditioning signal ('cond').
+                     Can be a single string, a list of strings, or None.
+                     If None (default), the clean data x0 is used as conditioning
+                     (original behaviour for image reconstruction diffusion).
+                     If a single string (e.g. "image"), that key is used as the cond value.
+                     If a list of strings (e.g. ["image", "proprioception"]), cond becomes
+                     a dictionary with those keys mapping to their values from the base dataset.
+                     Set to e.g. "image" for VLA action diffusion where the observation
+                     image conditions the action denoising process.
+            passthrough_keys: List of keys from the base dataset to pass through unchanged
+                            to the output dict. Useful for forwarding extra data (e.g.
+                            proprioception, language embeddings) needed by the model.
         """
         self.dataset = dataset
+        # Convert OmegaConf ListConfig to Python list if needed
+        if cond_key and isinstance(cond_key, ListConfig):
+            cond_key = list(cond_key)
+        self.cond_key = cond_key
+        # Convert OmegaConf ListConfig to Python list if needed
+        if passthrough_keys and isinstance(passthrough_keys, ListConfig):
+            passthrough_keys = list(passthrough_keys)
+        self.passthrough_keys = passthrough_keys or []
         self.num_timesteps = num_timesteps
         self.noise_schedule = noise_schedule
         self.prediction_type = prediction_type
@@ -85,7 +110,7 @@ class DiffusionDataset(data.Dataset):
         if noise_schedule == "linear":
             self.betas = torch.linspace(beta_start, beta_end, num_timesteps)
         elif noise_schedule == "cosine":
-            self.betas = self._cosine_beta_schedule(num_timesteps)
+            self.betas = cosine_beta_schedule(num_timesteps)
         else:
             raise ValueError(f"Unknown noise schedule: {noise_schedule}")
 
@@ -95,25 +120,12 @@ class DiffusionDataset(data.Dataset):
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
 
-    def _cosine_beta_schedule(self, timesteps: int, s: float = 0.008) -> torch.Tensor:
-        """
-        Cosine beta schedule as proposed in "Improved Denoising Diffusion Probabilistic Models".
-
-        Args:
-            timesteps: Number of diffusion timesteps.
-            s: Small offset to prevent beta from being too small near t=0.
-
-        Returns:
-            Beta values for each timestep.
-        """
-        steps = timesteps + 1
-        x = torch.linspace(0, timesteps, steps)
-        alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
-        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
-        betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-        return torch.clip(betas, 0.0001, 0.9999)
-
-    def compute_losses(self, pred: torch.Tensor, target: torch.Tensor, t: torch.Tensor) -> None:
+    def compute_losses(
+        self,
+        pred: torch.Tensor | dict[str, torch.Tensor],
+        target: torch.Tensor,
+        t: torch.Tensor,
+    ) -> None:
         """Compute per-timestep losses and update loss history for loss-aware sampling.
 
         Called automatically by collect_module_losses() in the training loop.
@@ -121,15 +133,20 @@ class DiffusionDataset(data.Dataset):
         then updates the EMA loss history per timestep.
 
         Args:
-            pred: Model predictions, shape (B, ...).
+            pred: Model predictions — a tensor of shape (B, ...) or a dict
+                returned by ``DenoisingDiffusionModel`` with keys like
+                ``pred_noise`` and ``pred_x0``.
             target: Target values, shape (B, ...).
             t: Timestep for each sample in the batch, shape (B,).
         """
         if self.timestep_bias != "loss_aware":
             return
 
+        if isinstance(pred, dict):
+            pred = pred["pred_noise"] if self.prediction_type == "epsilon" else pred["pred_x0"]
+
         with torch.no_grad():
-            per_sample_loss = self._timestep_loss(pred.float(), target.float())
+            per_sample_loss = self._timestep_loss(pred, target)
             # Average over non-batch dims to get a single loss value per sample
             if per_sample_loss.dim() > 1:
                 per_sample_loss = per_sample_loss.mean(dim=list(range(1, per_sample_loss.dim())))
@@ -163,16 +180,16 @@ class DiffusionDataset(data.Dataset):
             # Bias toward high timesteps (more noisy) using sqrt distribution
             # sqrt(uniform) gives higher probability to larger values
             u = torch.rand(1).squeeze()
-            t = self.min_timestep + int(torch.sqrt(u) * t_range)
-            t = min(t, self.num_timesteps - 1)
-            t = torch.tensor(t)
+            t = (self.min_timestep + (torch.sqrt(u) * t_range).long()).clamp(
+                max=self.num_timesteps - 1
+            )
         elif self.timestep_bias == "low":
             # Bias toward low timesteps (less noisy)
             # 1 - sqrt(uniform) gives higher probability to smaller values
             u = torch.rand(1).squeeze()
-            t = self.min_timestep + int((1 - torch.sqrt(1 - u)) * t_range)
-            t = min(t, self.num_timesteps - 1)
-            t = torch.tensor(t)
+            t = (self.min_timestep + ((1 - torch.sqrt(1 - u)) * t_range).long()).clamp(
+                max=self.num_timesteps - 1
+            )
         elif self.timestep_bias == "loss_aware":
             total = self._total_updates[0].item()
             if total < self._loss_aware_warmup:
@@ -243,12 +260,40 @@ class DiffusionDataset(data.Dataset):
         # For x0 prediction: target should be clean image
         target = noise if self.prediction_type == "epsilon" else x0
 
-        return {
+        # Determine conditioning signal
+        if self.cond_key is None:
+            cond = x0  # Default: condition on clean data (original behaviour)
+        elif isinstance(self.cond_key, str):
+            # Single key: use the value directly if it exists, otherwise fall back to x0
+            if self.cond_key in item:
+                cond = item[self.cond_key]
+            else:
+                cond = x0
+        elif isinstance(self.cond_key, list):
+            # List of keys: create a dictionary with those keys
+            cond = {}
+            for key in self.cond_key:
+                if key in item:
+                    cond[key] = item[key]
+                # If key is missing, we don't add it to the dict (user should ensure keys exist)
+        else:
+            raise ValueError(f"cond_key must be str, list[str], or None, got {type(self.cond_key)}")
+
+        result = {
             "input": noisy_image,
             "target": target,
             "t": t,
-            "cond": x0,
+            "cond": cond,
+            "x0": x0,
+            "noise": noise,
         }
+
+        # Pass through additional keys from the base dataset
+        for key in self.passthrough_keys:
+            if key in item and key not in result:
+                result[key] = item[key]
+
+        return result
 
 
 if __name__ == "__main__":

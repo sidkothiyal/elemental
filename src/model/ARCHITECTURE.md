@@ -121,6 +121,20 @@ forward(input, **kwargs)
   5. return dict of all head outputs
 ```
 
+## CachedModule (cached_module.py)
+
+Wraps any `nn.Module` whose output is deterministic for a given input. Computes a SHA-256 hash of all positional and keyword arguments (tensors → raw bytes + shape/dtype, nested lists recursed, strings → repr) to produce per-sample cache keys.
+
+On `forward()`:
+1. Infer batch size from first tensor/list arg
+2. Slice each arg per sample, hash → cache key
+3. Look up each key: memory LRU → disk (if `cache_dir`)
+4. Compute only miss sub-batch via wrapped module under `torch.no_grad()`
+5. Store new results (CPU tensors in memory, optionally lz4-compressed `.pt` files on disk)
+6. Assemble full batch, move to target device
+
+Memory cache: `OrderedDict` with LRU eviction when `max_memory_items > 0`.
+
 ## Design Principles
 
 1. **Atomic modules only** — `src/model/` should contain only atomic, composable building blocks. Do not add a new module if it can be constructed by composing existing pieces (e.g. via `nn.Sequential` or `MultiInputSequential` in Hydra configs). Only add a new module when composition would be very messy or when the module represents genuinely new functionality.

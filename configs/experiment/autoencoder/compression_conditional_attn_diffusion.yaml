@@ -99,6 +99,20 @@ callbacks:
     logging_interval: 500
   checkpoint:
     save_every_n_epochs: 10
+  metrics:
+    pred_key: "pred/pred_x0"
+
+# DenoisingDiffusionModel returns a dict; point loss at the x0 prediction
+loss:
+  losses:
+    main:
+      pred_key: "pred/pred_x0"
+
+to_log:
+  - input/input
+  - input/cond
+  - target
+  - pred/pred_x0
 
 model_input_args:
   - "t"
