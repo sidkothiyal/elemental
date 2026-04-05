@@ -1,0 +1,54 @@
+# @package _global_
+# DIV2K dataset served from a remote DatasetServer (Approach 2)
+# The server processes samples and sends only compressed tensors.
+# Best for very large datasets or when you want zero dataset transfer.
+#
+# Prerequisites:
+#   1. Start the server on the dataset machine:
+#      ELEMENTAL_DATASET_SERVER_TOKEN=<token> python scripts/start_dataset_server.py \
+#          experiment/autoencoder/compression_ae \
+#          --host 0.0.0.0 --port 5555 --split train --num_workers 4
+#
+#   2. Start a second server for validation:
+#      ELEMENTAL_DATASET_SERVER_TOKEN=<token> python scripts/start_dataset_server.py \
+#          experiment/autoencoder/compression_ae \
+#          --host 0.0.0.0 --port 5556 --split val --num_workers 2
+#
+#   3. Set the same token on the training machine:
+#      export ELEMENTAL_DATASET_SERVER_TOKEN=<token>
+
+dataset_name: div2k_served
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.remote_dataset.RemoteDataset
+      server_host: "192.168.1.100"  # Replace with your server IP
+      server_port: 5555
+      compression: lz4
+      prefetch_size: 32
+      timeout_ms: 30000
+      retry_attempts: 3
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.remote_dataset.RemoteDataset
+      server_host: "192.168.1.100"
+      server_port: 5556
+      compression: lz4
+      prefetch_size: 16
+      timeout_ms: 30000
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 2
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  test: null
