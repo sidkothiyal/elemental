@@ -15,6 +15,7 @@ import hydra
 import hydra.utils as hy_utils
 import torch
 import tqdm
+import typer
 from omegaconf import DictConfig
 from torch import nn
 from torch.profiler import ProfilerActivity, record_function, schedule, tensorboard_trace_handler
@@ -991,6 +992,7 @@ def run_train(
     profiler = setup_profiler(config.get("profiler", None), results_dir)
     profiler_step_per = "batch"
     if profiler is not None:
+        profiler.start()
         prof_cfg = config.get("profiler", {})
         profiler_step_per = prof_cfg.get("step_per", "batch")
 
@@ -1162,13 +1164,16 @@ def run_train(
         if distributed.is_main_process():
             logger.info("Test results: %s", test_loss)
 
+    # Stop profiler
+    if profiler is not None:
+        profiler.stop()
+
     # Clean up distributed training
     if use_distributed:
         distributed.cleanup_distributed()
 
 
 if __name__ == "__main__":
-    import typer
 
     def _main(
         config_file: str = typer.Argument(
