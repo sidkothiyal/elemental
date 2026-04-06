@@ -58,9 +58,10 @@ dev = [
 heavy = [
   "accelerate",
 #  "flash-attn; sys_platform == 'linux'",
-  "mmcv",
+  "mmcv; sys_platform == 'linux'",
   "ninja",
-  "tensorflow[and-cuda]",
+  "tensorflow[and-cuda]; sys_platform == 'linux'",
+  "tensorflow; sys_platform == 'darwin'",
   "tensorflow-datasets",
   "torch (>=2.9)",
   "torchvision",

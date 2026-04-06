@@ -1,7 +1,7 @@
 # ============================================================================
 # Stage 1: Builder — compile mmcv, flash-attn, and other native extensions
 # ============================================================================
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
+FROM --platform=linux/amd64 nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -59,7 +59,7 @@ RUN rm -rf \
 # ============================================================================
 # Stage 2: Runtime — slim image with only what's needed to run
 # ============================================================================
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+FROM --platform=linux/amd64 nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
