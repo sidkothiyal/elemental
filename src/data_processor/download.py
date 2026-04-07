@@ -12,6 +12,7 @@ Examples:
 """
 
 import logging
+import shutil
 from functools import partial
 from pathlib import Path
 
@@ -49,13 +50,15 @@ POST_DOWNLOAD_HOOKS = {
 }
 
 
-def download(download_dir: str, dataset_name: str) -> None:
+def download(download_dir: str, dataset_name: str, redownload: bool = False) -> None:
     """Download a dataset to the specified directory.
 
     Args:
         download_dir: Root directory where the dataset will be stored.
             The dataset will be placed under <download_dir>/<dataset_name>/.
         dataset_name: Name of the dataset to download (must exist in dataset_config.yaml).
+        redownload: If True, delete existing data and re-download. If False (default),
+            skip download if data already exists.
     """
     # Load config
     if not CONFIG_PATH.exists():
@@ -85,6 +88,19 @@ def download(download_dir: str, dataset_name: str) -> None:
         )
 
     download_path = Path(download_dir) / dataset_name
+
+    if download_path.exists() and any(download_path.iterdir()):
+        if redownload:
+            logger.info("Redownload requested. Deleting existing data at '%s'.", download_path)
+            shutil.rmtree(download_path)
+        else:
+            logger.info(
+                "Dataset '%s' already exists at '%s', skipping download.",
+                dataset_name,
+                download_path,
+            )
+            return
+
     logger.info(
         "Downloading dataset '%s' (method: %s) to '%s'",
         dataset_name,
