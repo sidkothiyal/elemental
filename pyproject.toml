@@ -20,11 +20,7 @@ dependencies = [
   "kaggle",
   "lark",
   "lz4",
-  "matplotlib (>=3.10.0, <4.0.0)", # Unused
   "numpy (>=2.0.0, <3)",
-  "onnx (>=1.17.0, <2)", # Unused
-  "onnxruntime (>=1.20.0, <2)", # Unused
-  "onnxscript (>=0.2, <0.3)", # Unused
   "open-clip-torch",
   "plotly (>=5.0.0, <6.0.0)",
   "pre-commit",
@@ -34,7 +30,6 @@ dependencies = [
   "pytest-cov",
   "pytorch-msssim",
   "pyyaml (>=6.0.2, <7.0.0)",
-  "scikit-learn (>=1.6.1, <2.0.0)", # Unused
   "s3fs",
   "sshfs",
   "tfrecord",
@@ -70,16 +65,6 @@ heavy = [
   "torchvision",
 ]
 
-[project.optional-dependencies]
-dev = [
-  "pylint ~=2.14.0",
-  "toml ~=0.10.2",
-  "yapf ~=0.32.0",
-]
-test = [
-  "pytest-cov ~=3.0.0",
-]
-
 [tool.isort]
 profile = "black"
 combine_as_imports = true
@@ -94,9 +79,6 @@ extension-pkg-allow-list = [
     "torch",
     "torchvision",
     "wandb",
-    "onnx",
-    "onnxruntime",
-    "sklearn",
 ]
 
 [tool.pylint.MESSAGES_CONTROL]
@@ -104,9 +86,6 @@ disable = [
     "import-error",
     "c-extension-no-member",
 ]
-
-[tool.yapf]
-blank_line_before_nested_class_or_def = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
