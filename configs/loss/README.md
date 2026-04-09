@@ -15,7 +15,7 @@ Loss function configurations for different training objectives.
 ### Specialized Losses
 | File | Description | Use Case |
 |------|-------------|----------|
-| `phased_l1_ssim.yaml` | Phased L1→SSIM transition | Image compression |
+| `phased_mse_ssim.yaml` | Phased MSE→SSIM transition | Image compression |
 | `masked_mse.yaml` | Masked MSE | Masked autoencoder |
 | `masked_loss.yaml` | Configurable masked loss | MAE variants |
 | `shifted_teacher_forcing.yaml` | Shifted loss for LM | Language modeling |

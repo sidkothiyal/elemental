@@ -87,7 +87,7 @@ all YAML configs under `configs/`. Adding a new config file automatically
 includes it in the test suite — no hardcoded lists to maintain.
 
 Categories tested: experiment, model, dataset, loss, optimizer, scheduler,
-callback, profiler. Known-broken configs can be added to `_EXPERIMENT_SKIP`.
+callback, profiler.
 
 ## Golden Value Tests
 

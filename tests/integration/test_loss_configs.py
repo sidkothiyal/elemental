@@ -13,7 +13,7 @@ _ROOT = Path(__file__).parent.parent.parent
 _LOSS_CONFIG_DIR = _ROOT / "configs" / "loss"
 
 # Configs that use ${num_epochs} interpolation and can't be instantiated standalone
-_INTERPOLATION_CONFIGS = {"phased_mse_ssim", "gan_compression", "phased_l1_ssim"}
+_INTERPOLATION_CONFIGS = {"phased_mse_ssim", "gan_compression"}
 
 
 def _all_loss_config_names() -> list[str]:

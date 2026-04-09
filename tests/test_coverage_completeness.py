@@ -19,15 +19,12 @@ _EXEMPT = {
     "data_processor/download.py",
     "data_processor/downloaders/url_downloader.py",
     "data_processor/downloaders/kaggle_downloader.py",
-    "data_processor/post_download_hooks/reorganizer.py",
-    "dataset/dataset_server.py",
     "utils/distributed.py",
     "utils/wandb_utils.py",
     "utils/s3_cache_backend.py",
     "utils/remote_backup/base.py",
     "utils/remote_backup/ssh_strategy.py",
     "utils/remote_backup/wandb_strategy.py",
-    "tools/checkpoint_surgeon.py",
 }
 
 

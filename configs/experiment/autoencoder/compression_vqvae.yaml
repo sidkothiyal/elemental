@@ -7,7 +7,7 @@ defaults:
   - /default
   - /dataset: div2k
   - /model: vq_vae_transformer
-  - /loss: phased_l1_ssim
+  - /loss: phased_mse_ssim
   - /optimizer: adamw
   - /scheduler: cosine_annealing
   - /callback: default

@@ -32,13 +32,7 @@ def _discover_configs(subdir: str) -> list[str]:
     )
 
 
-# Known-broken experiment configs (e.g. referencing missing sub-configs)
-_EXPERIMENT_SKIP = {
-    "experiment/autoencoder/compression_unet_ssim",  # references missing loss: phased_l1_ssim
-    "experiment/autoencoder/compression_vqvae",  # references missing loss: phased_l1_ssim
-}
-
-ALL_EXPERIMENT_CONFIGS = [c for c in _discover_configs("experiment") if c not in _EXPERIMENT_SKIP]
+ALL_EXPERIMENT_CONFIGS = _discover_configs("experiment")
 ALL_LOSS_CONFIGS = _discover_configs("loss")
 ALL_MODEL_CONFIGS = _discover_configs("model")
 ALL_DATASET_CONFIGS = _discover_configs("dataset")
