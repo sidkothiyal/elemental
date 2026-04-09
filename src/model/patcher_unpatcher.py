@@ -260,10 +260,10 @@ class Unpatcher(nn.Module):
         self.stride_w = effective_patch_w
 
         # Blend window and fold divisor buffers (lazily initialised on first forward)
-        self._blend_window: torch.Tensor | None = None
-        self._fold_divisor: torch.Tensor | None = None
         self.register_buffer("_blend_window", None, persistent=False)
         self.register_buffer("_fold_divisor", None, persistent=False)
+        self._blend_window: torch.Tensor | None
+        self._fold_divisor: torch.Tensor | None
 
     def _ensure_blend_buffers(self, device: torch.device, dtype: torch.dtype) -> None:
         """Ensure blending buffers are initialized for the given device/dtype."""

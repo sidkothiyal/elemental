@@ -7,7 +7,6 @@ model_input_args:
 
 model:
   _target_: model.diffusion.DenoisingDiffusionModel
-  use_timestep_embedding: true
   timestep_model:
     _target_: torch.nn.Sequential
     _args_:

@@ -836,7 +836,7 @@ def run_train(
     callbacks = hy_utils.instantiate(config.callbacks)
     if isinstance(callbacks, (dict, DictConfig)):
         callbacks = list(callbacks.values())
-    callbacks = callback.CallbackList(callbacks)
+    callbacks = callback.CallbackList(callbacks or [])
     callbacks.update_config({"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed})
 
     # Initialize dataset and dataloaders

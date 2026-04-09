@@ -5,8 +5,8 @@
 
 defaults:
   - /default
-  - /dataset: imagenet
   - /model: classification_cnn
+  - /dataset: imagenet
   - /loss: cross_entropy
   - /optimizer: adam
   - /scheduler: step_lr

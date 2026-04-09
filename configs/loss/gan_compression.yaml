@@ -20,10 +20,9 @@ loss:
             - _target_: torch.nn.L1Loss
             - _target_: loss.ssim.SSIMLoss
               multi_scale: true
-              ssim_kwargs:
-                data_range: 1.0
-                size_average: True
-                channel: 3
+              data_range: 1.0
+              size_average: True
+              channel: 3
         run_until: 1.0
   adversarial:
     _target_: torch.nn.BCEWithLogitsLoss

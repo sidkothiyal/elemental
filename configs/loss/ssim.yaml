@@ -1,0 +1,15 @@
+# @package _global_
+# Mean Squared Error loss
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.ssim.SSIMLoss
+        multi_scale: false
+        data_range: 1.0
+        size_average: true
+        channel: 3
+        nonnegative_ssim: true
+        K: [0.1, 0.3]
