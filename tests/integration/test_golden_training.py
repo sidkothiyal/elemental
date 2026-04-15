@@ -24,22 +24,21 @@ from tests.integration.test_training_runs import (
     _TEXT_DS,
 )
 
-# Shared list to collect losses across the patched callback
-_recorded_losses: list[float] = []
+# Shared dict to collect losses across the patched callback
+_recorded_losses: dict[str, list[float]] = {"train": [], "val": []}
 
 
 class _LossRecorderCallback(Callback):
-    """Test callback that records per-epoch train loss."""
+    """Test callback that records per-epoch train and val losses."""
 
     def log_metrics(
         self, step: int, phase: str, metrics: dict[str, float]  # pylint: disable=unused-argument
     ) -> None:
-        """Append the first loss-related metric value from each training phase call."""
-        if phase == "train":
-            # Trainer uses "loss_total" as the key for aggregate loss
+        """Append the first loss-related metric value from each phase call."""
+        if phase in ("train", "val"):
             for key, value in metrics.items():
                 if "loss" in key:
-                    _recorded_losses.append(value)
+                    _recorded_losses[phase].append(value)
                     return
 
 
@@ -50,10 +49,11 @@ class _InstrumentedCallbackList(CallbackList):
         super().__init__(callbacks + [_LossRecorderCallback()])
 
 
-def _run_with_recorder(config_name: str, overrides: list[str]) -> list[float]:
-    """Run training and return recorded losses."""
+def _run_with_recorder(config_name: str, overrides: list[str]) -> dict[str, list[float]]:
+    """Run training and return recorded train and val losses."""
     GlobalHydra.instance().clear()
-    _recorded_losses.clear()
+    _recorded_losses["train"].clear()
+    _recorded_losses["val"].clear()
 
     # Patch the CallbackList reference in the trainer module
     original = cb_pkg.callback.CallbackList
@@ -69,7 +69,7 @@ def _run_with_recorder(config_name: str, overrides: list[str]) -> list[float]:
         cb_pkg.callback.CallbackList = original
         trainer_mod.callback = orig_trainer_ref
 
-    return list(_recorded_losses)
+    return {"train": list(_recorded_losses["train"]), "val": list(_recorded_losses["val"])}
 
 
 @pytest.mark.e2e
@@ -80,20 +80,29 @@ class TestGoldenTraining:
     def test_unet_2epoch_loss_trend(
         self, mock_wandb: MagicMock  # pylint: disable=unused-argument
     ) -> None:
-        """2-epoch UNet training on synthetic data: loss should decrease."""
+        """2-epoch UNet training on synthetic data: pin exact loss values."""
         torch.manual_seed(42)
         with tempfile.TemporaryDirectory() as tmp:
             overrides = [*_BASE, f"results_dir={tmp}", *_IMAGE_DS, *_NO_SCHED, "seed=42"]
             losses = _run_with_recorder("experiment/autoencoder/compression_unet", overrides)
 
-        assert len(losses) >= 2, f"Expected at least 2 epoch losses, got {len(losses)}"
-        for i, loss in enumerate(losses):
-            assert 0 < loss < 100, f"Epoch {i} loss out of range: {loss}"
+        # Train loss golden values (seed=42, CPU, batch_size=2, 2 epochs, synthetic data)
+        assert losses["train"] == pytest.approx(
+            [1.2378487586975098, 1.2080572843551636], abs=1e-5
+        ), f"UNet train loss golden values changed: {losses['train']}"
+
+        # Val loss golden values
+        assert losses["val"] == pytest.approx(
+            [1.122605323791504, 1.1218066215515137], abs=1e-5
+        ), f"UNet val loss golden values changed: {losses['val']}"
+
+        # Structural: training loss should decrease across epochs
+        assert losses["train"][1] < losses["train"][0]
 
     def test_shakespeare_2epoch_loss_trend(
         self, mock_wandb: MagicMock  # pylint: disable=unused-argument
     ) -> None:
-        """2-epoch Shakespeare LM training: loss should be reasonable."""
+        """2-epoch Shakespeare LM training: pin exact loss values."""
         torch.manual_seed(42)
         with tempfile.TemporaryDirectory() as tmp:
             overrides = [
@@ -106,6 +115,15 @@ class TestGoldenTraining:
             ]
             losses = _run_with_recorder("experiment/autoregressive/tiny_shakespeare", overrides)
 
-        assert len(losses) >= 2, f"Expected at least 2 epoch losses, got {len(losses)}"
-        for i, loss in enumerate(losses):
-            assert 0 < loss < 100, f"Epoch {i} loss out of range: {loss}"
+        # Train loss golden values (seed=42, CPU, batch_size=2, 2 epochs, synthetic data)
+        assert losses["train"] == pytest.approx(
+            [4.246687889099121, 3.9456725120544434], abs=1e-5
+        ), f"Shakespeare train loss golden values changed: {losses['train']}"
+
+        # Val loss golden values
+        assert losses["val"] == pytest.approx(
+            [4.315772533416748, 4.325128078460693], abs=1e-5
+        ), f"Shakespeare val loss golden values changed: {losses['val']}"
+
+        # Structural: training loss should decrease across epochs
+        assert losses["train"][1] < losses["train"][0]

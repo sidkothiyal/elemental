@@ -341,6 +341,19 @@ def populate_predictions(pred: torch.Tensor | dict[str, torch.Tensor], data: dic
     return data
 
 
+def should_step_optimizer(batch_idx: int, grad_accum_steps: int, total_batches: int) -> bool:
+    """Return True when the optimizer should step (accumulation boundary or final batch)."""
+    return (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == total_batches
+
+
+def materialize_and_average_losses(
+    running_loss_gpu: dict[str, torch.Tensor],
+    total_batches: int,
+) -> dict[str, float]:
+    """Materialize GPU loss tensors to CPU and divide by batch count."""
+    return {key: value.item() / total_batches for key, value in running_loss_gpu.items()}
+
+
 def _accumulate_loss(
     running_loss: dict[str, torch.Tensor],
     key: str,
@@ -583,23 +596,19 @@ def batch_loop_gan(
         if profiler is not None:
             profiler.step()
 
-    # Materialize GPU loss tensors to CPU (single sync point per epoch)
-    running_loss: dict[str, float] = {key: value.item() for key, value in running_loss_gpu.items()}
+    # Materialize GPU loss tensors to CPU and average (single sync point per epoch)
+    running_loss = materialize_and_average_losses(running_loss_gpu, total_batches)
 
     # Calculate average metrics
     metrics = {
-        "generator_loss": running_loss.get("generator", 0.0) / total_batches,
-        "discriminator_loss": running_loss.get("discriminator", 0.0) / total_batches,
+        "generator_loss": running_loss.get("generator", 0.0),
+        "discriminator_loss": running_loss.get("discriminator", 0.0),
     }
 
     # Trigger on_epoch_end before log_metrics so that MetricsCallback can
     # compute aggregated metrics and inject them into the metrics dict.
     callbacks.on_epoch_end(epoch, phase)
     callbacks.log_metrics(num_steps + total_batches, phase, metrics)
-
-    # Calculate average losses
-    for key in running_loss:
-        running_loss[key] /= total_batches
 
     return running_loss
 
@@ -720,10 +729,7 @@ def batch_loop(
                     scaled_loss.backward()
 
             # Check if we should update weights (accumulation complete or last batch)
-            is_accumulation_step = (batch_idx + 1) % grad_accum_steps == 0
-            is_last_batch = (batch_idx + 1) == total_batches
-
-            if is_accumulation_step or is_last_batch:
+            if should_step_optimizer(batch_idx, grad_accum_steps, total_batches):
                 with record_function("optimizer"):
                     if clip_grad_norm is not None:
                         if use_scaler and scaler is not None:
@@ -760,40 +766,42 @@ def batch_loop(
         if profiler is not None:
             profiler.step()
 
-    # Materialize GPU loss tensors to CPU (single sync point per epoch)
-    running_loss: dict[str, float] = {key: value.item() for key, value in running_loss_gpu.items()}
+    # Materialize GPU loss tensors to CPU and average (single sync point per epoch)
+    running_loss = materialize_and_average_losses(running_loss_gpu, total_batches)
 
     # Calculate average metrics
-    metrics = {
-        f"loss_{loss_key}": loss_value / total_batches
-        for loss_key, loss_value in running_loss.items()
-    }
+    metrics = {f"loss_{k}": v for k, v in running_loss.items()}
 
     # Trigger on_epoch_end before log_metrics so that MetricsCallback can
     # compute aggregated metrics and inject them into the metrics dict.
     callbacks.on_epoch_end(epoch, phase)
     callbacks.log_metrics(num_steps + total_batches, phase, metrics)
 
-    # Calculate average losses
-    for key in running_loss:
-        running_loss[key] /= total_batches
-
     return running_loss
 
 
-def run_train(
+def _init_training_state(
     config_file: str,
-    test: bool = False,
-    local_rank: int = int(os.environ.get("LOCAL_RANK", -1)),
+    local_rank: int = -1,
     overrides: list[str] | None = None,
-) -> None:
-    """Run model training, validation, and testing.
+) -> dict:
+    """Initialize all training components from config.
+
+    Handles config loading, distributed setup, model/optimizer/loss creation,
+    checkpoint loading, profiler setup, and callback initialization.
 
     Args:
-        config_file: Path to the configuration file
-        test: Whether to run only in test mode
-        local_rank: Local rank for distributed training (-1 for single GPU)
-        overrides: Hydra override strings (e.g. ["lr=0.001", "num_epochs=100"])
+        config_file: Path to the configuration file.
+        local_rank: Local rank for distributed training (-1 for single GPU).
+        overrides: Hydra override strings (e.g. ["lr=0.001", "num_epochs=100"]).
+
+    Returns:
+        Dictionary with all initialized training state:
+            config, device, dtype, model, optim, loss, scheduler, scaler,
+            callbacks, train_loader, val_loader, test_loader, batch_loop_fn,
+            postprocessor_pipeline, profiler, profiler_step_per, results_dir,
+            use_distributed, checkpoint_data, cuda_empty_cache_interval,
+            resume_training.
     """
     # Load configuration
     with hydra.initialize(version_base=None, config_path="../configs"):
@@ -1014,9 +1022,197 @@ def run_train(
             "to_log": config.get("to_log", None),
         }
     )
-    # # TODO: check if watch is time consuming and if we should log only the
-    # best model (reference: https://docs.wandb.ai/ref/python/watch/)
-    # wb_logger.watch(model, criterion, log="all")
+
+    return {
+        "config": config,
+        "device": device,
+        "dtype": dtype,
+        "model": model,
+        "optim": optim,
+        "loss": loss,
+        "scheduler": scheduler,
+        "scaler": scaler,
+        "callbacks": callbacks,
+        "train_loader": train_loader,
+        "val_loader": val_loader,
+        "test_loader": test_loader,
+        "batch_loop_fn": batch_loop_fn,
+        "postprocessor_pipeline": postprocessor_pipeline,
+        "profiler": profiler,
+        "profiler_step_per": profiler_step_per,
+        "results_dir": results_dir,
+        "use_distributed": use_distributed,
+        "checkpoint_data": checkpoint_data,
+        "cuda_empty_cache_interval": cuda_empty_cache_interval,
+        "resume_training": resume_training,
+    }
+
+
+def _run_epoch(epoch: int, state: dict) -> dict[str, float]:
+    """Run one training epoch plus optional validation.
+
+    Args:
+        epoch: Current epoch number.
+        state: Training state dict from ``_init_training_state``.
+
+    Returns:
+        Training loss dict for this epoch.
+    """
+    config = state["config"]
+    model = state["model"]
+    optim = state["optim"]
+    loss = state["loss"]
+    scheduler = state["scheduler"]
+    scaler = state["scaler"]
+    callbacks = state["callbacks"]
+    device = state["device"]
+    dtype = state["dtype"]
+    train_loader = state["train_loader"]
+    val_loader = state["val_loader"]
+    batch_loop_fn = state["batch_loop_fn"]
+    postprocessor_pipeline = state["postprocessor_pipeline"]
+    profiler = state["profiler"]
+    profiler_step_per = state["profiler_step_per"]
+    use_distributed = state["use_distributed"]
+    cuda_empty_cache_interval = state["cuda_empty_cache_interval"]
+    scheduler_step_per = config.get("scheduler_step_per", "epoch")
+
+    # Clean up memory at the start of each epoch
+    cleanup_memory(
+        model, optim, device, epoch=epoch, empty_cache_interval=cuda_empty_cache_interval
+    )
+
+    # Set epoch for distributed sampler (ensures different shuffling each epoch)
+    if use_distributed and hasattr(train_loader.sampler, "set_epoch"):
+        train_loader.sampler.set_epoch(epoch)
+
+    callbacks.on_epoch_start(epoch, "train")
+    if distributed.is_main_process():
+        logger.info("Starting epoch %d/%d", epoch + 1, config.num_epochs)
+
+    model.train()
+
+    # Training phase
+    train_loss = batch_loop_fn(
+        "train",
+        epoch,
+        train_loader,
+        model,
+        loss,
+        optim,
+        callbacks,
+        device,
+        dtype=dtype,
+        config=config,
+        scaler=scaler,
+        scheduler=scheduler if scheduler_step_per == "batch" else None,
+        postprocessor_pipeline=postprocessor_pipeline,
+        profiler=profiler if profiler_step_per == "batch" else None,
+    )
+    if distributed.is_main_process():
+        logger.info("Train loss: %s", train_loss)
+
+    # Update learning rate (only if stepping per epoch)
+    if scheduler and scheduler_step_per == "epoch":
+        if isinstance(scheduler, dict):
+            for key in scheduler:
+                scheduler[key].step()
+                callbacks.on_lr_update(
+                    epoch,
+                    float(statistics.mean([float(v) for v in scheduler[key].get_lr()])),
+                    key,
+                )
+        else:
+            scheduler.step()
+            callbacks.on_lr_update(
+                epoch, float(statistics.mean([float(v) for v in scheduler.get_lr()]))
+            )
+    elif scheduler is None:
+        if isinstance(optim, dict):
+            for key, o in optim.items():
+                callbacks.on_lr_update(
+                    epoch, float(statistics.mean([pg["lr"] for pg in o.param_groups])), key
+                )
+        else:
+            callbacks.on_lr_update(
+                epoch, float(statistics.mean([pg["lr"] for pg in optim.param_groups]))
+            )
+
+    callbacks.on_phase_end("train")
+
+    # Validation phase (every 2 epochs by default, always on last epoch)
+    validation_interval = config.get("validation_interval", 2)
+    is_last_epoch = epoch == config.num_epochs - 1
+    if epoch % validation_interval == 0 or is_last_epoch:
+        cleanup_memory(
+            model,
+            optim,
+            device,
+            epoch=epoch,
+            empty_cache_interval=cuda_empty_cache_interval,
+        )
+
+        callbacks.on_phase_start("val")
+
+        model.eval()
+        callbacks.on_epoch_start(epoch, "val")
+        val_loss = batch_loop_fn(
+            "val",
+            epoch,
+            val_loader,
+            model,
+            loss,
+            optim,
+            callbacks,
+            device,
+            dtype=dtype,
+            config=config,
+            scaler=None,  # No scaler needed for validation
+            scheduler=None,
+            postprocessor_pipeline=postprocessor_pipeline,
+        )
+        if distributed.is_main_process():
+            logger.info("Validation loss: %s", val_loss)
+
+        callbacks.on_phase_end("val")
+
+    # Step profiler at epoch boundary (captures inter-epoch overhead:
+    # cleanup_memory, callbacks, scheduler, validation, etc.)
+    if profiler is not None and profiler_step_per == "epoch":
+        profiler.step()
+
+    return train_loss
+
+
+def run_train(
+    config_file: str,
+    test: bool = False,
+    local_rank: int = int(os.environ.get("LOCAL_RANK", -1)),
+    overrides: list[str] | None = None,
+) -> None:
+    """Run model training, validation, and testing.
+
+    Args:
+        config_file: Path to the configuration file
+        test: Whether to run only in test mode
+        local_rank: Local rank for distributed training (-1 for single GPU)
+        overrides: Hydra override strings (e.g. ["lr=0.001", "num_epochs=100"])
+    """
+    state = _init_training_state(config_file, local_rank, overrides)
+    config = state["config"]
+    model = state["model"]
+    optim = state["optim"]
+    loss = state["loss"]
+    callbacks = state["callbacks"]
+    device = state["device"]
+    dtype = state["dtype"]
+    batch_loop_fn = state["batch_loop_fn"]
+    postprocessor_pipeline = state["postprocessor_pipeline"]
+    profiler = state["profiler"]
+    use_distributed = state["use_distributed"]
+    resume_training = state["resume_training"]
+    checkpoint_data = state["checkpoint_data"]
+    test_loader = state["test_loader"]
 
     # Training loop
     if not test:
@@ -1029,113 +1225,8 @@ def run_train(
             start_epoch = saved_epoch + 1
             logger.info("Resuming training from epoch %d", start_epoch)
 
-        # Get scheduler stepping mode
-        scheduler_step_per = config.get("scheduler_step_per", "epoch")
-
         for epoch in range(start_epoch, config.num_epochs):
-            # Clean up memory at the start of each epoch (except first)
-            cleanup_memory(
-                model, optim, device, epoch=epoch, empty_cache_interval=cuda_empty_cache_interval
-            )
-
-            # Set epoch for distributed sampler (ensures different shuffling each epoch)
-            if use_distributed and hasattr(train_loader.sampler, "set_epoch"):
-                train_loader.sampler.set_epoch(epoch)
-
-            callbacks.on_epoch_start(epoch, "train")
-            if distributed.is_main_process():
-                logger.info("Starting epoch %d/%d", epoch + 1, config.num_epochs)
-
-            model.train()
-
-            # Training phase
-            train_loss = batch_loop_fn(
-                "train",
-                epoch,
-                train_loader,
-                model,
-                loss,
-                optim,
-                callbacks,
-                device,
-                dtype=dtype,
-                config=config,
-                scaler=scaler,
-                scheduler=scheduler if scheduler_step_per == "batch" else None,
-                postprocessor_pipeline=postprocessor_pipeline,
-                profiler=profiler if profiler_step_per == "batch" else None,
-            )
-            if distributed.is_main_process():
-                logger.info("Train loss: %s", train_loss)
-
-            # Update learning rate (only if stepping per epoch)
-            if scheduler and scheduler_step_per == "epoch":
-                if isinstance(scheduler, dict):
-                    for key in scheduler:
-                        scheduler[key].step()
-                        callbacks.on_lr_update(
-                            epoch,
-                            float(statistics.mean([float(v) for v in scheduler[key].get_lr()])),
-                            key,
-                        )
-                else:
-                    scheduler.step()
-                    callbacks.on_lr_update(
-                        epoch, float(statistics.mean([float(v) for v in scheduler.get_lr()]))
-                    )
-            elif scheduler is None:
-                if isinstance(optim, dict):
-                    for key, o in optim.items():
-                        callbacks.on_lr_update(
-                            epoch, float(statistics.mean([pg["lr"] for pg in o.param_groups])), key
-                        )
-                else:
-                    callbacks.on_lr_update(
-                        epoch, float(statistics.mean([pg["lr"] for pg in optim.param_groups]))
-                    )
-
-            callbacks.on_phase_end("train")
-
-            # Validation phase (every 2 epochs by default, always on last epoch)
-            validation_interval = config.get("validation_interval", 2)
-            is_last_epoch = epoch == config.num_epochs - 1
-            if epoch % validation_interval == 0 or is_last_epoch:
-                cleanup_memory(
-                    model,
-                    optim,
-                    device,
-                    epoch=epoch,
-                    empty_cache_interval=cuda_empty_cache_interval,
-                )
-
-                callbacks.on_phase_start("val")
-
-                model.eval()
-                callbacks.on_epoch_start(epoch, "val")
-                val_loss = batch_loop_fn(
-                    "val",
-                    epoch,
-                    val_loader,
-                    model,
-                    loss,
-                    optim,
-                    callbacks,
-                    device,
-                    dtype=dtype,
-                    config=config,
-                    scaler=None,  # No scaler needed for validation
-                    scheduler=None,
-                    postprocessor_pipeline=postprocessor_pipeline,
-                )
-                if distributed.is_main_process():
-                    logger.info("Validation loss: %s", val_loss)
-
-                callbacks.on_phase_end("val")
-
-            # Step profiler at epoch boundary (captures inter-epoch overhead:
-            # cleanup_memory, callbacks, scheduler, validation, etc.)
-            if profiler is not None and profiler_step_per == "epoch":
-                profiler.step()
+            _run_epoch(epoch, state)
 
     # Test phase
     if test:
