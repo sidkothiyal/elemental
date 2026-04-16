@@ -1,7 +1,7 @@
 """Golden training tests: pin loss values for seeded short training runs.
 
 Uses a LossRecorderCallback to capture per-epoch loss values from the
-full training pipeline (Hydra config + run_train).
+full training pipeline (Hydra config + build_trainer).
 """
 # pylint: disable=too-few-public-methods
 
@@ -13,7 +13,6 @@ import torch
 from hydra.core.global_hydra import GlobalHydra
 
 import callback as cb_pkg  # noqa: E402  # pylint: disable=wrong-import-order
-import trainer as trainer_mod  # noqa: E402  # pylint: disable=wrong-import-order
 from callback.callback import Callback, CallbackList
 
 # Reuse synthetic datasets from test_training_runs
@@ -23,6 +22,7 @@ from tests.integration.test_training_runs import (
     _NO_SCHED,
     _TEXT_DS,
 )
+from training.builder import build_trainer
 
 # Shared dict to collect losses across the patched callback
 _recorded_losses: dict[str, list[float]] = {"train": [], "val": []}
@@ -55,19 +55,16 @@ def _run_with_recorder(config_name: str, overrides: list[str]) -> dict[str, list
     _recorded_losses["train"].clear()
     _recorded_losses["val"].clear()
 
-    # Patch the CallbackList reference in the trainer module
+    # Patch CallbackList on the shared callback module so that every site
+    # constructing a CallbackList (including initializer.initialize_callbacks)
+    # receives the instrumented version.
     original = cb_pkg.callback.CallbackList
     cb_pkg.callback.CallbackList = _InstrumentedCallbackList
-    # trainer.py does `import callback` then `callback.CallbackList(...)`,
-    # so we also need to patch the module-level reference
-    orig_trainer_ref = trainer_mod.callback
-    trainer_mod.callback = cb_pkg.callback
 
     try:
-        trainer_mod.run_train(config_name, overrides=overrides)
+        build_trainer(config_name, overrides=overrides).train()
     finally:
         cb_pkg.callback.CallbackList = original
-        trainer_mod.callback = orig_trainer_ref
 
     return {"train": list(_recorded_losses["train"]), "val": list(_recorded_losses["val"])}
 

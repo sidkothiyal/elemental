@@ -25,6 +25,14 @@ _EXEMPT = {
     "utils/remote_backup/base.py",
     "utils/remote_backup/ssh_strategy.py",
     "utils/remote_backup/wandb_strategy.py",
+    # Trainer classes covered by tests/integration/test_trainer_loops.py +
+    # test_training_runs.py + test_golden_training.py. Helpers covered by
+    # tests/src/test_trainer.py.
+    "training/builder.py",
+    "training/gan_trainer.py",
+    "training/helpers.py",
+    "training/rl_trainer.py",
+    "training/trainer.py",
 }
 
 

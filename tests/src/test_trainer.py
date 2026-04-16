@@ -1,4 +1,4 @@
-"""Unit tests for src/trainer.py — pure functions and moderate-coupling helpers."""
+"""Unit tests for src/training/helpers.py — pure functions and moderate-coupling helpers."""
 # pylint: disable=missing-class-docstring,missing-function-docstring,too-few-public-methods
 
 import inspect
@@ -9,7 +9,7 @@ import pytest
 import torch
 from torch import nn
 
-from trainer import (
+from training.helpers import (
     _accumulate_loss,
     _get_cached_signature,
     build_data_container,

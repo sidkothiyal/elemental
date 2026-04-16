@@ -15,8 +15,9 @@ torchrun --nproc_per_node=2 src/trainer.py experiment/... distributed=true
 ```
 
 **Features:**
-- Standard batch loop (`batch_loop`) for supervised training with AMP, gradient scaling, and profiling
-- GAN batch loop (`batch_loop_gan`) with alternating generator/discriminator training
+- Trainer class hierarchy in `training/`: `Trainer` (supervised), `GANTrainer`, `RLTrainer`
+- Mode dispatch by `config.mode` — CLI calls `build_trainer(...).train()` / `.test()`
+- Single-batch forward/backward step factored into `train_batch(..., training=True|False)` so `eval_batch` reuses the same code path with grads disabled
 - Unified data container passed through all components (model, loss, postprocessor, callbacks)
 - Module-level loss collection — submodules can contribute custom losses via `compute_losses()` hooks
 - Distributed training via `torchrun` with NCCL/Gloo backends
@@ -50,6 +51,7 @@ uv run python src/graph_trainer.py --config-name node_train_autoencoder
 | `postprocessor/` | Post-processing pipeline |
 | `metrics/` | Evaluation metrics (PSNR, MSE, IoU) |
 | `nodes/` | Graph-based trainer nodes |
+| `training/` | Trainer hierarchy (`Trainer`, `GANTrainer`, `RLTrainer`), builder, and stateless helpers |
 | `utils/` | Device setup, checkpoint, distributed helpers |
 | `tools/` | Standalone tools (checkpoint surgery) |
 | `data_processor/` | Dataset download/config utilities |

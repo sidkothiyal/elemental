@@ -1,4 +1,4 @@
-"""Integration tests for trainer batch loops with real tiny models."""
+"""Integration tests for Trainer batch loops with real tiny models."""
 # pylint: disable=missing-class-docstring,missing-function-docstring,too-few-public-methods
 
 from unittest.mock import MagicMock
@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from callback.callback import Callback, CallbackList
 from loss.loss_container import LossComponent, LossContainer
-from trainer import batch_loop, batch_loop_gan
+from training.trainer import Trainer
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,6 +75,22 @@ class TrackingCallback(Callback):
         self.calls.append(("log_metrics", step, phase, metrics))
 
 
+def _make_trainer(setup, config=None, callbacks=None, **overrides):
+    """Build a ``Trainer`` from a setup fixture with sensible defaults."""
+    kwargs = {
+        "config": config or {},
+        "device": setup["device"],
+        "dtype": setup["dtype"],
+        "model": setup["model"],
+        "optim": setup["optim"],
+        "loss": setup["loss"],
+        "callbacks": callbacks if callbacks is not None else CallbackList([]),
+        "loaders": {"train": setup["dataloader"]},
+    }
+    kwargs.update(overrides)
+    return Trainer(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -82,7 +98,7 @@ class TrackingCallback(Callback):
 
 @pytest.fixture
 def simple_train_setup():
-    """Minimal components for batch_loop: model, loss, optimizer, dataloader."""
+    """Minimal components for Trainer._run_batch_loop."""
     torch.manual_seed(42)
     model = nn.Sequential(nn.Linear(4, 4))
     loss_container = LossContainer({"mse": LossComponent(nn.MSELoss())})
@@ -101,7 +117,7 @@ def simple_train_setup():
 
 @pytest.fixture
 def gan_train_setup():
-    """Minimal components for batch_loop_gan."""
+    """Minimal components for GAN batch loops."""
     torch.manual_seed(42)
     generator = nn.Sequential(nn.Conv2d(1, 1, 3, padding=1))
     discriminator = nn.Sequential(nn.Conv2d(1, 1, 3, padding=1), nn.AdaptiveAvgPool2d(1))
@@ -127,27 +143,15 @@ def gan_train_setup():
 
 
 # =========================================================================
-# batch_loop integration tests
+# Trainer._run_batch_loop integration tests (supervised)
 # =========================================================================
 
 
 @pytest.mark.integration
 class TestBatchLoop:
     def _run(self, setup, phase="train", config=None, **kwargs):
-        callbacks = kwargs.pop("callbacks", CallbackList([]))
-        return batch_loop(
-            phase=phase,
-            epoch=0,
-            dataloader=setup["dataloader"],
-            model=setup["model"],
-            loss=setup["loss"],
-            optim=setup["optim"],
-            callbacks=callbacks,
-            device=setup["device"],
-            dtype=setup["dtype"],
-            config=config or {},
-            **kwargs,
-        )
+        trainer = _make_trainer(setup, config=config, **kwargs)
+        return trainer._run_batch_loop(phase, epoch=0, loader=setup["dataloader"])
 
     def test_basic_forward(self, simple_train_setup):  # pylint: disable=redefined-outer-name
         result = self._run(simple_train_setup)
@@ -200,23 +204,21 @@ class TestBatchLoop:
             return original_step(*a, **kw)
 
         optimizer.step = counting_step
-        batch_loop(
-            phase="train",
-            epoch=0,
-            dataloader=dataloader,
-            model=model,
-            loss=loss_container,
-            optim=optimizer,
-            callbacks=CallbackList([]),
+        trainer = Trainer(
+            config={"gradient_accumulation_steps": 3},
             device=torch.device("cpu"),
             dtype=torch.float32,
-            config={"gradient_accumulation_steps": 3},
+            model=model,
+            optim=optimizer,
+            loss=loss_container,
+            callbacks=CallbackList([]),
+            loaders={"train": dataloader},
         )
+        trainer._run_batch_loop("train", epoch=0, loader=dataloader)
         assert step_count[0] == 3  # ceil(7/3) = 3
 
     def test_clip_grad_norm(self, simple_train_setup):  # pylint: disable=redefined-outer-name
         """Verify gradient clipping is applied."""
-        # Use a large learning rate to get large gradients
         simple_train_setup["optim"] = torch.optim.SGD(
             simple_train_setup["model"].parameters(), lr=100.0
         )
@@ -277,44 +279,46 @@ class TestBatchLoop:
         dataset = _SimpleDataset(n=4, dim=4)
         dataloader = DataLoader(dataset, batch_size=4)
 
-        result = batch_loop(
-            phase="train",
-            epoch=0,
-            dataloader=dataloader,
-            model=model,
-            loss=loss_container,
-            optim=optimizer,
-            callbacks=CallbackList([]),
+        trainer = Trainer(
+            config={},
             device=torch.device("cpu"),
             dtype=torch.float32,
-            config={},
+            model=model,
+            optim=optimizer,
+            loss=loss_container,
+            callbacks=CallbackList([]),
+            loaders={"train": dataloader},
         )
+        result = trainer._run_batch_loop("train", epoch=0, loader=dataloader)
         # Module loss "reg" should appear in result (prefixed with module name)
         assert any("reg" in k for k in result)
 
 
 # =========================================================================
-# batch_loop_gan integration tests
+# GANTrainer._run_batch_loop integration tests
 # =========================================================================
 
 
 @pytest.mark.integration
 class TestBatchLoopGan:
+    """GAN tests — populated once GANTrainer exists (step 5 of the refactor)."""
+
     def _run(self, setup, phase="train", config=None, **kwargs):
+        from training.gan_trainer import GANTrainer  # pylint: disable=import-outside-toplevel
+
         callbacks = kwargs.pop("callbacks", CallbackList([]))
-        return batch_loop_gan(
-            phase=phase,
-            epoch=0,
-            dataloader=setup["dataloader"],
-            model=setup["model"],
-            loss=setup["loss"],
-            optim=setup["optim"],
-            callbacks=callbacks,
+        trainer = GANTrainer(
+            config=config or {},
             device=setup["device"],
             dtype=setup["dtype"],
-            config=config or {},
+            model=setup["model"],
+            optim=setup["optim"],
+            loss=setup["loss"],
+            callbacks=callbacks,
+            loaders={"train": setup["dataloader"]},
             **kwargs,
         )
+        return trainer._run_batch_loop(phase, epoch=0, loader=setup["dataloader"])
 
     def test_basic_completes(self, gan_train_setup):  # pylint: disable=redefined-outer-name
         result = self._run(gan_train_setup)

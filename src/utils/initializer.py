@@ -12,6 +12,7 @@ from omegaconf import DictConfig
 from torch import nn
 from torch.utils.data import DataLoader
 
+from callback import callback as callback_mod
 from utils import checkpoint, distributed  # pylint: disable=no-name-in-module
 from utils.remote_backup.base import RemoteBackupStrategy  # pylint: disable=no-name-in-module
 from utils.s3_cache_backend import install_s3_cache_backend
@@ -186,7 +187,7 @@ def initialize_dataset(
     use_distributed: bool = False,
     device: torch.device | None = None,
     channels_last: bool = False,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+) -> dict[str, DataLoader | None]:
     """Initialize the dataset.
 
     Args:
@@ -200,8 +201,9 @@ def initialize_dataset(
             when prefetching. Only relevant when device is provided.
 
     Returns:
-        The train, val, and test dataloaders (wrapped in CUDAPrefetcher when
-        device is given).
+        A dict with ``"train"``, ``"val"``, and ``"test"`` dataloaders (wrapped
+        in :class:`CUDAPrefetcher` when ``device`` is given; ``"test"`` may be
+        ``None``).
     """
     dataloaders = hy_utils.instantiate(dataloader_config)
 
@@ -227,7 +229,18 @@ def initialize_dataset(
         if dataloaders["test"] is not None:
             dataloaders["test"] = CUDAPrefetcher(dataloaders["test"], device, channels_last)
 
-    return dataloaders["train"], dataloaders["val"], dataloaders["test"]
+    logger.info("Dataloaders initialized successfully")
+    return {"train": dataloaders["train"], "val": dataloaders["val"], "test": dataloaders["test"]}
+
+
+def initialize_callbacks(config: DictConfig) -> callback_mod.CallbackList:
+    """Instantiate callbacks from config and seed initial config values."""
+    callbacks = hy_utils.instantiate(config.callbacks)
+    if isinstance(callbacks, (dict, DictConfig)):
+        callbacks = list(callbacks.values())
+    callbacks = callback_mod.CallbackList(callbacks or [])
+    callbacks.update_config({"lr": config.lr, "num_epochs": config.num_epochs, "seed": config.seed})
+    return callbacks
 
 
 def extract_class_names(config: Any) -> str | dict[str, Any]:

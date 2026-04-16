@@ -1,30 +1,45 @@
 # src/ — Architecture
 
-## trainer.py
+## trainer.py (CLI)
 
-### Key Functions
+Thin Hydra/Typer entrypoint. Delegates to `training.builder.build_trainer(...)` and calls `.train()` or `.test()` on the returned Trainer instance.
 
-**`run_train(config_file, test, local_rank)`** — Top-level orchestrator. Loads Hydra config, sets up distributed training, initializes device/model/dataset/loss/optimizer/callbacks, runs the epoch loop (train → validate → test), handles checkpointing and remote backup.
+## training/
 
-**`batch_loop(phase, epoch, dataloader, model, loss, optim, callbacks, device, ...)`** — Standard training loop for one epoch. Runs forward pass under `torch.autocast`, computes loss via `LossContainer`, collects module-level losses, runs backward pass with gradient scaling, steps optimizer/scheduler, runs postprocessors and callbacks. Returns dict of average losses.
+Class hierarchy that owns the epoch loop, batch step, and initialization.
 
-**`batch_loop_gan(phase, epoch, dataloader, model, loss, optim, ...)`** — GAN variant. Alternates discriminator and generator training steps. Model must be `nn.ModuleDict({"generator": ..., "discriminator": ...})`. Loss and optimizer are also dicts keyed by `"generator"`/`"discriminator"`.
+### Layout
+- `helpers.py` — Stateless helpers shared by all trainers: `build_data_container`, `populate_predictions`, `collect_module_losses`, `clear_module_losses`, `cleanup_memory`, `setup_profiler`, `should_step_optimizer`, `materialize_and_average_losses`, `_accumulate_loss`, `_get_cached_signature`.
+- `trainer.py` — `class Trainer`, the supervised base.
+- `gan_trainer.py` — `class GANTrainer(Trainer)`.
+- `rl_trainer.py` — `class RLTrainer(Trainer)` skeleton (stubs raise `NotImplementedError`).
+- `builder.py` — `build_trainer(config_file, local_rank, overrides) -> Trainer`; composes Hydra config, sets up env/DDP/loaders/callbacks, dispatches to `_trainer_class_for(config.mode)`, then invokes the class's `_build_{model,optimizer,scheduler,loss,scaler}` classmethods.
 
-**`build_data_container(batch, data, model, epoch)`** — Creates the unified data dict. Prefixes all batch keys with `input/` except `target`. Stores `model` and `epoch` references.
+### Key methods
 
-**`populate_predictions(pred, data)`** — Writes model output into the data container. Dict outputs get `pred/<key>` sub-keys.
+**`Trainer.train()`** — Full training loop over `range(start_epoch, num_epochs)`. `finally`-stops the profiler and cleans up distributed.
 
-**`collect_module_losses(model, dataset, pred, target, model_input_args)`** — Walks `model.named_modules()` and dataset, calls `compute_losses()` on any that define it (introspecting signature to pass matching kwargs), then collects `.losses` dicts. Returns combined loss dict with path-prefixed names.
+**`Trainer.test()`** — Single test-phase pass.
 
-**`setup_profiler(profiler_config, results_dir)`** — Builds `torch.profiler.profile` from config with schedule, activity selection, and TensorBoard/Chrome trace export.
+**`Trainer.run_epoch(epoch)`** — One training epoch + optional validation. Handles `set_epoch` for distributed samplers, per-epoch scheduler step, `on_phase_end`/`on_phase_start` callback hooks, and validation interval gating.
 
-**`cleanup_memory(model, optim, device, epoch, empty_cache_interval)`** — Zeros gradients, clears module losses, optionally calls `torch.cuda.empty_cache()`.
+**`Trainer._run_batch_loop(phase, epoch, loader)`** — Tqdm driver. Dispatches to `train_batch` or `eval_batch`, accumulates losses, fires batch-level callbacks, runs the profiler step. Never overridden.
+
+**`Trainer.train_batch(batch, batch_idx, epoch, step, data, *, training=True)`** — The single override point. Runs forward + loss + module-loss collection inside `torch.autocast` and `torch.set_grad_enabled(training)`. Backward, optimizer step, grad-clip, and per-batch scheduler step are all gated on `training=True`. Returns a dict of detached loss tensors (components + module losses + `"total"`).
+
+**`Trainer.eval_batch(...)`** — One-liner: `return self.train_batch(..., training=False)`. Eliminates duplicated val/test code.
+
+**`GANTrainer.train_batch(...)`** — Three-phase override: disc-on-fake → disc-on-real → generator, each with its own zero_grad/backward/step cycle gated on `training`. Postprocessor runs **inside** autocast (unified with supervised path).
+
+**`GANTrainer._build_model/_optimizer/_scheduler/_loss`** — Produce `ModuleDict` / dict-of-optimizers / dict-of-schedulers / dict-of-losses keyed by `"generator"`/`"discriminator"`.
+
+**`RLTrainer.train_batch(...)`** — Orchestrates `_collect_rollouts` → `_compute_advantages` → `_update_policy`. All three currently raise `NotImplementedError` — bodies arrive with SIMPLER env integration.
 
 ### Training Flow
-1. `run_train` → init device, model, dataset, loss, optimizer, scheduler, callbacks
-2. For each epoch: `batch_loop` (or `batch_loop_gan` if `mode: "gan"`)
-3. Each batch: `build_data_container` → forward → `populate_predictions` → postprocess → loss → backward → step → callbacks
-4. After training batches: `cleanup_memory` → validation loop → checkpoint
+1. `build_trainer` → compose config, init env (seeds, TF32, device, DDP), build callbacks + loaders, dispatch to `cls._build_{model,optim,scheduler,loss,scaler}`, load checkpoint, compile, wire postprocessor + profiler, seed callbacks with model/optimizer/device/dtype/config.
+2. `Trainer.train()` iterates `run_epoch(epoch)` over `range(start_epoch, num_epochs)`.
+3. Each `run_epoch`: `cleanup_memory` → `on_epoch_start` → `_run_batch_loop("train", ...)` → per-epoch scheduler step → `on_phase_end` → (every N epochs) `_run_batch_loop("val", ...)`.
+4. Each batch: `build_data_container` → forward → `populate_predictions` → postprocess → loss → `collect_module_losses` → (if training) backward → step → per-batch scheduler → callbacks.
 
 ## graph_trainer.py
 

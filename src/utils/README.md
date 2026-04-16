@@ -12,7 +12,8 @@ Key functions:
 - `initialize_device(device_str)` — returns `torch.device`, handles `"gpu"` (CUDA/MPS), CPU
 - `initialize_dtype(dtype_str)` — returns `torch.dtype`, falls back to float32 if bfloat16 unsupported
 - `set_seeds(seed)` — seeds PyTorch, CUDA, NumPy, Python random
-- `initialize_dataset(dataloader_config, ...)` — instantiates dataset + dataloader from Hydra config, wraps in `CUDAPrefetcher`, sets up `DistributedSampler` if needed
+- `initialize_dataset(dataloader_config, ...)` — instantiates dataset + dataloader from Hydra config, wraps in `CUDAPrefetcher`, sets up `DistributedSampler` if needed; returns a `{"train", "val", "test"}` dict
+- `initialize_callbacks(config)` — instantiates callbacks and returns a `CallbackList` seeded with `lr`/`num_epochs`/`seed`
 - `initialize_remote_backup(config, results_dir)` — instantiates remote backup strategy
 - `get_num_parameters(model)` — returns `(total, trainable, non_trainable)` counts
 - `compile_model_and_optimizer_step(model, optim, compile_config)` — applies `torch.compile` if configured

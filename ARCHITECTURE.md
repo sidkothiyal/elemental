@@ -6,8 +6,9 @@ High-level architecture reference for the elemental ML training library.
 
 ```
 src/
-├── trainer.py            # Standard training loop (Hydra + fire)
+├── trainer.py            # Thin Hydra/Typer CLI — delegates to training.builder
 ├── graph_trainer.py      # Node-graph alternative trainer (Hydra @hydra.main)
+├── training/             # Trainer class hierarchy + builder + helpers
 ├── callback/             # Lifecycle hooks for training
 ├── data_processor/       # Dataset download + preprocessing
 ├── dataset/              # torch.utils.data.Dataset subclasses
@@ -25,29 +26,38 @@ src/
 ## Data Flow: Standard Training Run
 
 ```
-1. trainer.run_train(config_file)
+1. training.builder.build_trainer(config_file) → Trainer
    ├── hydra.compose → DictConfig
-   ├── initializer.initialize_dataset() → (train_loader, val_loader, test_loader)
+   ├── _init_env() → device, dtype, seeds, DDP setup
+   ├── initializer.initialize_dataset() → {"train", "val", "test": DataLoader}
    │     └── CUDAPrefetcher wraps each DataLoader
-   ├── hydra.utils.instantiate(config.model) → nn.Module
-   ├── optimizer / scheduler / loss instantiation
+   ├── cls = _trainer_class_for(config.mode)   # Trainer | GANTrainer | RLTrainer
+   ├── cls._build_model / _optimizer / _scheduler / _loss / _scaler
+   ├── _maybe_load_checkpoint() → checkpoint_data
+   ├── _build_postprocessor() / _build_profiler()
    ├── callbacks.update_config(...)
-   └── Training loop:
-         for epoch in range(num_epochs):
-           cleanup_memory()
-           model.train()
-           batch_loop("train", ...)
-           batch_loop("val", ...)
+   └── return cls(config=..., model=..., optim=..., ...)
 
-2. batch_loop(phase, epoch, dataloader, ...)
-   for batch in dataloader:
+2. Trainer.train()
+   for epoch in range(start_epoch, num_epochs):
+     run_epoch(epoch)
+       ├── cleanup_memory()
+       ├── model.train() + _run_batch_loop("train", ...)
+       └── (every N epochs) model.eval() + _run_batch_loop("val", ...)
+
+3. Trainer._run_batch_loop(phase, epoch, loader)
+   for batch in loader:
+     if phase == "train": train_batch(batch, ..., training=True)
+     else:                 eval_batch(batch, ...)    # = train_batch(..., training=False)
+
+4. Trainer.train_batch(batch, ..., *, training)
      build_data_container(batch, data)           # namespace batch keys
      model(batch["input"], **model_input_args) → pred
      populate_predictions(pred, data)            # store pred/* keys
-     postprocessor_pipeline(data)               # post_processed/*
-     loss(data) → (total, components)           # LossContainer
+     postprocessor_pipeline(data)                # post_processed/*
+     loss(data) → (total, components)            # LossContainer
      collect_module_losses(model, dataset, ...)  # submodule losses
-     backward() / optimizer.step()
+     if training: backward() / optimizer.step() / per-batch scheduler
      callbacks.on_batch_end(step, phase, data)
    callbacks.on_epoch_end(epoch, phase)
    callbacks.log_metrics(step, phase, metrics)
@@ -140,13 +150,13 @@ Configs reference nodes via `node:nodename.attr` strings resolved at runtime.
 When `mode: "gan"`:
 - `model` is a `ModuleDict` with `"generator"` and `"discriminator"`
 - `optim` and `scheduler` are dicts keyed the same way
-- `batch_loop_gan()` is used instead of `batch_loop()`
+- `GANTrainer.train_batch` runs a three-phase step (disc-fake → disc-real → generator) in place of the supervised single-phase step
 
 ## Feature-to-Directory Mapping
 
 | Feature | Primary Location |
 |---------|-----------------|
-| Training loop | `src/trainer.py` |
+| Training loop | `src/training/` (hierarchy); `src/trainer.py` (CLI) |
 | Hydra config | `configs/` |
 | Model architectures | `src/model/` |
 | Building blocks | `src/model/blocks/` |

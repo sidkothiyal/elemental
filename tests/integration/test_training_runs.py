@@ -26,7 +26,7 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from trainer import run_train  # pylint: disable=wrong-import-position  # noqa: E402
+from training.builder import build_trainer  # pylint: disable=wrong-import-position  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Synthetic dataset helpers
@@ -141,7 +141,7 @@ def _overrides(tmp: str, *groups: list[str]) -> list[str]:
 def _run(config_name: str, overrides: list[str]) -> None:
     """Clear Hydra state then run a training job with the given config and overrides."""
     GlobalHydra.instance().clear()
-    run_train(config_name, overrides=overrides)
+    build_trainer(config_name, overrides=overrides).train()
 
 
 # ---------------------------------------------------------------------------
