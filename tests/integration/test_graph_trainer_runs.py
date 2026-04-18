@@ -1,7 +1,7 @@
 """Integration tests for GraphTrainer end-to-end behavior.
 
 Covers:
-* Hydra compose of each `configs/node_train_*.yaml` (config-structure sanity).
+* Hydra compose of each `configs/experiment/node/node_train_*.yaml` (config-structure sanity).
 * End-to-end `train()` loop on a minimal inline config — verifies node
   initialization, per-epoch execution, and global/epoch variable scoping
   without requiring real datasets (which the node_train_*.yaml configs
@@ -25,7 +25,11 @@ from training.graph_trainer import GraphTrainer
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "config_name",
-    ["node_train_autoencoder", "node_train_gan", "node_train_classification"],
+    [
+        "experiment/node/node_train_autoencoder",
+        "experiment/node/node_train_gan",
+        "experiment/node/node_train_classification",
+    ],
 )
 class TestGraphConfigsCompose:
     def test_compose_yields_graph_mode(self, config_name):

@@ -14,7 +14,7 @@
 uv run python src/trainer.py experiment/autoencoder/compression_unet   # train
 uv run python src/trainer.py ... lr=0.001 num_epochs=500               # override
 torchrun --nproc_per_node=2 src/trainer.py ... distributed=true        # distributed
-uv run python src/trainer.py --config-name node_train_autoencoder   # mode: graph → GraphTrainer
+uv run python src/trainer.py experiment/node/node_train_autoencoder   # mode: graph → GraphTrainer
 uv run pytest tests/                                                    # all tests
 uv run pytest tests/test_loss.py -k "test_ssim" -v                     # single test
 ```

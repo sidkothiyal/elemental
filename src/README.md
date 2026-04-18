@@ -31,7 +31,7 @@ which executes a DAG of nodes with automatic dependency resolution.
 
 **Usage:**
 ```bash
-uv run python src/trainer.py --config-name node_train_autoencoder   # mode: graph
+uv run python src/trainer.py experiment/node/node_train_autoencoder   # mode: graph
 ```
 
 **Features:**

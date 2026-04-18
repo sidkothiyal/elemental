@@ -133,7 +133,7 @@ def build_graph_trainer(
     dispatched here when ``config.mode == "graph"``.
 
     Args:
-        config_file: Hydra config name (e.g. ``"node_train_autoencoder"``).
+        config_file: Hydra config name (e.g. ``"experiment/node/node_train_autoencoder"``).
         overrides: Hydra override strings.
 
     Returns:

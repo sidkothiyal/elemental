@@ -125,14 +125,14 @@ class TestBuildGraphTrainer:
     def test_mode_graph_returns_graph_trainer(self):
         GlobalHydra.instance().clear()
 
-        trainer = build_trainer("node_train_autoencoder")
+        trainer = build_trainer("experiment/node/node_train_autoencoder")
         assert isinstance(trainer, GraphTrainer)
         GlobalHydra.instance().clear()
 
     def test_build_graph_trainer_function(self):
         GlobalHydra.instance().clear()
 
-        trainer = build_graph_trainer("node_train_autoencoder")
+        trainer = build_graph_trainer("experiment/node/node_train_autoencoder")
         assert isinstance(trainer, GraphTrainer)
         assert trainer.config.mode == "graph"
         GlobalHydra.instance().clear()

@@ -56,7 +56,7 @@ torchrun --nproc_per_node=2 src/trainer.py experiment/autoencoder/compression_un
 ### Graph-based trainer
 
 ```bash
-uv run python src/trainer.py --config-name node_train_autoencoder   # mode: graph dispatches to GraphTrainer
+uv run python src/trainer.py experiment/node/node_train_autoencoder   # mode: graph dispatches to GraphTrainer
 ```
 
 ## Directory Structure
