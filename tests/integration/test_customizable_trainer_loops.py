@@ -6,19 +6,31 @@ parity with ``GANTrainer`` to 1e-5.
 """
 # pylint: disable=missing-class-docstring,missing-function-docstring,too-few-public-methods
 
+import os
+
 import pytest
 import torch
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from callback.callback import CallbackList
+from loss.distillation import (
+    DistillationFeatureLoss,
+)
 from loss.loss_container import LossComponent, LossContainer
 from loss.utils import call_loss_with_epoch
 from nodes.executor import ExecuteFunction
 from nodes.graph_node import GraphNode
 from training.customizable_trainer import CustomizableTrainer
 from training.gan_trainer import GANTrainer
-from training.helpers import backward_step, optimizer_step
+from training.helpers import (
+    backward_step,
+    build_data_container,
+    optimizer_step,
+    populate_predictions,
+)
 
 # ---------------------------------------------------------------------------
 # Datasets
@@ -60,10 +72,6 @@ class _SimpleImageDataset(Dataset):
 
 def _supervised_graph():
     """Simple supervised graph: build_data → forward → loss → backward → step."""
-    from training.helpers import (  # pylint: disable=import-outside-toplevel
-        build_data_container,
-        populate_predictions,
-    )
 
     def _build_data(batch, data, model, epoch):
         build_data_container(batch, data=data, model=model, epoch=epoch)
@@ -384,8 +392,6 @@ def gan_dataset():
 @pytest.mark.integration
 class TestSupervisedViaCustomizable:
     def test_basic_forward(self, simple_train_setup):  # pylint: disable=redefined-outer-name
-        from omegaconf import OmegaConf  # pylint: disable=import-outside-toplevel
-
         graph = _supervised_graph()
         trainer = CustomizableTrainer(
             graph=graph,
@@ -406,8 +412,6 @@ class TestSupervisedViaCustomizable:
     def test_training_reduces_loss(
         self, simple_train_setup
     ):  # pylint: disable=redefined-outer-name
-        from omegaconf import OmegaConf  # pylint: disable=import-outside-toplevel
-
         graph = _supervised_graph()
         trainer = CustomizableTrainer(
             graph=graph,
@@ -440,8 +444,6 @@ class TestGanViaCustomizable:
     """Run a GAN graph through CustomizableTrainer and compare with GANTrainer."""
 
     def test_single_batch_parity(self, gan_dataset):  # pylint: disable=redefined-outer-name
-        from omegaconf import OmegaConf  # pylint: disable=import-outside-toplevel
-
         dataloader = DataLoader(gan_dataset, batch_size=2)
         batch = next(iter(dataloader))
 
@@ -497,8 +499,6 @@ class TestGanViaCustomizable:
 
     def test_multi_batch_parity(self, gan_dataset):  # pylint: disable=redefined-outer-name
         """Full batch-loop parity over multiple batches."""
-        from omegaconf import OmegaConf  # pylint: disable=import-outside-toplevel
-
         dataloader = DataLoader(gan_dataset, batch_size=2)
 
         # --- GANTrainer ---
@@ -558,26 +558,20 @@ class TestYamlGanGraphParity:
     @staticmethod
     def _load_yaml_graph():
         """Instantiate the ``graph:`` section of the customizable GAN config."""
-        import os  # pylint: disable=import-outside-toplevel
-
-        from hydra.utils import instantiate  # pylint: disable=import-outside-toplevel
-        from omegaconf import OmegaConf  # pylint: disable=import-outside-toplevel
-
         cfg_path = os.path.abspath(
             os.path.join(
                 os.path.dirname(__file__),
                 "..",
                 "..",
                 "configs",
-                "experiment",
-                "gan",
-                "customizable_gan.yaml",
+                "graph",
+                "gan_per_batch.yaml",
             )
         )
         raw = OmegaConf.load(cfg_path)
-        assert "graph" in raw, "customizable_gan.yaml must define `graph:`"
+        assert "graph" in raw, "gan_per_batch.yaml must define `graph:`"
         assert raw.graph.get("statements"), (
-            "customizable_gan.yaml `graph:` must contain statements "
+            "gan_per_batch.yaml `graph:` must contain statements "
             "(empty graph would silently pass this test)."
         )
         return instantiate(raw.graph)
@@ -596,8 +590,6 @@ class TestYamlGanGraphParity:
 
     def test_single_batch_parity_yaml(self, gan_dataset):  # pylint: disable=redefined-outer-name
         """The YAML graph produces bit-identical losses to GANTrainer."""
-        from omegaconf import OmegaConf  # pylint: disable=import-outside-toplevel
-
         dataloader = DataLoader(gan_dataset, batch_size=2)
         batch = next(iter(dataloader))
 
@@ -653,8 +645,6 @@ class TestYamlGanGraphParity:
 
     def test_multi_batch_parity_yaml(self, gan_dataset):  # pylint: disable=redefined-outer-name
         """Full batch-loop parity over multiple batches using the YAML graph."""
-        from omegaconf import OmegaConf  # pylint: disable=import-outside-toplevel
-
         dataloader = DataLoader(gan_dataset, batch_size=2)
 
         model_gan, loss_gan, optim_gan = _gan_components(seed=456)
@@ -696,3 +686,125 @@ class TestYamlGanGraphParity:
 
         assert gan_losses["generator"] == pytest.approx(cust_losses["generator"], abs=1e-5)
         assert gan_losses["discriminator"] == pytest.approx(cust_losses["discriminator"], abs=1e-5)
+
+
+# =========================================================================
+# YAML distillation graph: configs/graph/distill_per_batch.yaml
+# =========================================================================
+
+
+class _StubFrozenTeacher(nn.Module):
+    """Stand-in for HFVisionEncoder. Emits ``[B, N_teacher, D]`` and is frozen."""
+
+    def __init__(self, channels=3, embed_dim=8, num_tokens=10):
+        super().__init__()
+        self.proj = nn.Conv2d(channels, embed_dim, kernel_size=1)
+        self.num_tokens = num_tokens
+        self.embed_dim = embed_dim
+        for p in self.parameters():
+            p.requires_grad = False
+        self.eval()
+
+    def forward(self, x):
+        with torch.no_grad():
+            feat = self.proj(x).flatten(2).transpose(1, 2)
+            if feat.shape[1] < self.num_tokens:
+                pad = torch.zeros(
+                    feat.shape[0],
+                    self.num_tokens - feat.shape[1],
+                    self.embed_dim,
+                    device=feat.device,
+                    dtype=feat.dtype,
+                )
+                feat = torch.cat([pad, feat], dim=1)
+            else:
+                feat = feat[:, : self.num_tokens, :]
+            return feat
+
+
+class _StubStudent(nn.Module):
+    """Stand-in for the student ViT. Emits ``[B, N_student, D]``."""
+
+    def __init__(self, channels=3, embed_dim=8, num_tokens=4):
+        super().__init__()
+        self.proj = nn.Conv2d(channels, embed_dim, kernel_size=1)
+        self.num_tokens = num_tokens
+        self.embed_dim = embed_dim
+
+    def forward(self, x):
+        feat = self.proj(x).flatten(2).transpose(1, 2)
+        return feat[:, : self.num_tokens, :]
+
+
+@pytest.mark.integration
+class TestYamlDistillGraph:
+    """Load configs/graph/distill_per_batch.yaml and assert the trainer wires it
+    end-to-end: student gets gradients, teacher does not, and the graph emits
+    the expected keyed losses."""
+
+    @staticmethod
+    def _load_yaml_graph():
+        cfg_path = os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "configs",
+                "graph",
+                "distill_per_batch.yaml",
+            )
+        )
+        raw = OmegaConf.load(cfg_path)
+        assert "graph" in raw, "distill_per_batch.yaml must define `graph:`"
+        assert raw.graph.get("statements"), "distill_per_batch.yaml must contain statements"
+        return instantiate(raw.graph)
+
+    def test_graph_instantiates_from_yaml(self):
+        graph = self._load_yaml_graph()
+        assert isinstance(graph, GraphNode)
+        # 2 forwards + loss + zero/back/step + 2 detaches = 8.
+        assert len(graph._statements) >= 6  # pylint: disable=protected-access
+
+    def test_single_batch_runs(self):
+        """One train_batch: student accumulates gradients, teacher does not."""
+        torch.manual_seed(0)
+        dataset = _SimpleImageDataset(n=4, channels=3, size=4)
+        dataloader = DataLoader(dataset, batch_size=2)
+        batch = next(iter(dataloader))
+
+        teacher = _StubFrozenTeacher(channels=3, embed_dim=8, num_tokens=10)
+        student = _StubStudent(channels=3, embed_dim=8, num_tokens=4)
+        model = nn.ModuleDict({"teacher": teacher, "student": student})
+        loss = {
+            "distillation": DistillationFeatureLoss(
+                base_loss=nn.MSELoss(),
+                drop_teacher_prefix_tokens=6,
+                drop_student_prefix_tokens=0,
+            )
+        }
+        # Only the student has trainable params, mirroring build_optim_dict_or_single.
+        optim = {"student": torch.optim.SGD(student.parameters(), lr=0.01)}
+
+        graph = self._load_yaml_graph()
+        trainer = CustomizableTrainer(
+            graph=graph,
+            config=OmegaConf.create({}),
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+            model=model,
+            optim=optim,
+            loss=loss,
+            scaler=torch.amp.GradScaler(enabled=False),
+            callbacks=CallbackList([]),
+            loaders={"train": dataloader},
+        )
+        trainer._total_batches = len(dataloader)
+        trainer._current_loader = dataloader
+        result = trainer.train_batch(batch, batch_idx=0, epoch=0, step=0, data={})
+
+        assert "distillation" in result and "total" in result
+        assert result["distillation"].ndim == 0
+        assert result["total"].item() >= 0.0
+        assert any(p.grad is not None for p in student.parameters())
+        assert all(p.grad is None for p in teacher.parameters())
+        assert all(not p.requires_grad for p in teacher.parameters())
