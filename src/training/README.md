@@ -17,7 +17,6 @@ Composes a Hydra config, initializes the environment (seeds, TF32, device, DDP),
 | `"graph"` | `GraphTrainer` (early exit, separate init path) |
 | `"rl"` | `RLTrainer` |
 
-Also exports `build_graph_trainer(config_file, overrides)` for direct graph-mode construction.
 
 ### `trainer.py` — `class Trainer`
 

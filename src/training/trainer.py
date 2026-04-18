@@ -383,10 +383,16 @@ class Trainer:
         model = hy_utils.instantiate(config.model)
         model.to(device)
 
+        # Use channels-last memory format for better cuDNN performance.
+        # Eliminates NCHW↔NHWC layout conversions that cuDNN does internally.
         if device.type == "cuda" and config.get("channels_last", True):
             model = model.to(memory_format=torch.channels_last)
             logger.info("Model converted to channels_last memory format")
 
+        # Enable cuDNN benchmark mode: auto-tunes the fastest conv algorithm for
+        # each (input size, kernel, layout) combination.  Safe when input shapes
+        # are fixed (constant crop + batch size).  Particularly important for
+        # channels_last where the default heuristic may pick a slower kernel.
         if device.type == "cuda" and config.get("cudnn_benchmark", True):
             torch.backends.cudnn.benchmark = True
             logger.info("cuDNN benchmark mode enabled")

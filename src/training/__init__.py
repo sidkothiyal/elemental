@@ -1,6 +1,6 @@
 """Training orchestration: Trainer hierarchy and builder."""
 
-from training.builder import build_graph_trainer, build_trainer
+from training.builder import build_trainer
 from training.customizable_trainer import CustomizableTrainer
 from training.gan_trainer import GANTrainer
 from training.graph_trainer import GraphTrainer
@@ -14,5 +14,4 @@ __all__ = [
     "GraphTrainer",
     "RLTrainer",
     "build_trainer",
-    "build_graph_trainer",
 ]

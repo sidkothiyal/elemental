@@ -15,8 +15,7 @@ Class hierarchy that owns the epoch loop, batch step, and initialization.
 - `customizable_trainer.py` — `class CustomizableTrainer(Trainer)`. Overrides `train_batch` to execute a user-defined `GraphNode` per batch. Config-driven `metrics_format` for metric naming.
 - `graph_trainer.py` — `class GraphTrainer`. Standalone graph-execution trainer (does not inherit from `Trainer`). Manages `DependencyResolver`, `GraphExecutor`, and epoch loop for fully declarative pipelines.
 - `rl_trainer.py` — `class RLTrainer(Trainer)` skeleton (stubs raise `NotImplementedError`).
-- `builder.py` — `build_trainer(config_file, local_rank, overrides) -> Trainer | GraphTrainer`; composes Hydra config, dispatches `mode: graph` to `GraphTrainer` early. Other modes go through `_trainer_class_for(config.mode)` → `cls._build_{model,optimizer,scheduler,loss,scaler}` classmethods. Also exports `build_graph_trainer()` for direct graph-mode construction.
-
+- `builder.py` — `build_trainer(config_file, local_rank, overrides) -> Trainer | GraphTrainer`; composes Hydra config, dispatches `mode: graph` to `GraphTrainer` early. Other modes go through `_trainer_class_for(config.mode)` → `cls._build_{model,optimizer,scheduler,loss,scaler}` classmethods.
 ### Trainer dispatch (`config.mode`)
 
 | `mode` | Class | Notes |

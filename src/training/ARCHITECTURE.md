@@ -4,8 +4,8 @@
 
 ```
 training/
-├── __init__.py                # Re-exports all trainers + build_trainer + build_graph_trainer
-├── builder.py                 # build_trainer() + build_graph_trainer() + dispatch
+├── __init__.py                # Re-exports all trainers + build_trainer
+├── builder.py                 # build_trainer() + dispatch
 ├── trainer.py                 # class Trainer (supervised base)
 ├── gan_trainer.py             # class GANTrainer(Trainer) �� three-phase GAN step
 ├── customizable_trainer.py    # class CustomizableTrainer(Trainer) — per-batch graph execution

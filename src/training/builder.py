@@ -30,13 +30,11 @@ logger = logging.getLogger(__name__)
 
 def _trainer_class_for(mode: str) -> Type[Trainer]:
     """Return the Trainer subclass for a given config.mode string."""
-    if mode == "gan":
-        return GANTrainer
-    if mode == "rl":
-        return RLTrainer
-    if mode == "customizable":
-        return CustomizableTrainer
-    return Trainer
+    return {
+        "gan": GANTrainer,
+        "rl": RLTrainer,
+        "customizable": CustomizableTrainer,
+    }.get(mode, Trainer)
 
 
 def _init_env(config: DictConfig, local_rank: int) -> tuple:
@@ -46,6 +44,7 @@ def _init_env(config: DictConfig, local_rank: int) -> tuple:
         (device, dtype, use_distributed, world_size, cuda_empty_cache_interval,
          results_dir)
     """
+    # Set up distributed training if requested
     use_distributed = config.get("distributed", False) and local_rank >= 0
     world_size = int(os.environ.get("WORLD_SIZE", 1))
 
@@ -53,9 +52,12 @@ def _init_env(config: DictConfig, local_rank: int) -> tuple:
         backend = "nccl" if __import__("torch").cuda.is_available() else "gloo"
         distributed.setup_distributed(local_rank, world_size, backend)
 
-    # Allow TF32 for float32 matmuls on Ampere+ GPUs.
+    # Allow TF32 for float32 matmuls on Ampere+ GPUs (A100, RTX 30xx, etc.).
+    # This is a no-op when using bfloat16 autocast, but speeds up any float32
+    # operations (e.g. loss computation, metrics) by using TF32 tensor cores.
     torch.set_float32_matmul_precision("high")
 
+    # Set up environment: set seeds, initialize device, create results directory
     initializer.set_seeds(config.seed)
     if distributed.is_main_process():
         logger.info("Configuration: %s", config)
@@ -121,28 +123,6 @@ def _maybe_load_checkpoint(
         results_dir=config.results_dir,
         experiment_name=config.experiment_name,
     )
-
-
-def build_graph_trainer(
-    config_file: str,
-    overrides: list[str] | None = None,
-) -> GraphTrainer:
-    """Build a ``GraphTrainer`` from a graph-mode YAML config.
-
-    Graph-mode configs define ``nodes:`` + ``execution_graph:`` sections and are
-    dispatched here when ``config.mode == "graph"``.
-
-    Args:
-        config_file: Hydra config name (e.g. ``"experiment/node/node_train_autoencoder"``).
-        overrides: Hydra override strings.
-
-    Returns:
-        A configured ``GraphTrainer`` with ``.train()`` ready to call.
-    """
-    with hydra.initialize(version_base=None, config_path="../../configs"):
-        config = hydra.compose(config_name=config_file, overrides=overrides or [])
-
-    return GraphTrainer(config)
 
 
 def build_trainer(

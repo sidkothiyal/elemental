@@ -7,7 +7,7 @@ import pytest
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
-from training.builder import build_graph_trainer, build_trainer
+from training.builder import build_trainer
 from training.graph_trainer import GraphTrainer
 
 
@@ -127,12 +127,4 @@ class TestBuildGraphTrainer:
 
         trainer = build_trainer("experiment/node/node_train_autoencoder")
         assert isinstance(trainer, GraphTrainer)
-        GlobalHydra.instance().clear()
-
-    def test_build_graph_trainer_function(self):
-        GlobalHydra.instance().clear()
-
-        trainer = build_graph_trainer("experiment/node/node_train_autoencoder")
-        assert isinstance(trainer, GraphTrainer)
-        assert trainer.config.mode == "graph"
         GlobalHydra.instance().clear()

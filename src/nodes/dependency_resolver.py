@@ -36,8 +36,10 @@ class DependencyResolver:
                 for item in obj:
                     find_deps_recursive(item)
             elif isinstance(obj, str):
+                # Look for node references with "node:" prefix
                 if obj.startswith("node:"):
-                    node_ref = obj[len("node:") :]
+                    # Extract the node name from "node:nodename.attr" or "node:nodename"
+                    node_ref = obj[len("node:") :]  # Remove "node:" prefix
                     node_name = node_ref.split(".")[0]
                     dependencies.add(node_name)
 
@@ -56,16 +58,19 @@ class DependencyResolver:
         Raises:
             ValueError: If a circular dependency is detected.
         """
+        # Build dependency graph
         node_by_name = {
             config.get("name", f"node_{i}"): config for i, config in enumerate(node_configs)
         }
-        dependencies: dict[str, set[str]] = defaultdict(set)
+        dependencies: dict[str, set[str]] = defaultdict(set)  # node_name -> set of dependencies
 
         for config in node_configs:
             node_name = config.get("name", f"node_{len(dependencies)}")
             deps = self.extract_dependencies(config)
+            # Only include dependencies that are actually other nodes
             dependencies[node_name] = deps.intersection(set(node_by_name.keys()))
 
+        # Topological sort using Kahn's algorithm
         in_degree: dict[str, int] = defaultdict(int)
         for node_name in node_by_name:
             in_degree[node_name] = len(dependencies[node_name])
@@ -77,6 +82,7 @@ class DependencyResolver:
             current_name = queue.popleft()
             result.append(node_by_name[current_name])
 
+            # Reduce in-degree of dependent nodes
             for node_name, deps in dependencies.items():
                 if current_name in deps:
                     in_degree[node_name] -= 1
@@ -105,16 +111,20 @@ class DependencyResolver:
             if isinstance(obj, list):
                 return [resolve_recursive(item) for item in obj]
             if isinstance(obj, str) and obj.startswith("node:"):
-                node_ref = obj[len("node:") :]
+                # Handle node references with "node:" prefix
+                node_ref = obj[len("node:") :]  # Remove "node:" prefix
                 parts = node_ref.split(".")
                 node_name = parts[0]
                 if node_name in self.resolved_variables:
+                    # Resolve the reference
                     resolved_obj = self.resolved_variables[node_name]
                     for attr in parts[1:]:
                         if attr.endswith("()"):
+                            # Method call
                             method_name = attr[:-2]
                             resolved_obj = getattr(resolved_obj, method_name)()
                         elif isinstance(resolved_obj, dict):
+                            # Attribute access
                             resolved_obj = resolved_obj[attr]
                         else:
                             resolved_obj = getattr(resolved_obj, attr)
