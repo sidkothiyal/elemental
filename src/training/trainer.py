@@ -20,10 +20,14 @@ from torch.utils.data import DataLoader
 from callback import callback as callback_mod
 from training.helpers import (
     _accumulate_loss,
+    backward_step,
     build_data_container,
+    build_optim_dict_or_single,
+    build_scheduler_dict_or_single,
     cleanup_memory,
     collect_module_losses,
     materialize_and_average_losses,
+    optimizer_step,
     populate_predictions,
     should_step_optimizer,
 )
@@ -290,7 +294,6 @@ class Trainer:
         grad_accum_steps = config.get("gradient_accumulation_steps", 1)
         clip_grad_norm = config.get("clip_grad_norm", None)
         scheduler_step_per = config.get("scheduler_step_per", "epoch")
-        use_scaler = self.scaler is not None and self.scaler.is_enabled()
 
         build_data_container(batch, data=data, model=self.model, epoch=epoch)
 
@@ -325,27 +328,17 @@ class Trainer:
                 batch_loss = batch_loss + value
 
         if training:
-            scaled_loss = batch_loss / grad_accum_steps
             with record_function("backward"):
-                if use_scaler:
-                    self.scaler.scale(scaled_loss).backward()
-                else:
-                    scaled_loss.backward()
+                backward_step(batch_loss, self.scaler, grad_accum_steps)
 
             if should_step_optimizer(batch_idx, grad_accum_steps, self._total_batches):
                 with record_function("optimizer"):
-                    if clip_grad_norm is not None:
-                        if use_scaler:
-                            self.scaler.unscale_(self.optim)
-                        torch.nn.utils.clip_grad_norm_(
-                            self.model.parameters(), max_norm=clip_grad_norm
-                        )
-                    if use_scaler:
-                        self.scaler.step(self.optim)
-                        self.scaler.update()
-                    else:
-                        self.optim.step()
-                    self.optim.zero_grad(set_to_none=False)
+                    optimizer_step(
+                        optim=self.optim,
+                        parameters=self.model.parameters(),
+                        scaler=self.scaler,
+                        clip_grad_norm=clip_grad_norm,
+                    )
 
                 if self.scheduler is not None and scheduler_step_per == "batch":
                     self.scheduler.step()
@@ -384,6 +377,7 @@ class Trainer:
         config: DictConfig,
         device: torch.device,
         use_distributed: bool,
+        log_prefix: str = "Model",
     ) -> nn.Module:
         """Instantiate the model, move to device, apply channels-last + DDP wrap."""
         model = hy_utils.instantiate(config.model)
@@ -400,7 +394,8 @@ class Trainer:
         if use_distributed:
             find_unused = config.get("find_unused_parameters", False)
             model = distributed.wrap_model_ddp(model, device, find_unused_parameters=find_unused)
-        logger.info("Model initialized: %s", type(model).__name__)
+
+        logger.info("%s initialized: %s", log_prefix, type(model).__name__)
         return model
 
     @classmethod
@@ -408,28 +403,22 @@ class Trainer:
         cls,
         config: DictConfig,
         model: nn.Module,
-    ) -> torch.optim.Optimizer:
-        """Build a single optimizer over trainable parameters."""
-        optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
-        optimizer_params = dict(config.get("optimizer_params", {}) or {})
-        optimizer_params = {k: v for k, v in optimizer_params.items() if v is not None}
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
-        return optimizer_class(trainable_params, lr=config.lr, **optimizer_params)
+    ) -> torch.optim.Optimizer | dict[str, torch.optim.Optimizer]:
+        """Build optimizer(s). ModuleDict model → dict of optimizers; else single."""
+        return build_optim_dict_or_single(config, model)
 
     @classmethod
     def _build_scheduler(
         cls,
         config: DictConfig,
-        optim: torch.optim.Optimizer,
-    ) -> torch.optim.lr_scheduler.LRScheduler | None:
-        """Build a single LR scheduler, or None."""
-        sched_name = config.get("lr_scheduler", None)
-        if sched_name is None:
-            return None
-        scheduler_class = getattr(torch.optim.lr_scheduler, sched_name)
-        scheduler_params = dict(config.get("lr_scheduler_params", {}) or {})
-        scheduler_params = {k: v for k, v in scheduler_params.items() if v is not None}
-        return scheduler_class(optim, **scheduler_params)
+        optim: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
+    ) -> (
+        torch.optim.lr_scheduler.LRScheduler
+        | dict[str, torch.optim.lr_scheduler.LRScheduler]
+        | None
+    ):
+        """Build scheduler(s). Mirrors optim shape."""
+        return build_scheduler_dict_or_single(config, optim)
 
     @classmethod
     def _build_loss(cls, config: DictConfig, device: torch.device) -> Any:

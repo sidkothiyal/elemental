@@ -1,6 +1,7 @@
 # Example: Simple neural network training pipeline
 # This demonstrates basic variable creation, model definition, and training steps
 
+mode: graph
 
 executor:
   run_mode: train

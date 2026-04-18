@@ -13,7 +13,11 @@ Composes a Hydra config, initializes the environment (seeds, TF32, device, DDP),
 |---|---|
 | `"supervised"` (default) | `Trainer` |
 | `"gan"` | `GANTrainer` |
+| `"customizable"` | `CustomizableTrainer` |
+| `"graph"` | `GraphTrainer` (early exit, separate init path) |
 | `"rl"` | `RLTrainer` |
+
+Also exports `build_graph_trainer(config_file, overrides)` for direct graph-mode construction.
 
 ### `trainer.py` — `class Trainer`
 
@@ -28,8 +32,8 @@ Supervised base. Drives the full training/validation/test lifecycle.
 
 **`_build_*` classmethod hooks (override points):**
 - `_build_model(config, device, use_distributed) -> nn.Module`
-- `_build_optimizer(config, model) -> Optimizer`
-- `_build_scheduler(config, optim) -> LRScheduler | None`
+- `_build_optimizer(config, model) -> Optimizer | dict[str, Optimizer]` (auto-detects ModuleDict)
+- `_build_scheduler(config, optim) -> LRScheduler | dict | None` (mirrors optim shape)
 - `_build_loss(config, device) -> LossContainer`
 - `_build_scaler(config, device, dtype) -> GradScaler | None`
 
@@ -37,8 +41,7 @@ Supervised base. Drives the full training/validation/test lifecycle.
 
 Overrides:
 - `_build_model` → `nn.ModuleDict({"generator", "discriminator"})`
-- `_build_optimizer` → `{"generator": Optimizer, "discriminator": Optimizer}`
-- `_build_scheduler` → dict (or `None`)
+- `_build_optimizer` / `_build_scheduler` → inherited from base (auto-detect ModuleDict → dict-of-optimizers/schedulers)
 - `_build_loss` → dict (adversarial / feature_matching)
 - `train_batch` → three phases (disc-on-fake → disc-on-real → generator), each with its own zero_grad / backward / step cycle, all gated on `training`.
 
@@ -47,6 +50,17 @@ Postprocessor runs **inside** autocast (unified with the supervised path).
 ### `rl_trainer.py` — `class RLTrainer(Trainer)` (skeleton)
 
 Wires the override shape for RL. `_collect_rollouts`, `_compute_advantages`, and `_update_policy` all raise `NotImplementedError`. `train_batch` orchestrates them so that once the three methods have bodies, the trainer is complete.
+
+### `customizable_trainer.py` — `class CustomizableTrainer(Trainer)`
+
+Inherits the full Trainer lifecycle and overrides `train_batch` to execute a `GraphNode` per batch. The graph receives all trainer state as scope variables (`model`, `optim`, `loss_fn`, `scaler`, `batch`, `epoch`, `training`, etc.) and owns the full forward/backward/step choreography.
+
+- `_build_graph(config)` classmethod — instantiates the per-batch graph from `config.graph`.
+- Config-driven `metrics_format` mapping (e.g. `{generator: generator_loss}`) customizes metric names.
+
+### `graph_trainer.py` — `class GraphTrainer`
+
+Standalone graph-execution trainer (does NOT inherit from Trainer). Manages `DependencyResolver`, `GraphExecutor`, and epoch loop for fully declarative training pipelines defined in YAML (`nodes:` + `execution_graph:` sections).
 
 ### `helpers.py` — stateless helpers
 
@@ -57,8 +71,12 @@ Shared across all trainers:
 - `clear_module_losses(model)`, `cleanup_memory(model, optim, device)`
 - `setup_profiler(config, results_dir)` — torch.profiler wrapper
 - `should_step_optimizer(batch_idx, grad_accum_steps, total_batches)` — gradient accumulation boundary logic
+- `backward_step(loss, scaler, grad_accum_steps)` — scale + backward (with or without GradScaler)
+- `optimizer_step(*, optim, parameters, scaler, clip_grad_norm)` — unscale + clip + step + update + zero_grad
+- `build_optim_dict_or_single(config, model)` — dict-of-optimizers for ModuleDict, else single
+- `build_scheduler_dict_or_single(config, optim)` — mirrors optim shape
 - `materialize_and_average_losses(running, denom)`, `_accumulate_loss(running, key, tensor)`
-- `_get_cached_signature(fn)` — `@lru_cache`d `inspect.signature`
+- `_get_cached_signature(fn)` — cached `inspect.signature`
 
 ## Usage
 

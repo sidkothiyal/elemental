@@ -1,4 +1,4 @@
-# Graph Node for the graph-based node system.
+"""Graph Node for the graph-based node system."""
 
 import re
 import traceback
@@ -70,6 +70,10 @@ class GraphNode:
         """
         if available_vars is None:
             available_vars = {}
+
+        # Copy to avoid mutating the caller's scope when we merge in mapped inputs
+        # and statement outputs below.
+        available_vars = dict(available_vars)
 
         # Apply input mapping if provided
         if self._input_mapping:
@@ -209,9 +213,8 @@ class ForLoopNode(GraphNode):
 
             # Evaluate the resolved expression
             return resolved_expr
-        else:
-            # Evaluate expression as-is
-            return eval(iterator_expr, {"enumerate": enumerate, "next": next}, available_vars)
+        # Evaluate expression as-is
+        return eval(iterator_expr, {"enumerate": enumerate, "next": next}, available_vars)
 
     def execute(self, available_vars: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute the for loop, iterating over statements until StopIteration.
@@ -224,6 +227,9 @@ class ForLoopNode(GraphNode):
         """
         if available_vars is None:
             available_vars = {}
+
+        # Copy to avoid mutating the caller's scope across loop iterations.
+        available_vars = dict(available_vars)
 
         # Apply input mapping if provided
         if self._input_mapping:
@@ -294,7 +300,7 @@ class ForLoopNode(GraphNode):
             raise e
 
         # Prepare final outputs based on configuration
-        final_outputs = {"iterations_completed": iteration_count}
+        final_outputs: dict[str, Any] = {"iterations_completed": iteration_count}
 
         if self._expose_all_outputs:
             final_outputs.update(loop_outputs)

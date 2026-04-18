@@ -42,9 +42,17 @@ Keyed by `{run_mode}#{sorted node signatures}`. Signature = `name|sorted(inputs)
 ### Input mapping inference (`_infer_input_mapping`)
 
 Priority:
-1. If all inputs can be suffix-matched to param names: use suffix matching
-2. If param count == input count: positional mapping
-3. Fallback: strip dot-prefix from input keys
+1. If all inputs can be suffix-matched to param names → use suffix matching
+2. If param count == input count → positional mapping
+3. Ambiguous → returns empty dict (inputs become advisory dependency hints)
+
+### `inputs:` semantics (post bug-fix)
+
+`inputs:` declared in YAML is now functional: mapped inputs are passed as kwargs to the function, but only for parameters NOT already bound by positional `args:`. When input mapping is ambiguous (suffix mismatch, count mismatch), `inputs:` acts as dependency metadata only — no kwargs injected. This prevents existing configs with non-semantic `inputs:` entries from breaking.
+
+### Method-call support in `_resolve_reference`
+
+The executor supports `node:obj.method()` syntax — trailing `()` calls the resolved attribute. Works for both `_resolve_reference` (ExecuteFunction) and `DependencyResolver.resolve_references`. Dict access is also supported: `node:model.generator` resolves via `__getitem__` when the object is a dict.
 
 ## TorchModuleNode (torch_module_node.py)
 
@@ -54,6 +62,10 @@ Inherits both `BaseNode` and `nn.Module` (MRO: BaseNode first). Delegates all `n
 
 Either `_value` (direct) or `_cached_variable` (factory result, created at `__init__`). `__call__` delegates to `self.value(...)` — so if value is callable, this node is callable. `__getattr__` delegates to wrapped value for unknown attributes.
 
-## DependencyResolver (graph_trainer.py)
+## DependencyResolver (dependency_resolver.py)
 
-Uses Kahn's algorithm for topological sort. Extracts dependencies by scanning config strings for `"node:"` prefixes. `resolve_references()` walks config dict recursively and substitutes node references with actual resolved Python objects.
+Lives in `src/nodes/dependency_resolver.py` (moved from `graph_trainer.py`). Re-exported via `nodes.__init__`.
+
+- `extract_dependencies(config)` — Recursively scans for `node:<name>` strings, returns set of root names.
+- `topological_sort(node_configs)` — Kahn's algorithm; raises `ValueError` on cycles; ignores unknown references.
+- `resolve_references(config)` — Walks config dict/list recursively, substituting `node:<name>.<attr>` strings with actual Python objects. Supports attribute access, method calls (`node:obj.method()`), and dict subscript (`node:dict_obj.key`).

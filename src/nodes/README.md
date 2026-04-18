@@ -1,6 +1,6 @@
 # src/nodes — Computation Graph Nodes
 
-Node-based computation graph system used by `graph_trainer.py`.
+Node-based computation graph system used by `training.graph_trainer.GraphTrainer` (mode: graph) and `training.customizable_trainer.CustomizableTrainer` (mode: customizable).
 
 ## Overview
 
@@ -27,9 +27,16 @@ Abstract base class for all nodes. Every node has:
 - `input_mapping` / `output_mapping` — rename inputs/outputs
 - Auto-infers input→parameter mapping from function signature when not specified
 
+### `dependency_resolver.py` — DependencyResolver
+
+Resolves inter-node references and topological ordering:
+- `extract_dependencies(config)` — finds all `node:<name>` string references recursively
+- `topological_sort(node_configs)` — Kahn's algorithm for dependency ordering; raises on cycles
+- `resolve_references(config)` — replaces `node:<name>.<attr>` strings with actual objects (supports attribute access, `method()` calls, and dict subscript)
+
 ### `graph_node.py` — GraphNode + ForLoopNode
 
-**`GraphNode`** — executes a list of `ExecuteFunction` statements sequentially. Supports `input_mapping`, `output_mapping`, and `expose_all_outputs`.
+**`GraphNode`** — executes a list of `ExecuteFunction` statements sequentially. Supports `input_mapping`, `output_mapping`, and `expose_all_outputs`. Copies `available_vars` to avoid mutating caller scope.
 
 **`ForLoopNode`** — iterates over an expression (e.g., `"enumerate(next(node:dataloader))"`) and executes statements for each iteration. Handles `StopIteration` cleanly.
 

@@ -6,8 +6,7 @@ High-level architecture reference for the elemental ML training library.
 
 ```
 src/
-├── trainer.py            # Thin Hydra/Typer CLI — delegates to training.builder
-├── graph_trainer.py      # Node-graph alternative trainer (Hydra @hydra.main)
+├── trainer.py            # Thin Hydra/Typer CLI — delegates to training.builder (handles all modes, incl. graph)
 ├── training/             # Trainer class hierarchy + builder + helpers
 ├── callback/             # Lifecycle hooks for training
 ├── data_processor/       # Dataset download + preprocessing
@@ -16,7 +15,7 @@ src/
 ├── metrics/              # TorchMetrics-based metric modules
 ├── model/                # Neural network architectures
 │   └── blocks/           # Reusable building blocks
-├── nodes/                # Computation graph nodes (graph_trainer)
+├── nodes/                # Computation graph nodes (GraphTrainer / CustomizableTrainer)
 ├── postprocessor/        # Data-container post-processing pipeline
 ├── tools/                # Standalone utility scripts
 └── utils/                # Shared helpers (checkpoint, distributed, init)
@@ -31,7 +30,8 @@ src/
    ├── _init_env() → device, dtype, seeds, DDP setup
    ├── initializer.initialize_dataset() → {"train", "val", "test": DataLoader}
    │     └── CUDAPrefetcher wraps each DataLoader
-   ├── cls = _trainer_class_for(config.mode)   # Trainer | GANTrainer | RLTrainer
+   ├── cls = _trainer_class_for(config.mode)   # Trainer | GANTrainer | RLTrainer | CustomizableTrainer
+   │     (mode == "graph" → GraphTrainer via separate init path)
    ├── cls._build_model / _optimizer / _scheduler / _loss / _scaler
    ├── _maybe_load_checkpoint() → checkpoint_data
    ├── _build_postprocessor() / _build_profiler()
@@ -128,35 +128,56 @@ Processors: `ArgmaxPostProcessor`, `ChannelFormatterPostProcessor`, `GeneratePos
 `RemoteDataset` (on training machine) fetches samples by index.
 Protocol: HANDSHAKE / GETITEM / GETBATCH / PING.
 
-### 6. Graph-Based Trainer
+### 6. Graph-Based Trainer (`mode: graph`)
 
-Alternative to the standard trainer for complex pipelines:
+Standalone graph execution trainer for fully declarative training pipelines:
 ```
-GraphTrainer
-  ├── DependencyResolver — topological sort of node configs
+GraphTrainer (src/training/graph_trainer.py)
+  ├── DependencyResolver (src/nodes/dependency_resolver.py) — topological sort of node configs
   ├── GraphExecutor — executes nodes, manages global/epoch variables
   └── nodes:
         ├── BaseNode — abstract base
         ├── TorchModuleNode — wraps nn.Module
         ├── VariableNode — holds arbitrary values
         ├── GraphNode — nested statement graph
-        └── ForLoopNode — iterator loop
+        ├── ForLoopNode — iterator loop
+        └── ExecuteFunction — callable wrapper with input/output mapping
 ```
 
 Configs reference nodes via `node:nodename.attr` strings resolved at runtime.
+Dispatched from `build_trainer` when `config.mode == "graph"`.
 
-### 7. GAN Mode
+### 7. Customizable Trainer (`mode: customizable`)
+
+Inherits the full `Trainer` lifecycle (callbacks, profiler, DDP, checkpoint/resume,
+scaler, grad accumulation) and overrides `train_batch` to run a user-defined
+execution graph per batch. This lets users express non-standard forward/backward
+choreography (e.g. GAN three-phase training) declaratively in YAML while reusing
+all existing trainer infrastructure.
+
+```
+CustomizableTrainer(Trainer) (src/training/customizable_trainer.py)
+  ├── self.graph: GraphNode — per-batch execution graph
+  ├── _batch_executor: GraphExecutor — scoped to one batch
+  └── train_batch() → executes graph with seeded variables (model, optim, loss, batch, ...)
+```
+
+Config-driven `metrics_format` mapping customizes metric names. Dispatched from
+`build_trainer` when `config.mode == "customizable"`.
+
+### 8. GAN Mode
 
 When `mode: "gan"`:
 - `model` is a `ModuleDict` with `"generator"` and `"discriminator"`
-- `optim` and `scheduler` are dicts keyed the same way
+- `optim` and `scheduler` are dicts keyed the same way (auto-built via `build_optim_dict_or_single`)
 - `GANTrainer.train_batch` runs a three-phase step (disc-fake → disc-real → generator) in place of the supervised single-phase step
+- Can also be expressed declaratively via `mode: customizable` with a GAN graph (see `configs/experiment/gan/customizable_gan.yaml`)
 
 ## Feature-to-Directory Mapping
 
 | Feature | Primary Location |
 |---------|-----------------|
-| Training loop | `src/training/` (hierarchy); `src/trainer.py` (CLI) |
+| Training loop | `src/training/` (hierarchy); `src/trainer.py` (unified CLI — all modes incl. `mode: graph`) |
 | Hydra config | `configs/` |
 | Model architectures | `src/model/` |
 | Building blocks | `src/model/blocks/` |

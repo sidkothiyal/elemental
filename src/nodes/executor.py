@@ -1,4 +1,4 @@
-# Executor for the graph-based node system.
+"""Executor for the graph-based node system."""
 
 import inspect
 from collections import defaultdict, deque
@@ -435,16 +435,22 @@ class ExecuteFunction:
         """
         if isinstance(self.function, str):
             if self.function.startswith("node:"):
-                # Parse function path like "node:model.train" or "node:optimizer.zero_grad"
-                node_ref = self.function[len("node:") :]  # Remove "node:" prefix
+                # Parse function path like "node:model.train" or
+                # "node:optim.discriminator.zero_grad".
+                # Supports both attribute access (on objects) and subscript access (on plain dicts
+                # like ``optim`` / ``loss_fn``), matching ``_resolve_reference`` below so that
+                # dict-of-optimizers and dict-of-losses can be traversed in the ``function:`` field.
+                node_ref = self.function[len("node:") :]
                 parts = node_ref.split(".")
                 obj = available_vars[parts[0]]
                 for attr in parts[1:]:
-                    obj = getattr(obj, attr)
+                    if isinstance(obj, dict):
+                        obj = obj[attr]
+                    else:
+                        obj = getattr(obj, attr)
                 return obj
             return hydra_utils.get_method(self.function)
-        else:
-            return self.function
+        return self.function
 
     def _resolve_reference(
         self,
@@ -471,11 +477,16 @@ class ExecuteFunction:
                 parts = node_ref.split(".")
                 obj = available_vars[parts[0]]
                 for attr in parts[1:]:
+                    is_call = attr.endswith("()")
+                    if is_call:
+                        attr = attr[:-2]
                     # Always allow both dict and getattr access for node: references
                     if isinstance(obj, dict):
                         obj = obj[attr]
                     else:
                         obj = getattr(obj, attr)
+                    if is_call:
+                        obj = obj()
                 return obj
             return available_vars[node_ref]
 
@@ -556,42 +567,63 @@ class ExecuteFunction:
     def _infer_input_mapping(callable_obj: Callable, inputs: dict[str, Any]) -> dict[str, str]:
         """Infer input mapping from callable signature.
 
+        Returns an empty mapping when no principled correspondence exists —
+        callers treat unmapped inputs as advisory dependency hints rather
+        than forcing them into kwargs (which would cause runtime errors).
+
         Args:
             callable_obj: Function, method, or callable to inspect
             inputs: Dictionary of input values
 
         Returns:
-            Dictionary mapping input keys to parameter names
+            Dictionary mapping input keys to parameter names (may be empty)
         """
-        mapping = {}
-
         try:
             sig = inspect.signature(callable_obj)
-            param_names = list(sig.parameters.keys())
-            input_keys = list(inputs.keys())
+        except (ValueError, TypeError):
+            return {}
 
-            # First: Try suffix matching for ALL inputs
-            suffix_mapping = {}
-            for input_key in input_keys:
-                key_suffix = input_key.split(".")[-1]
-                if key_suffix in param_names:
-                    suffix_mapping[input_key] = key_suffix
+        param_names = list(sig.parameters.keys())
+        input_keys = list(inputs.keys())
 
-            # Second: If ALL inputs were suffix-mapped, use that
-            if len(suffix_mapping) == len(input_keys):
-                mapping = suffix_mapping
-            # Third: If counts match, use positional mapping
-            elif len(param_names) == len(input_keys):
-                mapping = dict(zip(input_keys, param_names))
-            # Fourth: Fallback - use input keys directly (remove node prefix)
-            else:
-                mapping = {key: key.split(".")[-1] for key in input_keys}
+        # First: suffix matching — map "node:x.y" to a param named "y" if present.
+        suffix_mapping = {}
+        for input_key in input_keys:
+            key_suffix = input_key.split(".")[-1]
+            if key_suffix in param_names:
+                suffix_mapping[input_key] = key_suffix
 
-        except Exception:
-            # Fallback: use input keys directly
-            mapping = {key: key.split(".")[-1] for key in inputs.keys()}
+        # If every input resolved via suffix matching, use it.
+        if suffix_mapping and len(suffix_mapping) == len(input_keys):
+            return suffix_mapping
 
-        return mapping
+        # Otherwise, if counts match, map positionally.
+        if len(param_names) == len(input_keys):
+            return dict(zip(input_keys, param_names))
+
+        # Ambiguous — leave unmapped so inputs: acts as dependency metadata.
+        return {}
+
+    @staticmethod
+    def _positional_param_names(callable_obj: Callable, num_positional: int) -> set[str]:
+        """Return parameter names consumed by the first ``num_positional`` positional args.
+
+        Used so ``inputs:`` kwargs don't clobber parameters already bound by ``args:``.
+        """
+        try:
+            sig = inspect.signature(callable_obj)
+            names = [
+                p.name
+                for p in sig.parameters.values()
+                if p.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+            ]
+            return set(names[:num_positional])
+        except (ValueError, TypeError):
+            return set()
 
     @staticmethod
     def _apply_input_mapping(
@@ -608,13 +640,12 @@ class ExecuteFunction:
         """
         mapped_inputs = {}
         for input_key, input_value in inputs.items():
+            # Only bind inputs that the mapping explicitly covers. Unmapped
+            # inputs are advisory-only (dependency hints) and must not leak
+            # into kwargs — otherwise they would collide with function
+            # signatures that don't accept them.
             if input_key in input_mapping:
-                param_name = input_mapping[input_key]
-                mapped_inputs[param_name] = input_value
-            else:
-                # Fallback: use key directly (remove node prefix if present)
-                param_name = input_key.split(".")[-1]
-                mapped_inputs[param_name] = input_value
+                mapped_inputs[input_mapping[input_key]] = input_value
         return mapped_inputs
 
     @staticmethod
@@ -689,10 +720,11 @@ class ExecuteFunction:
                 resolved_inputs, input_mapping
             )
 
-        # Combine all arguments
-        final_kwargs = {}
-        # TODO: Add back use of inputs in ExecuteFunction
-        # final_kwargs.update(mapped_inputs)
+        # Combine kwargs with precedence: inputs fill first, named_args override,
+        # positional args win over both (drop any input mapped onto a param already
+        # consumed positionally).
+        positional_consumed = self._positional_param_names(func, len(resolved_args))
+        final_kwargs = {k: v for k, v in mapped_inputs.items() if k not in positional_consumed}
         final_kwargs.update(resolved_kwargs)
 
         # Execute function

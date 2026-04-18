@@ -18,7 +18,6 @@ from torch import nn
 from loss.utils import call_loss_with_epoch
 from training.helpers import build_data_container, populate_predictions
 from training.trainer import Trainer
-from utils import distributed
 
 logger = logging.getLogger(__name__)
 
@@ -204,65 +203,10 @@ class GANTrainer(Trainer):
         config: DictConfig,
         device: torch.device,
         use_distributed: bool,
+        log_prefix: str = "GAN model",
     ) -> nn.Module:
         """Instantiate ``ModuleDict({"generator", "discriminator"})`` from config."""
-        model = hy_utils.instantiate(config.model)
-        model.to(device)
-
-        if device.type == "cuda" and config.get("channels_last", True):
-            model = model.to(memory_format=torch.channels_last)
-            logger.info("Model converted to channels_last memory format")
-
-        if device.type == "cuda" and config.get("cudnn_benchmark", True):
-            torch.backends.cudnn.benchmark = True
-            logger.info("cuDNN benchmark mode enabled")
-
-        if use_distributed:
-            find_unused = config.get("find_unused_parameters", False)
-            model = distributed.wrap_model_ddp(model, device, find_unused_parameters=find_unused)
-        logger.info("GAN model initialized: %s", type(model).__name__)
-        return model
-
-    @classmethod
-    def _build_optimizer(
-        cls,
-        config: DictConfig,
-        model: nn.Module,
-    ) -> dict[str, torch.optim.Optimizer]:
-        """Build per-network optimizers for generator and discriminator."""
-        optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
-        optimizer_params = dict(config.get("optimizer_params", {}) or {})
-        optimizer_params = {k: v for k, v in optimizer_params.items() if v is not None}
-        return {
-            "generator": optimizer_class(
-                [p for p in model["generator"].parameters() if p.requires_grad],
-                lr=config.lr,
-                **optimizer_params,
-            ),
-            "discriminator": optimizer_class(
-                [p for p in model["discriminator"].parameters() if p.requires_grad],
-                lr=config.lr,
-                **optimizer_params,
-            ),
-        }
-
-    @classmethod
-    def _build_scheduler(
-        cls,
-        config: DictConfig,
-        optim: dict[str, torch.optim.Optimizer],
-    ) -> dict[str, torch.optim.lr_scheduler.LRScheduler] | None:
-        """Build per-network LR schedulers, or None."""
-        sched_name = config.get("lr_scheduler", None)
-        if sched_name is None:
-            return None
-        scheduler_class = getattr(torch.optim.lr_scheduler, sched_name)
-        scheduler_params = dict(config.get("lr_scheduler_params", {}) or {})
-        scheduler_params = {k: v for k, v in scheduler_params.items() if v is not None}
-        return {
-            "generator": scheduler_class(optim["generator"], **scheduler_params),
-            "discriminator": scheduler_class(optim["discriminator"], **scheduler_params),
-        }
+        return Trainer._build_model(config, device, use_distributed, log_prefix=log_prefix)
 
     @classmethod
     def _build_loss(cls, config: DictConfig, device: torch.device) -> Any:

@@ -4,20 +4,25 @@
 
 ```
 training/
-├── __init__.py          # Re-exports Trainer, GANTrainer, RLTrainer, build_trainer
-├── builder.py           # build_trainer() + _trainer_class_for() dispatch + private helpers
-├── trainer.py           # class Trainer (supervised base)
-├── gan_trainer.py       # class GANTrainer(Trainer) — three-phase GAN step
-├── rl_trainer.py        # class RLTrainer(Trainer) skeleton (NotImplementedError stubs)
-└── helpers.py           # Stateless helpers shared across trainers
+├── __init__.py                # Re-exports all trainers + build_trainer + build_graph_trainer
+├── builder.py                 # build_trainer() + build_graph_trainer() + dispatch
+├── trainer.py                 # class Trainer (supervised base)
+├── gan_trainer.py             # class GANTrainer(Trainer) �� three-phase GAN step
+├── customizable_trainer.py    # class CustomizableTrainer(Trainer) — per-batch graph execution
+├── graph_trainer.py           # class GraphTrainer — standalone graph-execution trainer
+├── rl_trainer.py              # class RLTrainer(Trainer) skeleton (NotImplementedError stubs)
+└── helpers.py                 # Stateless helpers shared across trainers
 ```
 
 ## Class hierarchy
 
 ```
 Trainer (supervised base)
-├── GANTrainer           # train_batch overridden with 3-phase step; _build_* return dicts
-└── RLTrainer            # train_batch orchestrates _collect_rollouts / _compute_advantages / _update_policy
+├── GANTrainer              # train_batch overridden with 3-phase step
+├── CustomizableTrainer     # train_batch delegates to a user-defined GraphNode
+└── RLTrainer               # train_batch orchestrates _collect_rollouts / _compute_advantages / _update_policy
+
+GraphTrainer                # standalone, does NOT inherit from Trainer
 ```
 
 Subclasses override:
@@ -35,7 +40,8 @@ build_trainer(config_file, local_rank, overrides) -> Trainer
   3. initializer.initialize_dataset(config.dataloader, ...) → {"train": DataLoader, "val": DataLoader, "test": DataLoader}
   4. remote_backup = initializer.initialize_remote_backup(config, results_dir)
   5. callbacks = initializer.initialize_callbacks(config)
-  6. cls = _trainer_class_for(config.mode)                # Trainer | GANTrainer | RLTrainer
+  6. if config.mode == "graph": return GraphTrainer(config)  # early exit for graph mode
+     cls = _trainer_class_for(config.mode)                # Trainer | GANTrainer | RLTrainer | CustomizableTrainer
   7. model     = cls._build_model(config, device, use_distributed)
      optim     = cls._build_optimizer(config, model)
      scheduler = cls._build_scheduler(config, optim)
@@ -50,7 +56,7 @@ build_trainer(config_file, local_rank, overrides) -> Trainer
                 callbacks=..., loaders=..., postprocessor=..., profiler=..., ...)
 ```
 
-The `_build_*` classmethods are the extension point: `GANTrainer._build_model` returns a `ModuleDict`, `GANTrainer._build_optimizer` returns a dict-of-optimizers, etc. The `if config.mode == "gan"` branch that would otherwise appear in `build_trainer` lives as polymorphism on the class.
+The `_build_*` classmethods are the extension point. The base `_build_optimizer` uses `build_optim_dict_or_single`, which auto-detects `ModuleDict` models and returns dict-of-optimizers. `_build_scheduler` mirrors the optim shape. `GANTrainer` inherits this directly (no override needed). For `CustomizableTrainer`, the builder additionally calls `cls._build_graph(config)` and passes the result to the constructor.
 
 ## Training flow (`Trainer.train`)
 

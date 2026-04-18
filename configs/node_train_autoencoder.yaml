@@ -1,6 +1,8 @@
 # Example: Autoencoder training pipeline for depth estimation
 # This demonstrates autoencoder training using UNet architecture
 
+mode: graph
+
 executor:
   run_mode: train
   external_outputs: {}

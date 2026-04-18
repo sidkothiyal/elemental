@@ -7,7 +7,7 @@ arguments, which makes them independently unit-testable (see `tests/src/test_tra
 import inspect
 import logging
 import os
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 from omegaconf import DictConfig
@@ -302,6 +302,99 @@ def populate_predictions(pred: torch.Tensor | dict[str, torch.Tensor], data: dic
 def should_step_optimizer(batch_idx: int, grad_accum_steps: int, total_batches: int) -> bool:
     """Return True when the optimizer should step (accumulation boundary or final batch)."""
     return (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == total_batches
+
+
+def backward_step(
+    loss: torch.Tensor,
+    scaler: torch.amp.GradScaler | None,
+    grad_accum_steps: int,
+) -> None:
+    """Scale *loss* by ``1 / grad_accum_steps`` and run backward.
+
+    When *scaler* is provided and enabled, uses ``scaler.scale(...)`` to handle
+    fp16 gradients; otherwise calls ``.backward()`` directly.
+    """
+    scaled_loss = loss / grad_accum_steps
+    if scaler is not None and scaler.is_enabled():
+        scaler.scale(scaled_loss).backward()
+    else:
+        scaled_loss.backward()
+
+
+def optimizer_step(
+    *,
+    optim: torch.optim.Optimizer,
+    parameters: Any,
+    scaler: torch.amp.GradScaler | None,
+    clip_grad_norm: float | None,
+) -> None:
+    """Run an optimizer step: unscale (if scaled) → clip → step → scaler.update → zero_grad.
+
+    Callers must gate this with ``should_step_optimizer(...)`` to respect
+    gradient accumulation boundaries.
+    """
+    use_scaler = scaler is not None and scaler.is_enabled()
+    if clip_grad_norm is not None:
+        if use_scaler:
+            assert scaler is not None  # mypy narrowing
+            scaler.unscale_(optim)
+        torch.nn.utils.clip_grad_norm_(parameters, max_norm=clip_grad_norm)
+    if use_scaler:
+        assert scaler is not None  # mypy narrowing
+        scaler.step(optim)
+        scaler.update()
+    else:
+        optim.step()
+    optim.zero_grad(set_to_none=False)
+
+
+def build_optim_dict_or_single(
+    config: DictConfig,
+    model: nn.Module,
+) -> torch.optim.Optimizer | dict[str, torch.optim.Optimizer]:
+    """Build an optimizer — a dict keyed by submodule name when *model* is a ModuleDict.
+
+    Reads ``config.optimizer`` (class name), ``config.optimizer_params`` (kwargs),
+    and ``config.lr``. Used by the base ``Trainer`` for single-optimizer setups
+    and by ``GANTrainer`` / ``CustomizableTrainer`` for dict-of-optimizers.
+    """
+    optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
+    optimizer_params = dict(config.get("optimizer_params", {}) or {})
+    optimizer_params = {k: v for k, v in optimizer_params.items() if v is not None}
+
+    if isinstance(model, nn.ModuleDict):
+        return {
+            name: optimizer_class(
+                [p for p in submodule.parameters() if p.requires_grad],
+                lr=config.lr,
+                **optimizer_params,
+            )
+            for name, submodule in model.items()
+        }
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    return optimizer_class(trainable_params, lr=config.lr, **optimizer_params)
+
+
+def build_scheduler_dict_or_single(
+    config: DictConfig,
+    optim: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
+) -> torch.optim.lr_scheduler.LRScheduler | dict[str, torch.optim.lr_scheduler.LRScheduler] | None:
+    """Build an LR scheduler — a dict when *optim* is a dict, else a single scheduler.
+
+    Reads ``config.lr_scheduler`` (class name) and ``config.lr_scheduler_params``
+    (kwargs). Returns None when no ``lr_scheduler`` is configured.
+    """
+    sched_name = config.get("lr_scheduler", None)
+    if sched_name is None:
+        return None
+    scheduler_class = getattr(torch.optim.lr_scheduler, sched_name)
+    scheduler_params = dict(config.get("lr_scheduler_params", {}) or {})
+    scheduler_params = {k: v for k, v in scheduler_params.items() if v is not None}
+
+    if isinstance(optim, dict):
+        return {name: scheduler_class(o, **scheduler_params) for name, o in optim.items()}
+    return scheduler_class(optim, **scheduler_params)
 
 
 def materialize_and_average_losses(

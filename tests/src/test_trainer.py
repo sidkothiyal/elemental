@@ -7,16 +7,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from torch import nn
 
 from training.helpers import (
     _accumulate_loss,
     _get_cached_signature,
+    backward_step,
     build_data_container,
+    build_optim_dict_or_single,
+    build_scheduler_dict_or_single,
     cleanup_memory,
     clear_module_losses,
     collect_module_losses,
     materialize_and_average_losses,
+    optimizer_step,
     populate_predictions,
     setup_profiler,
     should_step_optimizer,
@@ -403,3 +408,166 @@ class TestMaterializeAndAverageLosses:
     def test_returns_floats(self):
         result = materialize_and_average_losses({"a": torch.tensor(1.0)}, 1)
         assert isinstance(result["a"], float)
+
+
+# =========================================================================
+# backward_step
+# =========================================================================
+
+
+@pytest.mark.unit
+class TestBackwardStep:
+    def test_no_scaler_divides_by_grad_accum(self):
+        x = torch.tensor(3.0, requires_grad=True)
+        loss = x * 2  # d(loss)/dx = 2
+        backward_step(loss, scaler=None, grad_accum_steps=4)
+        # loss/4 backward → grad = 2/4 = 0.5
+        assert x.grad.item() == pytest.approx(0.5)
+
+    def test_grad_accum_steps_one_is_identity(self):
+        x = torch.tensor(5.0, requires_grad=True)
+        loss = x * x  # d/dx = 2x = 10
+        backward_step(loss, scaler=None, grad_accum_steps=1)
+        assert x.grad.item() == pytest.approx(10.0)
+
+    def test_disabled_scaler_falls_through(self):
+        scaler = MagicMock()
+        scaler.is_enabled.return_value = False
+        x = torch.tensor(1.0, requires_grad=True)
+        loss = x * 4
+        backward_step(loss, scaler=scaler, grad_accum_steps=1)
+        scaler.scale.assert_not_called()
+        assert x.grad.item() == pytest.approx(4.0)
+
+    def test_enabled_scaler_uses_scale(self):
+        scaler = MagicMock()
+        scaler.is_enabled.return_value = True
+        scaled = MagicMock()
+        scaler.scale.return_value = scaled
+        loss = MagicMock()
+        backward_step(loss, scaler=scaler, grad_accum_steps=2)
+        # scaler.scale(loss/2).backward()
+        scaler.scale.assert_called_once()
+        scaled.backward.assert_called_once()
+
+
+# =========================================================================
+# optimizer_step
+# =========================================================================
+
+
+@pytest.mark.unit
+class TestOptimizerStep:
+    def test_plain_step_without_scaler(self):
+        model = nn.Linear(2, 2)
+        optim = torch.optim.SGD(model.parameters(), lr=0.1)
+        # seed some grads
+        out = model(torch.ones(1, 2)).sum()
+        out.backward()
+        before = [p.detach().clone() for p in model.parameters()]
+        optimizer_step(optim=optim, parameters=model.parameters(), scaler=None, clip_grad_norm=None)
+        after = [p.detach().clone() for p in model.parameters()]
+        # params moved
+        assert not torch.equal(before[0], after[0])
+        # grads zeroed
+        for p in model.parameters():
+            assert torch.all(p.grad == 0)
+
+    def test_clip_grad_without_scaler(self):
+        model = nn.Linear(2, 2)
+        optim = torch.optim.SGD(model.parameters(), lr=0.1)
+        # blow up the grads
+        for p in model.parameters():
+            p.grad = torch.ones_like(p) * 1000.0
+        optimizer_step(optim=optim, parameters=model.parameters(), scaler=None, clip_grad_norm=1.0)
+        # not asserting exact clipping value, just that it ran without error
+
+    def test_scaler_path_calls_unscale_and_update(self):
+        scaler = MagicMock()
+        scaler.is_enabled.return_value = True
+        optim = MagicMock()
+        params = [torch.zeros(2, requires_grad=True)]
+        optimizer_step(optim=optim, parameters=params, scaler=scaler, clip_grad_norm=0.5)
+        scaler.unscale_.assert_called_once_with(optim)
+        scaler.step.assert_called_once_with(optim)
+        scaler.update.assert_called_once_with()
+        optim.zero_grad.assert_called_once_with(set_to_none=False)
+
+    def test_disabled_scaler_skips_unscale(self):
+        scaler = MagicMock()
+        scaler.is_enabled.return_value = False
+        optim = MagicMock()
+        optimizer_step(optim=optim, parameters=[], scaler=scaler, clip_grad_norm=None)
+        scaler.unscale_.assert_not_called()
+        scaler.step.assert_not_called()
+        optim.step.assert_called_once()
+
+
+# =========================================================================
+# build_optim_dict_or_single
+# =========================================================================
+
+
+@pytest.mark.unit
+class TestBuildOptimDictOrSingle:
+    def test_single_module_returns_optimizer(self):
+        model = nn.Linear(2, 2)
+        config = OmegaConf.create({"optimizer": "SGD", "lr": 0.1, "optimizer_params": {}})
+        optim = build_optim_dict_or_single(config, model)
+        assert isinstance(optim, torch.optim.SGD)
+
+    def test_module_dict_returns_dict_of_optimizers(self):
+        model = nn.ModuleDict({"a": nn.Linear(2, 2), "b": nn.Linear(3, 3)})
+        config = OmegaConf.create({"optimizer": "Adam", "lr": 0.01, "optimizer_params": {}})
+        optim = build_optim_dict_or_single(config, model)
+        assert isinstance(optim, dict)
+        assert set(optim.keys()) == {"a", "b"}
+        assert all(isinstance(v, torch.optim.Adam) for v in optim.values())
+
+    def test_optimizer_params_forwarded(self):
+        model = nn.Linear(2, 2)
+        config = OmegaConf.create(
+            {"optimizer": "AdamW", "lr": 0.001, "optimizer_params": {"weight_decay": 0.5}}
+        )
+        optim = build_optim_dict_or_single(config, model)
+        assert optim.param_groups[0]["weight_decay"] == 0.5
+
+    def test_default_optimizer_is_adamw(self):
+        model = nn.Linear(2, 2)
+        config = OmegaConf.create({"lr": 0.01})
+        optim = build_optim_dict_or_single(config, model)
+        assert isinstance(optim, torch.optim.AdamW)
+
+
+# =========================================================================
+# build_scheduler_dict_or_single
+# =========================================================================
+
+
+@pytest.mark.unit
+class TestBuildSchedulerDictOrSingle:
+    def test_none_when_not_configured(self):
+        optim = torch.optim.SGD(nn.Linear(2, 2).parameters(), lr=0.1)
+        config = OmegaConf.create({})
+        assert build_scheduler_dict_or_single(config, optim) is None
+
+    def test_single_optim_returns_single_scheduler(self):
+        optim = torch.optim.SGD(nn.Linear(2, 2).parameters(), lr=0.1)
+        config = OmegaConf.create(
+            {"lr_scheduler": "StepLR", "lr_scheduler_params": {"step_size": 10}}
+        )
+        sched = build_scheduler_dict_or_single(config, optim)
+        assert isinstance(sched, torch.optim.lr_scheduler.StepLR)
+
+    def test_dict_optim_returns_dict_of_schedulers(self):
+        optim = {
+            "a": torch.optim.SGD(nn.Linear(2, 2).parameters(), lr=0.1),
+            "b": torch.optim.SGD(nn.Linear(3, 3).parameters(), lr=0.2),
+        }
+        config = OmegaConf.create(
+            {"lr_scheduler": "StepLR", "lr_scheduler_params": {"step_size": 5}}
+        )
+        sched = build_scheduler_dict_or_single(config, optim)
+        assert isinstance(sched, dict)
+        assert set(sched.keys()) == {"a", "b"}
+        assert all(isinstance(v, torch.optim.lr_scheduler.StepLR) for v in sched.values())

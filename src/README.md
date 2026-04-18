@@ -25,12 +25,13 @@ torchrun --nproc_per_node=2 src/trainer.py experiment/... distributed=true
 - PyTorch profiler integration (CPU/CUDA tracing, TensorBoard export)
 - Channels-last memory format and cuDNN benchmark auto-tuning
 
-### graph_trainer.py — Graph-Based Training
-An alternative trainer that executes a DAG of nodes with automatic dependency resolution.
+### Graph-Based Training (`mode: graph`)
+The unified `trainer.py` CLI dispatches `mode: graph` configs to `training.graph_trainer.GraphTrainer`,
+which executes a DAG of nodes with automatic dependency resolution.
 
 **Usage:**
 ```bash
-uv run python src/graph_trainer.py --config-name node_train_autoencoder
+uv run python src/trainer.py --config-name node_train_autoencoder   # mode: graph
 ```
 
 **Features:**

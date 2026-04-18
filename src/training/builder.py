@@ -17,7 +17,9 @@ import hydra.utils as hy_utils
 import torch
 from omegaconf import DictConfig
 
+from training.customizable_trainer import CustomizableTrainer
 from training.gan_trainer import GANTrainer
+from training.graph_trainer import GraphTrainer
 from training.helpers import setup_profiler
 from training.rl_trainer import RLTrainer
 from training.trainer import Trainer
@@ -32,6 +34,8 @@ def _trainer_class_for(mode: str) -> Type[Trainer]:
         return GANTrainer
     if mode == "rl":
         return RLTrainer
+    if mode == "customizable":
+        return CustomizableTrainer
     return Trainer
 
 
@@ -119,11 +123,33 @@ def _maybe_load_checkpoint(
     )
 
 
+def build_graph_trainer(
+    config_file: str,
+    overrides: list[str] | None = None,
+) -> GraphTrainer:
+    """Build a ``GraphTrainer`` from a graph-mode YAML config.
+
+    Graph-mode configs define ``nodes:`` + ``execution_graph:`` sections and are
+    dispatched here when ``config.mode == "graph"``.
+
+    Args:
+        config_file: Hydra config name (e.g. ``"node_train_autoencoder"``).
+        overrides: Hydra override strings.
+
+    Returns:
+        A configured ``GraphTrainer`` with ``.train()`` ready to call.
+    """
+    with hydra.initialize(version_base=None, config_path="../../configs"):
+        config = hydra.compose(config_name=config_file, overrides=overrides or [])
+
+    return GraphTrainer(config)
+
+
 def build_trainer(
     config_file: str,
     local_rank: int = -1,
     overrides: list[str] | None = None,
-) -> Trainer:
+) -> Trainer | GraphTrainer:
     """Build and return a fully initialized ``Trainer`` (or subclass) instance.
 
     Args:
@@ -133,9 +159,14 @@ def build_trainer(
 
     Returns:
         A configured ``Trainer`` instance with ``.train()`` / ``.test()`` ready to call.
+        For ``mode: graph``, returns a ``GraphTrainer`` instead.
     """
     with hydra.initialize(version_base=None, config_path="../../configs"):
         config = hydra.compose(config_name=config_file, overrides=overrides or [])
+
+    # Graph mode uses a completely different initialization path.
+    if config.get("mode", None) == "graph":
+        return GraphTrainer(config)
 
     (
         device,
@@ -209,6 +240,10 @@ def build_trainer(
 
     resume_training = config.get("resume_training", False)
 
+    extra_kwargs: dict = {}
+    if cls is CustomizableTrainer:
+        extra_kwargs["graph"] = cls._build_graph(config)
+
     return cls(
         config=config,
         device=device,
@@ -228,4 +263,5 @@ def build_trainer(
         checkpoint_data=checkpoint_data,
         cuda_empty_cache_interval=cuda_empty_cache_interval,
         resume_training=resume_training,
+        **extra_kwargs,
     )

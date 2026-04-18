@@ -1,6 +1,8 @@
 # Example: GAN training pipeline for segmentation
 # This demonstrates GAN training with generator and discriminator
 
+mode: graph
+
 executor:
   run_mode: train
   external_outputs: {}

@@ -7,6 +7,7 @@ machine learning training pipelines as computational graphs.
 
 # Core classes
 from nodes.base import BaseNode
+from nodes.dependency_resolver import DependencyResolver
 from nodes.executor import DependencyError, ExecuteFunction, ExecutionError, GraphExecutor
 from nodes.graph_node import ForLoopNode, GraphNode
 from nodes.torch_module_node import TorchModuleNode
@@ -17,6 +18,7 @@ from nodes.variable_node import VariableNode
 __all__ = [
     # Core classes
     "BaseNode",
+    "DependencyResolver",
     "GraphExecutor",
     "ExecuteFunction",
     "ExecutionError",
