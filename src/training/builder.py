@@ -162,14 +162,19 @@ def build_trainer(
     remote_backup = initializer.initialize_remote_backup(config, results_dir)
 
     callbacks = initializer.initialize_callbacks(config)
-    loaders = initializer.initialize_dataset(
-        config.dataloader,
-        local_rank,
-        world_size,
-        use_distributed,
-        device=device,
-        channels_last=config.get("channels_last", True),
-    )
+    # RL experiments omit `dataloader:` — env + rollout buffer replace the supervised loader.
+    dataloader_cfg = config.get("dataloader", None)
+    if dataloader_cfg is not None:
+        loaders = initializer.initialize_dataset(
+            dataloader_cfg,
+            local_rank,
+            world_size,
+            use_distributed,
+            device=device,
+            channels_last=config.get("channels_last", True),
+        )
+    else:
+        loaders = {}
 
     cls = _trainer_class_for(config.mode)
 
@@ -223,6 +228,12 @@ def build_trainer(
     extra_kwargs: dict = {}
     if cls is CustomizableTrainer:
         extra_kwargs["graph"] = cls._build_graph(config)
+    if cls is RLTrainer:
+        extra_kwargs["env"] = cls._build_env(config, device)
+        extra_kwargs["policy_wrapper"] = cls._build_policy_wrapper(config, model, device)
+        extra_kwargs["rollout_buffer"] = cls._build_rollout_buffer(config, device)
+        extra_kwargs["rl_algorithm"] = cls._build_algorithm(config)
+        cls._attach_policy_params(optim, extra_kwargs["policy_wrapper"], config)
 
     return cls(
         config=config,

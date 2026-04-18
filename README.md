@@ -4,7 +4,7 @@ A modular PyTorch ML training library supporting image compression, classificati
 
 ## Key Features
 
-- **Multi-task training**: autoencoder, classification, GAN, diffusion, masked autoencoder, autoregressive LM
+- **Multi-task training**: autoencoder, classification, GAN, diffusion, masked autoencoder, autoregressive LM, RL (PPO)
 - **Hydra-based config**: hierarchical, composable YAML configs with experiment overrides
 - **Remote datasets**: ZeroMQ dataset server + client for training on data held on another machine
 - **Graph-based trainer**: node/computation-graph alternative to the standard trainer
@@ -46,6 +46,9 @@ uv run python src/trainer.py experiment/autoregressive/wikitext_lm
 # GAN segmentation
 uv run python src/trainer.py experiment/gan/cityscapes_seg
 
+# VLA diffusion PPO in SIMPLER (ManiSkill)
+uv run python src/trainer.py experiment/vla/vla_rl_ppo
+
 # Override any config value on the command line (Hydra syntax)
 uv run python src/trainer.py experiment/autoencoder/compression_unet lr=0.001 num_epochs=500
 
@@ -69,12 +72,14 @@ elemental/
 │   ├── callback/             # Training callbacks (checkpoint, metrics, W&B)
 │   ├── data_processor/       # Dataset downloading, tokenization
 │   ├── dataset/              # Dataset implementations
-│   ├── loss/                 # Loss functions (MSE, SSIM, VGG, phased, etc.)
-│   ├── metrics/              # TorchMetrics wrappers (IoU, MSE, PSNR, SSIM)
+│   ├── env/                  # Vectorized RL environments (BaseVecEnv, DummyVecEnv, SimplerEnv)
+│   ├── loss/                 # Loss functions (MSE, SSIM, VGG, phased, PPO / value / entropy, etc.)
+│   ├── metrics/              # TorchMetrics wrappers (IoU, MSE, PSNR, SSIM, episode metrics)
 │   ├── model/                # Model architectures
 │   │   └── blocks/           # Building blocks (conv, resnet, linear, etc.)
 │   ├── nodes/                # Computation graph nodes (graph_trainer)
 │   ├── postprocessor/        # Output post-processing pipeline
+│   ├── rl/                   # RL algorithms, policy wrappers, rollout buffer, GAE
 │   ├── tools/                # Utilities (checkpoint_surgeon)
 │   └── utils/                # Shared utilities (checkpoint, distributed, etc.)
 │       └── remote_backup/    # Remote backup strategies (SSH, W&B)

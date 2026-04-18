@@ -46,9 +46,32 @@ Overrides:
 
 Postprocessor runs **inside** autocast (unified with the supervised path).
 
-### `rl_trainer.py` — `class RLTrainer(Trainer)` (skeleton)
+### `rl_trainer.py` — `class RLTrainer(Trainer)`
 
-Wires the override shape for RL. `_collect_rollouts`, `_compute_advantages`, and `_update_policy` all raise `NotImplementedError`. `train_batch` orchestrates them so that once the three methods have bodies, the trainer is complete.
+Algorithm-, env-, and policy-agnostic RL trainer. Holds four config-instantiated
+collaborators:
+- `env: BaseVecEnv` (`src/env/`) — vectorized environment
+- `policy_wrapper: BasePolicyWrapper` (`src/rl/policy_wrapper.py`) — wraps
+  `self.model`, owns value head + any exploration params (e.g. log_std)
+- `rollout_buffer: OnPolicyRolloutBuffer` (`src/rl/rollout_buffer.py`)
+- `rl_algorithm: BaseRLAlgorithm` (`src/rl/algorithm.py`, e.g. `PPOAlgorithm`)
+
+Overrides:
+- `run_epoch` → rollout phase (no-grad) + policy-update phase + periodic sim-eval.
+  The algorithm drives env.step, fills the buffer, and dispatches each minibatch
+  back to `self.train_batch` so all standard infrastructure (AMP, DDP, scaler,
+  grad-clip, callbacks) runs unchanged.
+- `train_batch` → builds the data container, calls `policy_wrapper.evaluate_actions`,
+  populates `rl/log_prob_new`, `rl/value_new`, `rl/entropy`, runs `self.loss(data)`,
+  then `backward_step`/`optimizer_step` from `helpers`.
+- `test` → `_run_sim_eval(0)` (deterministic rollout, no updates).
+
+`_build_env` / `_build_policy_wrapper` / `_build_rollout_buffer` / `_build_algorithm`
+classmethod hooks instantiate the RL collaborators from Hydra; `_attach_policy_params`
+adds extra wrapper-owned params (value head, log_std) to the optimizer.
+
+`self.loaders` stays `{}` in RL mode — the builder gates supervised dataloader
+init on `config.dataloader`.
 
 ### `customizable_trainer.py` — `class CustomizableTrainer(Trainer)`
 
@@ -56,6 +79,10 @@ Inherits the full Trainer lifecycle and overrides `train_batch` to execute a `Gr
 
 - `_build_graph(config)` classmethod — instantiates the per-batch graph from `config.graph`.
 - Config-driven `metrics_format` mapping (e.g. `{generator: generator_loss}`) customizes metric names.
+
+Reusable graphs live in [`configs/graph/`](../../configs/graph/) and are composed via Hydra `defaults: - /graph: <name>`. Example experiments:
+- `configs/experiment/gan/customizable_gan.yaml` — GAN via `configs/graph/gan_per_batch.yaml`.
+- `configs/experiment/distill/distill_dinov3_to_vit.yaml` — feature distillation (frozen DINOv3 teacher → smaller ViT student) via `configs/graph/distill_per_batch.yaml`.
 
 ### `graph_trainer.py` — `class GraphTrainer`
 

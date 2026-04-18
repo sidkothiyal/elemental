@@ -11,12 +11,14 @@ src/
 ├── callback/             # Lifecycle hooks for training
 ├── data_processor/       # Dataset download + preprocessing
 ├── dataset/              # torch.utils.data.Dataset subclasses
-├── loss/                 # Composable loss modules
-├── metrics/              # TorchMetrics-based metric modules
+├── env/                  # Vectorized RL environments (BaseVecEnv + DummyVecEnv / SimplerEnv)
+├── loss/                 # Composable loss modules (incl. PPO / value / entropy for RL)
+├── metrics/              # TorchMetrics-based metric modules (incl. episode-metric trackers)
 ├── model/                # Neural network architectures
 │   └── blocks/           # Reusable building blocks
 ├── nodes/                # Computation graph nodes (GraphTrainer / CustomizableTrainer)
 ├── postprocessor/        # Data-container post-processing pipeline
+├── rl/                   # RL algorithms, policy wrappers, rollout buffer, GAE (PPO today)
 ├── tools/                # Standalone utility scripts
 └── utils/                # Shared helpers (checkpoint, distributed, init)
     └── remote_backup/    # Remote backup strategies
@@ -165,7 +167,40 @@ CustomizableTrainer(Trainer) (src/training/customizable_trainer.py)
 Config-driven `metrics_format` mapping customizes metric names. Dispatched from
 `build_trainer` when `config.mode == "customizable"`.
 
-### 8. GAN Mode
+### 8. RL Mode (`mode: "rl"`)
+
+Algorithm-, env-, and policy-agnostic RL training that reuses the `Trainer` base for
+callbacks, AMP, DDP, checkpointing, and gradient plumbing. Every gradient step still
+flows through `train_batch` so the supervised infrastructure is unchanged.
+
+```
+RLTrainer(Trainer) (src/training/rl_trainer.py)
+  ├── env:            BaseVecEnv           (src/env/base_vec_env.py)
+  ├── policy_wrapper: BasePolicyWrapper    (wraps self.model; owns value head + log_std)
+  ├── rollout_buffer: OnPolicyRolloutBuffer (src/rl/rollout_buffer.py)
+  └── rl_algorithm:   BaseRLAlgorithm     (PPOAlgorithm in src/rl/ppo.py)
+```
+
+Per-epoch control flow (`RLTrainer.run_epoch`):
+1. **Rollout phase** (no grad): algorithm drives `env.step` for `steps_per_rollout`,
+   stores `obs/*`, `action`, `log_prob`, `value`, `reward`, `done`, `action_info/*`
+   in the buffer; finalizes with GAE to add `advantage`/`return`.
+2. **Update phase**: for `num_policy_epochs × minibatches`, each minibatch is
+   dispatched to `trainer.train_batch(...)`. The trainer calls
+   `policy_wrapper.evaluate_actions`, populates `rl/log_prob_new`, `rl/value_new`,
+   `rl/entropy`, then runs `self.loss(data)` and standard backward/optimizer step.
+3. **Sim-eval** every `validation_interval` epochs: deterministic rollout with no
+   gradient updates.
+
+RL-only data-container keys live under an `rl/*` namespace and plug into the
+standard `LossContainer`/`LossComponent` machinery via `context_mapping` — PPO loss
+is a config, not new loss infrastructure. Swapping env (`configs/env/*.yaml`),
+algorithm (`configs/rl/*.yaml`), policy wrapper (`configs/policy_wrapper/*.yaml`),
+and loss (`configs/loss/ppo.yaml`) are all Hydra edits. The same skeleton drives
+VLA+SIMPLER PPO and future LLM/VLM RLHF (GRPO or PPO over an autoregressive policy
+wrapper) without `RLTrainer` code changes.
+
+### 9. GAN Mode
 
 When `mode: "gan"`:
 - `model` is a `ModuleDict` with `"generator"` and `"discriminator"`
@@ -193,4 +228,10 @@ When `mode: "gan"`:
 | Device/dtype/seed init | `src/utils/initializer.py` |
 | Remote backup | `src/utils/remote_backup/` |
 | Graph nodes | `src/nodes/` |
+| RL algorithms / rollout buffer / GAE | `src/rl/` |
+| Vectorized RL environments | `src/env/` |
+| Policy wrappers (diffusion / autoregressive) | `src/rl/policy_wrapper.py`, `src/rl/diffusion_policy_wrapper.py` |
+| PPO / value / entropy losses | `src/loss/policy_losses.py` |
+| Episode metric trackers | `src/metrics/episode_metrics.py` |
+| Rollout callbacks (video, metrics) | `src/callback/rollout_video_callback.py`, `src/callback/rollout_metrics_callback.py` |
 | Checkpoint surgery | `src/tools/checkpoint_surgeon.py` |

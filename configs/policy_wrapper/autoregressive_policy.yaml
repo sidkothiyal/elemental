@@ -1,0 +1,13 @@
+# @package policy_wrapper
+# Autoregressive LLM/VLM policy wrapper for RLHF / GRPO. Stub — wire up when the
+# first RLHF experiment lands.
+
+_target_: rl.autoregressive_policy_wrapper.AutoregressivePolicyWrapper
+max_new_tokens: 256
+temperature: 1.0
+top_p: 0.95
+
+value_head:
+  _target_: rl.diffusion_policy_wrapper.ValueHead
+  input_dim: 4096        # override per model; this is a placeholder for LLM hidden size
+  hidden_dim: 1024

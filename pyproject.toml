@@ -58,6 +58,7 @@ heavy = [
 #  "flash-attn; sys_platform == 'linux'",
   "mmcv; sys_platform == 'linux'",
   "ninja",
+#  "simpler-env",
   "tensorflow[and-cuda]; sys_platform == 'linux'",
   "tensorflow; sys_platform == 'darwin'",
   "tensorflow-datasets",

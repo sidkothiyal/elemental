@@ -1,0 +1,18 @@
+# @package policy_wrapper
+# Wraps a DenoisingDiffusionModel as an RL policy.
+# Log-prob strategy is configurable:
+#   final_only — Gaussian on the final denoised action (cheap, robust)
+#   dppo       — DPPO-style per-denoise-step log-probs (stub; falls back to final_only)
+
+_target_: rl.diffusion_policy_wrapper.DiffusionPolicyWrapper
+
+num_denoise_steps: 10
+log_prob_strategy: final_only
+init_log_std: -1.0
+action_dim: ${action_dim}
+num_action_chunks: ${num_action_chunks}
+
+value_head:
+  _target_: rl.diffusion_policy_wrapper.ValueHead
+  input_dim: 512
+  hidden_dim: 512

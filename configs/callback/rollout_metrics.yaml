@@ -1,0 +1,4 @@
+_target_: callback.rollout_metrics_callback.RolloutMetricsCallback
+reward_key: rl/reward
+done_key: rl/done
+success_key: null

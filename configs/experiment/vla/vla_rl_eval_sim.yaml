@@ -1,0 +1,18 @@
+# @package _global_
+# Sim-eval only for the VLA RL policy. Loads a checkpoint, runs deterministic
+# rollouts in SIMPLER, and logs success rate / mean return. No gradient updates.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/vla/vla_rl_eval_sim load_checkpoint_path=/path/to/ckpt test=true
+
+defaults:
+  - /experiment/vla/vla_rl_ppo
+  - _self_
+
+experiment_name: vla_rl_eval_sim_${now:%Y-%m-%d}_${now:%H-%M-%S}
+test: true
+num_epochs: 1
+
+rl:
+  eval_steps: 512                      # longer rollout for stable eval stats
+  steps_per_rollout: 32                # unused (test path); kept for builder compatibility

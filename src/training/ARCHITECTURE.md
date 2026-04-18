@@ -10,7 +10,7 @@ training/
 ├── gan_trainer.py             # class GANTrainer(Trainer) �� three-phase GAN step
 ├── customizable_trainer.py    # class CustomizableTrainer(Trainer) — per-batch graph execution
 ├── graph_trainer.py           # class GraphTrainer — standalone graph-execution trainer
-├── rl_trainer.py              # class RLTrainer(Trainer) skeleton (NotImplementedError stubs)
+├── rl_trainer.py              # class RLTrainer(Trainer) — rollout + PPO update via train_batch
 └── helpers.py                 # Stateless helpers shared across trainers
 ```
 
@@ -20,7 +20,7 @@ training/
 Trainer (supervised base)
 ├── GANTrainer              # train_batch overridden with 3-phase step
 ├── CustomizableTrainer     # train_batch delegates to a user-defined GraphNode
-└── RLTrainer               # train_batch orchestrates _collect_rollouts / _compute_advantages / _update_policy
+└── RLTrainer               # run_epoch drives rollout+update; train_batch does one PPO minibatch
 
 GraphTrainer                # standalone, does NOT inherit from Trainer
 ```
@@ -56,7 +56,7 @@ build_trainer(config_file, local_rank, overrides) -> Trainer
                 callbacks=..., loaders=..., postprocessor=..., profiler=..., ...)
 ```
 
-The `_build_*` classmethods are the extension point. The base `_build_optimizer` uses `build_optim_dict_or_single`, which auto-detects `ModuleDict` models and returns dict-of-optimizers. `_build_scheduler` mirrors the optim shape. `GANTrainer` inherits this directly (no override needed). For `CustomizableTrainer`, the builder additionally calls `cls._build_graph(config)` and passes the result to the constructor.
+The `_build_*` classmethods are the extension point. The base `_build_optimizer` uses `build_optim_dict_or_single`, which auto-detects `ModuleDict` models and returns dict-of-optimizers. `_build_scheduler` mirrors the optim shape. `GANTrainer` inherits this directly (no override needed). For `CustomizableTrainer`, the builder additionally calls `cls._build_graph(config)` and passes the result to the constructor. Shared per-batch graphs live in [`configs/graph/`](../../configs/graph/) (e.g. `gan_per_batch.yaml`, `distill_per_batch.yaml`) and are composed into experiments via `defaults: - /graph: <name>`.
 
 ## Training flow (`Trainer.train`)
 
@@ -154,6 +154,37 @@ return {"generator_loss": ..., "discriminator_loss": ..., ...}
 
 The postprocessor runs **inside** autocast (unified with the supervised path).
 
+## Single-batch step (`train_batch`, RL)
+
+The RL flow inverts the driver: `run_epoch` calls `rl_algorithm.collect_rollouts`
+(no-grad env.step loop that fills `rollout_buffer`), then
+`rl_algorithm.update(trainer=self, ...)`. The algorithm iterates minibatches from
+the buffer and dispatches each one back to `trainer.train_batch`. Every minibatch
+still flows through the standard autocast → backward → optimizer-step plumbing.
+
+```
+with torch.set_grad_enabled(training), torch.autocast(device.type, dtype=dtype):
+  build_data_container(batch, data=data, model=model, epoch=epoch)
+  evals = policy_wrapper.evaluate_actions(obs=batch_obs, action=batch["rl/action"],
+                                          action_info=batch_action_info)
+  data["rl/log_prob_new"] = evals["log_prob"]
+  data["rl/value_new"]    = evals["value"]
+  data["rl/entropy"]      = evals["entropy"]
+  batch_loss, components  = self.loss(data)     # LossContainer(PPOClip + Value + Entropy)
+
+if training:
+  backward_step(batch_loss, scaler, grad_accum_steps)
+  if should_step_optimizer(batch_idx, grad_accum_steps, total_batches):
+    optimizer_step(optim=optim, parameters=model.parameters(),
+                   scaler=scaler, clip_grad_norm=clip_grad_norm)
+return {"total": batch_loss.detach(), **{k: v.detach() for k, v in components.items()}}
+```
+
+Buffer batches are keyed to match the data container exactly: `input/<obs>`,
+`rl/action`, `rl/log_prob_old`, `rl/value_old`, `rl/advantage`, `rl/return`,
+plus `action_info/<key>` for impl-specific tensors the wrapper needs to
+recompute log-probs (e.g. a diffusion policy's noise trajectory).
+
 ## Override points for future extension
 
 To add a new mode (e.g. `RL`, `contrastive`, `multi-task`):
@@ -163,7 +194,7 @@ To add a new mode (e.g. `RL`, `contrastive`, `multi-task`):
 3. Override the subset of `_build_*` classmethods that differ from supervised.
 4. Register in `_trainer_class_for(config.mode)` in `builder.py`.
 
-See `rl_trainer.py` for a worked skeleton.
+See `rl_trainer.py` for a worked example (RL mode) and `gan_trainer.py` (GAN).
 
 ## Numerics invariants
 

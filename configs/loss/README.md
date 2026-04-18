@@ -22,6 +22,7 @@ Loss function configurations for different training objectives.
 | `shifted_teacher_forcing_char.yaml` | Char-level LM loss | Character LM |
 | `gan.yaml` | GAN losses (feature + adversarial) | Segmentation GAN |
 | `gan_compression.yaml` | Phased GAN for compression | Compression GAN |
+| `distillation.yaml` | Feature-matching distillation with teacher-prefix-token stripping | Teacher→student distillation |
 
 ## Usage
 
