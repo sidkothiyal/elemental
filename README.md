@@ -5,6 +5,7 @@ A modular PyTorch ML training library supporting image compression, classificati
 ## Key Features
 
 - **Multi-task training**: autoencoder, classification, GAN, diffusion, masked autoencoder, autoregressive LM, RL (PPO)
+- **ONNX export**: export any trained model or sub-module to ONNX via `src/exporter.py`; supports PyTorch-level submodule extraction and ONNX-level graph slicing (`onnx.utils.extract_model`)
 - **Hydra-based config**: hierarchical, composable YAML configs with experiment overrides
 - **Remote datasets**: ZeroMQ dataset server + client for training on data held on another machine
 - **Graph-based trainer**: node/computation-graph alternative to the standard trainer
@@ -62,12 +63,62 @@ torchrun --nproc_per_node=2 src/trainer.py experiment/autoencoder/compression_un
 uv run python src/trainer.py experiment/node/node_train_autoencoder   # mode: graph dispatches to GraphTrainer
 ```
 
+## Exporting Models
+
+Trained models can be exported to ONNX via `src/exporter.py`. The config can be a full
+experiment config, a model-only config, or a dedicated export config in `configs/export/`.
+
+```bash
+# Dedicated export config (recommended — fine-grained sub-module control)
+uv run python src/exporter.py export/vq_vae_transformer \
+    --checkpoint checkpoints/vqvae.pt \
+    --output-dir exports/vqvae/
+
+# Model-only config (no dataset / optimizer / loss needed)
+uv run python src/exporter.py model/vq_vae_transformer \
+    --checkpoint checkpoints/vqvae.pt \
+    --output-dir exports/vqvae/
+
+# Full experiment config with Hydra override
+uv run python src/exporter.py experiment/autoencoder/compression_ae \
+    --checkpoint results/autoencoder/run/best.pt \
+    --output-dir exports/ \
+    export.opset_version=18
+```
+
+Export configs (`configs/export/`) declare which sub-modules to export and how:
+
+```yaml
+export:
+  opset_version: 17
+  dynamic_axes: true
+  modules:
+    # PyTorch-level: extract submodule by dotted path before ONNX export
+    - name: "encoder"
+      input_layer: "model.encoder"
+      onnx_filename: "encoder.onnx"
+      inputs:
+        - {name: "input", shape: [1, 3, 640, 960], dtype: "float32"}
+      outputs:
+        - {name: "latents"}
+
+    # ONNX-level: slice an already-exported graph via onnx.utils.extract_model
+    - name: "decoder_onnx"
+      source_onnx: "full_model.onnx"
+      input_tensor: "/quantizer/Gemm_output_0"
+      output_tensor: "reconstructed_image"
+      onnx_filename: "decoder_extracted.onnx"
+```
+
+See `configs/export/vq_vae_transformer.yaml` for a complete example.
+
 ## Directory Structure
 
 ```
 elemental/
 ├── src/
 │   ├── trainer.py            # Main training entry point
+│   ├── exporter.py           # ONNX model export entry point
 │   ├── graph_trainer.py      # Node-graph-based training
 │   ├── callback/             # Training callbacks (checkpoint, metrics, W&B)
 │   ├── data_processor/       # Dataset downloading, tokenization
@@ -91,6 +142,7 @@ elemental/
 │   │   ├── autoregressive/
 │   │   ├── classification/
 │   │   └── gan/
+│   ├── export/               # ONNX export configs (default.yaml + per-model)
 │   ├── dataset/              # Dataset configs
 │   ├── model/                # Model configs
 │   ├── loss/                 # Loss configs

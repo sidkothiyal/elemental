@@ -7,6 +7,7 @@ High-level architecture reference for the elemental ML training library.
 ```
 src/
 ├── trainer.py            # Thin Hydra/Typer CLI — delegates to training.builder (handles all modes, incl. graph)
+├── exporter.py           # Thin Hydra/Typer CLI — delegates to training.model_exporter for ONNX export
 ├── training/             # Trainer class hierarchy + builder + helpers
 ├── callback/             # Lifecycle hooks for training
 ├── data_processor/       # Dataset download + preprocessing
@@ -208,11 +209,37 @@ When `mode: "gan"`:
 - `GANTrainer.train_batch` runs a three-phase step (disc-fake → disc-real → generator) in place of the supervised single-phase step
 - Can also be expressed declaratively via `mode: customizable` with a GAN graph (see `configs/experiment/gan/customizable_gan.yaml`)
 
+## Export Flow
+
+```
+build_model_exporter(config_file, output_dir, checkpoint, overrides) -> ModelExporter
+  1. hydra.compose → DictConfig
+     config_file accepts three forms:
+       experiment/autoencoder/compression_ae   (full experiment config)
+       model/vq_vae_transformer                (model-only config)
+       export/vq_vae_transformer               (dedicated export config in configs/export/)
+  2. Trainer._build_model(config, device, use_distributed=False) → model
+  3. initializer.load_from_checkpoint(model, optimizer=None, ...) if checkpoint configured
+  4. model.eval()
+  5. return ModelExporter(model, config, device, output_dir)
+
+ModelExporter.export()
+  for each module entry in config.export.modules:
+    if source_onnx set → ONNX-level:  onnx.utils.extract_model(source, output, input_tensors, output_tensors)
+    else              → PyTorch-level: _get_submodule(model, input_layer) → torch.onnx.export(...)
+```
+
+Export configs live in `configs/export/`. They compose `configs/export/default.yaml` +
+a model config via `defaults:`, then add an `export.modules` list. See
+`configs/export/vq_vae_transformer.yaml` for a complete example with PyTorch-level and
+commented ONNX-level entries.
+
 ## Feature-to-Directory Mapping
 
 | Feature | Primary Location |
 |---------|-----------------|
 | Training loop | `src/training/` (hierarchy); `src/trainer.py` (unified CLI — all modes incl. `mode: graph`) |
+| ONNX export | `src/training/model_exporter.py`; `src/exporter.py` (CLI); `configs/export/` |
 | Hydra config | `configs/` |
 | Model architectures | `src/model/` |
 | Building blocks | `src/model/blocks/` |

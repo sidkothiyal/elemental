@@ -1,0 +1,57 @@
+# @package _global_
+# Base export configuration.
+#
+# Compose this into a dedicated export config via the defaults list, or embed
+# an `export:` block directly in an experiment config.
+#
+# Usage (dedicated export config):
+#   defaults:
+#     - /export/default           # pulls in these defaults
+#     - /model: my_model          # pulls in model architecture
+#     - _self_
+#
+# Usage (experiment config with export section):
+#   Add an `export:` block to any existing experiment config and point
+#   src/exporter.py at it:
+#     export:
+#       opset_version: 17
+#       modules:
+#         - name: "full_model"
+#           ...
+
+# Device to run the model on during export (CPU is sufficient for tracing).
+device: "cpu"
+
+# Optional checkpoint to load. Set via --checkpoint CLI flag or override here.
+load_checkpoint_path: null
+load_keys: null
+strict: true
+
+export:
+  # ONNX opset version.
+  opset_version: 21
+
+  # When true, batch dimension (dim 0) is treated as dynamic for all inputs/outputs.
+  dynamic_axes: true
+
+  # Fallback input shape used when no modules are listed.
+  # Must be a list of ints matching the model's expected input shape, e.g. [1, 3, 224, 224].
+  default_input_shape: []
+
+  # List of module export specs.  Each entry is one of:
+  #
+  # PyTorch-level (resolved before torch.onnx.export):
+  #   name:          Human-readable label for logging.
+  #   input_layer:   Dotted submodule path, e.g. "model.encoder".  null = full model.
+  #   output_layer:  Currently informational; input_layer is used for extraction.
+  #   onnx_filename: Output filename inside output_dir.
+  #   inputs:        List of {name, shape, dtype} dicts for dummy tensor creation.
+  #   outputs:       List of {name} dicts for ONNX output naming.
+  #
+  # ONNX-level (uses onnx.utils.extract_model on an already-exported graph):
+  #   name:          Human-readable label for logging.
+  #   source_onnx:   Filename of the source ONNX file (inside output_dir).
+  #   input_tensor:  ONNX tensor name(s) for the sub-model input.
+  #   output_tensor: ONNX tensor name(s) for the sub-model output.
+  #   onnx_filename: Output filename inside output_dir.
+  modules: []

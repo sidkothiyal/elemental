@@ -7,10 +7,11 @@ training/
 ├── __init__.py                # Re-exports all trainers + build_trainer
 ├── builder.py                 # build_trainer() + dispatch
 ├── trainer.py                 # class Trainer (supervised base)
-├── gan_trainer.py             # class GANTrainer(Trainer) �� three-phase GAN step
+├── gan_trainer.py             # class GANTrainer(Trainer) — three-phase GAN step
 ├── customizable_trainer.py    # class CustomizableTrainer(Trainer) — per-batch graph execution
 ├── graph_trainer.py           # class GraphTrainer — standalone graph-execution trainer
 ├── rl_trainer.py              # class RLTrainer(Trainer) — rollout + PPO update via train_batch
+├── model_exporter.py          # class ModelExporter + build_model_exporter() — ONNX export
 └── helpers.py                 # Stateless helpers shared across trainers
 ```
 
@@ -184,6 +185,57 @@ Buffer batches are keyed to match the data container exactly: `input/<obs>`,
 `rl/action`, `rl/log_prob_old`, `rl/value_old`, `rl/advantage`, `rl/return`,
 plus `action_info/<key>` for impl-specific tensors the wrapper needs to
 recompute log-probs (e.g. a diffusion policy's noise trajectory).
+
+## Export flow (`build_model_exporter`)
+
+```
+build_model_exporter(config_file, output_dir, checkpoint, overrides) -> ModelExporter
+  1. hydra.compose → DictConfig
+     config_file may be:
+       experiment/autoencoder/compression_ae   (full experiment config)
+       model/vq_vae_transformer                (model-only config)
+       export/vq_vae_transformer               (dedicated export config)
+  2. initializer.initialize_device(config.device) → device
+  3. Trainer._build_model(config, device, use_distributed=False) → model
+  4. if config.load_checkpoint_path:
+       initializer.load_from_checkpoint(model, optimizer=None, ...) → weights only
+  5. model.eval()
+  6. return ModelExporter(model, config, device, output_dir)
+```
+
+```
+ModelExporter.export()
+  for each entry in config.export.modules:
+    if entry.source_onnx is set:            # ONNX-level extraction
+      onnx.utils.extract_model(
+        source_path  = output_dir / entry.source_onnx,
+        output_path  = output_dir / entry.onnx_filename,
+        input_names  = entry.input_tensor,
+        output_names = entry.output_tensor,
+      )
+    else:                                   # PyTorch-level extraction
+      module = _get_submodule(model, entry.input_layer) if entry.input_layer else model
+      dummy_inputs = zeros(entry.inputs[*].shape, dtype=entry.inputs[*].dtype)
+      torch.onnx.export(
+        module, dummy_inputs,
+        output_dir / entry.onnx_filename,
+        opset_version   = config.export.opset_version,
+        input_names     = [inp.name for inp in entry.inputs],
+        output_names    = [out.name for out in entry.outputs],
+        dynamic_axes    = {name: {0: "batch_size"}} if config.export.dynamic_axes,
+      )
+```
+
+Export configs live in `configs/export/`. `configs/export/default.yaml` is the base
+(device, opset_version, dynamic_axes, empty modules list). Dedicated export configs
+compose it alongside a model config:
+
+```yaml
+defaults:
+  - /export/default
+  - /model: vq_vae_transformer
+  - _self_
+```
 
 ## Override points for future extension
 

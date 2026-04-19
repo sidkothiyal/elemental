@@ -104,13 +104,44 @@ Shared across all trainers:
 - `materialize_and_average_losses(running, denom)`, `_accumulate_loss(running, key, tensor)`
 - `_get_cached_signature(fn)` — cached `inspect.signature`
 
+### `model_exporter.py` — `class ModelExporter` + `build_model_exporter`
+
+Exports a trained model to ONNX. Supports two extraction methods per module entry:
+
+- **PyTorch-level** (`input_layer` / `output_layer`): resolves a dotted submodule path
+  (e.g. `"model.encoder"`) via `_get_submodule`, then calls `torch.onnx.export` on
+  that submodule directly.
+- **ONNX-level** (`source_onnx` + `input_tensor` / `output_tensor`): calls
+  `onnx.utils.extract_model` to slice an already-exported ONNX graph by tensor name.
+
+`build_model_exporter` accepts three config sources:
+
+| Config type | Example |
+|---|---|
+| Full experiment config | `experiment/autoencoder/compression_ae` |
+| Model-only config | `model/vq_vae_transformer` |
+| Dedicated export config | `export/vq_vae_transformer` |
+
+It reuses `Trainer._build_model` and `initializer.load_from_checkpoint`, skipping
+optimizer / scheduler / loss / callbacks entirely.
+
 ## Usage
 
 ```python
 from training.builder import build_trainer
+from training.model_exporter import build_model_exporter
 
+# Training
 trainer = build_trainer("experiment/autoencoder/compression_unet", overrides=["lr=0.001"])
 trainer.train()
+
+# Export
+exporter = build_model_exporter(
+    "export/vq_vae_transformer",
+    output_dir="exports/vqvae/",
+    checkpoint="checkpoints/vqvae.pt",
+)
+exporter.export()
 ```
 
-See `src/trainer.py` for the CLI wrapper.
+See `src/trainer.py` for the training CLI and `src/exporter.py` for the export CLI.
