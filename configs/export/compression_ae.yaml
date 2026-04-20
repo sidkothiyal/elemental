@@ -1,0 +1,64 @@
+# @package _global_
+# Export config for the simple compression autoencoder (ConvBlock encoder + UpsampleBlock decoder).
+#
+# Model architecture: model/simple_autoencoder.yaml
+#   torch.nn.Sequential
+#   ├── [0]  ConvBlock      — encoder: 3 × stride-2 conv, 3→64→128→256 channels (8× downsample)
+#   ├── [1]  UpsampleBlock  — decoder body: 3 × 2× bilinear upsample + conv, 256→128→64→32
+#   └── [2]  Conv2d         — final RGB projection, 32→3
+#
+# Workflow:
+#   1. Export full_model (PyTorch-level).
+#   2. Run encoder and decoder extractions from the exported full_model ONNX graph.
+#
+# Usage:
+#   uv run python src/exporter.py export/compression_ae \
+#       --checkpoint results/autoencoder/<run>/best.pt \
+#       --output-dir exports/compression_ae/
+
+defaults:
+  - /export/default           # base export settings (device, opset, etc.)
+  - /model: simple_autoencoder
+  - _self_
+
+# Optional: set to a checkpoint path or override via --checkpoint flag.
+load_checkpoint_path: null
+
+export:
+  opset_version: 21
+  dynamic_axes: true
+
+  modules:
+    # Full model — encoder + decoder end-to-end (must be exported first).
+    - name: "full_model"
+      input_layer: null
+      output_layer: null
+      onnx_filename: "compression_ae_full.onnx"
+      inputs:
+        - name: "input_image"
+          shape: [1, 3, 640, 960]
+          dtype: "float32"
+          dynamic_axes:
+            0: batch_size
+            2: height
+            3: width
+      outputs:
+        - name: "reconstructed_image"
+
+    # Encoder — input image → latent (boundary tensor: relu_2 renamed to encoded_image).
+    # Input: [B, 3, H, W]  →  Output: [B, 256, H/8, W/8]
+    - name: "encoder"
+      source_onnx: "compression_ae_full.onnx"
+      input_tensor: "input_image"
+      output_tensor: "relu_2"
+      output_name: "encoded_image"
+      onnx_filename: "compression_ae_encoder.onnx"
+
+    # Decoder — latent → reconstructed image (boundary tensor: relu_2 renamed to encoded_image).
+    # Input: [B, 256, H/8, W/8]  →  Output: [B, 3, H, W]
+    - name: "decoder"
+      source_onnx: "compression_ae_full.onnx"
+      input_tensor: "relu_2"
+      input_name: "encoded_image"
+      output_tensor: "reconstructed_image"
+      onnx_filename: "compression_ae_decoder.onnx"

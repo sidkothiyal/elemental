@@ -45,7 +45,11 @@ export:
   #   input_layer:   Dotted submodule path, e.g. "model.encoder".  null = full model.
   #   output_layer:  Currently informational; input_layer is used for extraction.
   #   onnx_filename: Output filename inside output_dir.
-  #   inputs:        List of {name, shape, dtype} dicts for dummy tensor creation.
+  #   inputs:        List of {name, shape, dtype, dynamic_axes?} dicts for dummy tensor creation.
+  #                  Optional `dynamic_axes: {axis_index: symbolic_name}` marks additional
+  #                  dims as dynamic in the exported graph (e.g. `{0: batch_size, 2: height,
+  #                  3: width}` for a fully-conv model). Defaults to `{0: batch_size}` when
+  #                  omitted and the global `dynamic_axes: true` is set.
   #   outputs:       List of {name} dicts for ONNX output naming.
   #
   # ONNX-level (uses onnx.utils.extract_model on an already-exported graph):

@@ -17,6 +17,7 @@ from functools import reduce
 from typing import Any
 
 import hydra
+import onnx
 import torch
 from onnx.utils import extract_model
 from torch import nn
@@ -142,7 +143,12 @@ class ModelExporter:
         )
 
     def _export_onnx_level(self, module_cfg: Any) -> None:
-        """ONNX-level extraction via ``onnx.utils.extract_model``."""
+        """ONNX-level extraction via ``onnx.utils.extract_model``.
+
+        Optional ``input_name`` / ``output_name`` (string or list) rename the
+        boundary tensors in the extracted graph — useful when chaining sub-models
+        (e.g. encoder output renamed to match decoder input).
+        """
         source_path = os.path.join(self.output_dir, module_cfg["source_onnx"])
         output_path = os.path.join(self.output_dir, module_cfg["onnx_filename"])
 
@@ -158,7 +164,75 @@ class ModelExporter:
             output_tensors,
         )
         extract_model(source_path, output_path, input_tensors, output_tensors)
+
+        new_input_names = module_cfg.get("input_name")
+        new_output_names = module_cfg.get("output_name")
+        if new_input_names is not None or new_output_names is not None:
+            self._rename_onnx_io(
+                onnx_path=output_path,
+                old_inputs=input_tensors,
+                new_inputs=new_input_names,
+                old_outputs=output_tensors,
+                new_outputs=new_output_names,
+            )
+
         logger.info("ONNX sub-model written to: %s", output_path)
+
+    @staticmethod
+    def _rename_onnx_io(
+        *,
+        onnx_path: str,
+        old_inputs: list[str],
+        new_inputs: str | list[str] | None,
+        old_outputs: list[str],
+        new_outputs: str | list[str] | None,
+    ) -> None:
+        """Rename input/output tensors in an ONNX model in-place.
+
+        Replaces every occurrence of the old tensor names across graph inputs,
+        graph outputs, and node I/O references.
+        """
+
+        def _as_list(value: str | list[str] | None) -> list[str]:
+            if value is None:
+                return []
+            return [value] if isinstance(value, str) else list(value)
+
+        new_input_list = _as_list(new_inputs)
+        new_output_list = _as_list(new_outputs)
+
+        rename_map: dict[str, str] = {}
+        if new_input_list:
+            if len(new_input_list) != len(old_inputs):
+                raise ValueError(
+                    f"input_name count ({len(new_input_list)}) must match "
+                    f"input_tensor count ({len(old_inputs)})"
+                )
+            rename_map.update(zip(old_inputs, new_input_list))
+        if new_output_list:
+            if len(new_output_list) != len(old_outputs):
+                raise ValueError(
+                    f"output_name count ({len(new_output_list)}) must match "
+                    f"output_tensor count ({len(old_outputs)})"
+                )
+            rename_map.update(zip(old_outputs, new_output_list))
+
+        if not rename_map:
+            return
+
+        model = onnx.load(onnx_path)
+        for tensor in list(model.graph.input) + list(model.graph.output):
+            if tensor.name in rename_map:
+                tensor.name = rename_map[tensor.name]
+        for node in model.graph.node:
+            for i, name in enumerate(node.input):
+                if name in rename_map:
+                    node.input[i] = rename_map[name]
+            for i, name in enumerate(node.output):
+                if name in rename_map:
+                    node.output[i] = rename_map[name]
+        onnx.save(model, onnx_path)
+        logger.info("Renamed ONNX I/O tensors: %s", rename_map)
 
     # ------------------------------------------------------------------
     # Private: ONNX export helpers
@@ -190,12 +264,23 @@ class ModelExporter:
         output_names = [out["name"] for out in outputs]
 
         # dynamic_shapes uses torch.export.Dim — one constraint dict per input tensor,
-        # matching the positional args tuple. The batch dimension (0) is made symbolic;
-        # all other dims are treated as static.
+        # matching the positional args tuple. Each input spec may declare a
+        # `dynamic_axes: {axis: symbolic_name}` map to mark additional dims dynamic
+        # (e.g. H/W for a fully-conv model); otherwise only batch (dim 0) is symbolic.
         shapes: tuple | None = None
         if dynamic_axes:
-            batch_dim = Dim("batch_size")
-            shapes = tuple({0: batch_dim} for _ in dummy_inputs)
+            dim_cache: dict[str, Dim] = {}
+
+            def _get_dim(name: str) -> Dim:
+                if name not in dim_cache:
+                    dim_cache[name] = Dim(name)
+                return dim_cache[name]
+
+            per_input_shapes = []
+            for inp in inputs:
+                axes = inp.get("dynamic_axes") or {0: "batch_size"}
+                per_input_shapes.append({int(axis): _get_dim(sym) for axis, sym in axes.items()})
+            shapes = tuple(per_input_shapes)
 
         logger.info("torch.onnx.export → %s", output_path)
         torch.onnx.export(
