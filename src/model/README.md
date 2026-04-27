@@ -171,6 +171,19 @@ Use cases: VLA (VLM backbone → diffusion head), multi-task (encoder → multip
 
 Combines two tensor streams. `DiffusionCombiner` handles time-step modulation (feature-wise scaling via FiLM, or addition) and auxiliary feature injection.
 
+### `perceiver_resampler.py` — Perceiver Resampler
+
+Learnable latent array that cross-attends to a variable-length context and emits a fixed-size latent. Each layer reuses `CrossAttentionBlock` from `combiner.py` (optional self-attn on latents → cross-attn into context → optional FFN). Useful as a compression bottleneck, a conditioning encoder that emits cross-attention tokens, or a Flamingo-style feature resampler. Input and positional-embedding modules are injectable so the same resampler serves arbitrary upstream encoders.
+
+```python
+PerceiverResampler(
+    num_latents=128, latent_dim=256, num_layers=4, num_heads=8, ff_embed_dim=1024,
+    input_projection=nn.Linear(384, 256),  # optional
+    input_positional_embedding=LearnablePositionalEmbedding(num_tokens=64, embed_dim=256),  # optional
+)
+# forward(inputs: [B, N, D_in]) -> [B, num_latents, D_out]
+```
+
 ### `nn_modules.py` — NN Utility Modules
 
 `Unsqueeze`, `Add`, `Concat`, `Flatten`, `Permute`, `Mean`, `Squeeze`, `SpatialToTokens` — simple wrappers for use in `nn.Sequential` or Hydra-instantiated pipelines. `SpatialToTokens` converts `[B, D, h, w]` spatial feature maps to `[B, h*w, D]` token sequences.

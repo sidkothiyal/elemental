@@ -1,0 +1,40 @@
+# @package _global_
+# Perceiver Resampler: learnable latent array that cross-attends to a
+# variable-length context and emits a fixed-size latent.
+#
+# Usage examples:
+#   - Compression bottleneck (image / video AE).
+#   - Conditioning encoder (swap in for the CNN+Flatten cond encoder in the
+#     conditional-diffusion compression experiments).
+#   - Flamingo-style feature resampler before a downstream cross-attending
+#     decoder.
+#
+# Overrides (Hydra dot-paths):
+#   model.num_latents=64
+#   model.input_projection=null        # drop projection when inputs are already at latent_dim
+#   model.input_projection.in_features=384    # match an external encoder width
+
+num_latents: 128
+latent_dim: 256
+num_heads: 8
+num_layers: 4
+ff_embed_dim: 1024
+dropout: 0.0
+
+model:
+  _target_: model.perceiver_resampler.PerceiverResampler
+  num_latents: ${num_latents}
+  latent_dim: ${latent_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  ff_embed_dim: ${ff_embed_dim}
+  dropout: ${dropout}
+  use_self_attention: true
+
+  input_projection:
+    _target_: torch.nn.Identity
+
+  input_positional_embedding: null
+
+  output_projection:
+    _target_: torch.nn.Identity

@@ -23,6 +23,7 @@ Neural network architecture configurations.
 | `transformer_encoder.yaml` | Transformer encoder | Base transformer |
 | `autoregressive_lm.yaml` | Language model | Transformer LM |
 | `autoregressive_lm_small.yaml` | Small LM | Tiny transformer |
+| `perceiver_resampler.yaml` | Perceiver Resampler | Learnable latents cross-attending to variable-length context |
 
 ### Autoencoder Variants
 | File | Description | Architecture |

@@ -121,6 +121,24 @@ forward(input, **kwargs)
   5. return dict of all head outputs
 ```
 
+## PerceiverResampler (perceiver_resampler.py)
+
+```python
+class PerceiverResampler(nn.Module):
+    latents: nn.Parameter(num_latents, latent_dim)
+    input_projection: nn.Module                   # default: Identity
+    input_positional_embedding: nn.Module | None  # default: None
+    layers: nn.ModuleList[CrossAttentionBlock]    # N × (self-attn? → cross-attn → FFN?)
+    final_norm: nn.LayerNorm
+    output_projection: nn.Module                  # default: Identity
+```
+
+Forward: project + position-encode the context; broadcast `latents` to `[B, num_latents, latent_dim]`; run through the stack with each layer doing `layer(latents, context=context)`; apply `final_norm` then `output_projection`.
+
+Each layer is a `CrossAttentionBlock` from `combiner.py` — the same primitive used by `ActionDenoisingTransformer`. `use_self_attention` and `ff_embed_dim` toggle the self-attn and FFN sub-layers respectively.
+
+`forward` takes a `key_padding_mask` kwarg for future use, but it is currently ignored — `CrossAttentionBlock` does not thread masks into its `MultiheadAttention` call. Likewise AdaLN modulation is available in the block but not exposed by the resampler in v1.
+
 ## CachedModule (cached_module.py)
 
 Wraps any `nn.Module` whose output is deterministic for a given input. Computes a SHA-256 hash of all positional and keyword arguments (tensors → raw bytes + shape/dtype, nested lists recursed, strings → repr) to produce per-sample cache keys.
