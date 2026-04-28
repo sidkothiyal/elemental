@@ -1,0 +1,49 @@
+# @package _global_
+# Nanochat base pretraining on FineWeb-EDU.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/nanochat/pretrain
+#
+# Prereq: train the BPE tokenizer first via
+#   uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+
+defaults:
+  - /default
+  - /dataset: fineweb_edu
+  - /model: nanochat_gpt_d20
+  - /loss: lm_pretrain
+  - /optimizer: muon_adamw
+  - /scheduler: nanochat_warmup_cosine
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: nanochat_pretrain_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/nanochat/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false  # token shape is constant; benchmark not useful
+
+# Pretraining knobs (override on the command line for smoke runs).
+batch_size: 32
+gradient_accumulation_steps: 4
+num_epochs: 1
+validation_interval: 0  # streaming dataset; eval handled by SFT/GRPO stages
+clip_grad_norm: 1.0
+
+# Scheduler horizon (used by warmup-cosine).
+warmup_steps: 1000
+total_steps: 100000
+
+# Hand the tokenizer artifact through to dataset + model overrides.
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+callbacks:
+  wandb:
+    logging_interval: 50
+    log_text_data: false  # custom BPE — wikitext logging path uses HF tokenizer
+  checkpoint:
+    save_every_n_epochs: 1

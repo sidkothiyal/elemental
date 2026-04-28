@@ -99,8 +99,14 @@ Shared across all trainers:
 - `should_step_optimizer(batch_idx, grad_accum_steps, total_batches)` — gradient accumulation boundary logic
 - `backward_step(loss, scaler, grad_accum_steps)` — scale + backward (with or without GradScaler)
 - `optimizer_step(*, optim, parameters, scaler, clip_grad_norm)` — unscale + clip + step + update + zero_grad
-- `build_optim_dict_or_single(config, model)` — dict-of-optimizers for ModuleDict, else single
-- `build_scheduler_dict_or_single(config, optim)` — mirrors optim shape
+- `build_optim_dict_or_single(config, model)` — three branches in priority:
+  (1) `config.optimizer_groups` set → `MultiOptimizer` with one sub-optimizer
+  per named partition; (2) `model` is `ModuleDict` → dict-of-optimizers;
+  (3) single optimizer over all trainable params. See
+  [src/optimizer/](../optimizer/README.md).
+- `build_scheduler_dict_or_single(config, optim)` — accepts either a string
+  (looks up `torch.optim.lr_scheduler.<name>`) or a dict with `_target_:`
+  (Hydra-instantiate with `optimizer=` injected). Mirrors optim shape.
 - `materialize_and_average_losses(running, denom)`, `_accumulate_loss(running, key, tensor)`
 - `_get_cached_signature(fn)` — cached `inspect.signature`
 

@@ -85,8 +85,32 @@ All autoencoders expose:
 
 - Causal mask: `torch.triu(ones, diagonal=1)` filled with `-inf`
 - `_causal_mask` cached and truncated/extended as needed per sequence length
-- `generate(input, max_new_tokens)`: greedy decoding, appends one token at a time
+- `generate(input, max_new_tokens, *, temperature, top_k, top_p)`: per-step
+  delegate to `utils.sampling.sample_next_token`
 - `loss_args` dict not used; loss computed externally via `ShiftedTeacherForcing`
+
+## NanochatGPT (nanochat_gpt.py)
+
+Decoder-only transformer following the nanochat / Llama recipe:
+
+- `RMSNorm(dim, eps)` — RMS computed in float32 for bf16-autocast safety; the
+  result is cast back to the input dtype before applying the learnable scale.
+- `RotaryEmbedding(head_dim, max_seq_len, base)` — precomputes `cos`/`sin` for
+  every position; `apply_rotary` rotates pairs `(x_{2i}, x_{2i+1})`. Heads are
+  transposed to dim 1 *before* RoPE so cos/sin `(T, head_dim/2)` broadcast as
+  `(1, 1, T, head_dim/2)` against `(B, H, T, head_dim/2)`.
+- `CausalSelfAttention` — fused QKV linear (no bias), QK-RMSNorm on the per-head
+  vectors, RoPE, then `F.scaled_dot_product_attention(..., is_causal=True)` so
+  Flash kicks in on CUDA.
+- `MLP` — gate-free `Linear → relu().square() → Linear`, no biases, 4× expansion.
+- `Block` — pre-norm: `x + attn(norm(x)); x + mlp(norm(x))`.
+- Untied embeddings: `lm_head.weight` is a separate parameter from `token_embedding.weight`.
+- `forward(input_ids)` rejects sequences longer than `max_length` rather than
+  silently truncating.
+- `generate` shares the same sampler as `AutoregressiveLM`. EOS lock-in: once a
+  row emits `eos_token_id`, that row keeps emitting EOS forever and its log-prob
+  contribution is forced to 0 — keeps the output tensor rectangular for batched
+  RL rollouts and gives the wrapper a clean completion mask.
 
 ## MaskedAutoencoder (masked_autoencoder.py)
 

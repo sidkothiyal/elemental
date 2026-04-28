@@ -25,3 +25,19 @@ rename_rules:
   - old: "encoder.transformer"
     new: "encoder.backbone"
 ```
+
+### `train_tokenizer.py` — Train BPE Tokenizer (nanochat)
+
+Hydra entry point that streams a corpus iterator (FineWeb-EDU by default) into
+`data_processor.bpe_tokenizer.train_bpe` and writes the artifact to
+`tokenizer.save_path`.
+
+```bash
+uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+# Override corpus to a local file:
+uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe \
+    tokenizer.corpus._target_=data_processor.corpus_iterators.FileLineIterator \
+    tokenizer.corpus.path=corpus.txt
+```
+
+Tokenizer configs live in [`configs/tokenizer/`](../../configs/tokenizer/).

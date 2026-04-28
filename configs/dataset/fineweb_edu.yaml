@@ -1,0 +1,40 @@
+# @package _global_
+# Streaming FineWeb-EDU pretraining dataset.
+# The dataset packs tokenized documents into fixed seq_len windows; targets are
+# pre-shifted, so pair this with the lm_pretrain loss (shift=0).
+dataset_name: fineweb_edu
+channels_last: false
+seq_len: 2048
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.fineweb_edu_dataset.FineWebEduDataset
+      tokenizer_path: ${tokenizer_path}
+      seq_len: ${seq_len}
+      dataset: HuggingFaceFW/fineweb-edu
+      split: train
+      text_key: text
+      name: null
+    batch_size: ${batch_size}
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.fineweb_edu_dataset.FineWebEduDataset
+      tokenizer_path: ${tokenizer_path}
+      seq_len: ${seq_len}
+      dataset: HuggingFaceFW/fineweb-edu
+      split: train
+      text_key: text
+      name: null
+      max_docs: 256
+    batch_size: ${batch_size}
+    num_workers: 1
+    pin_memory: true
+    persistent_workers: true
+  test: null

@@ -1,5 +1,29 @@
 # src/utils — Architecture
 
+## sample_next_token (sampling.py)
+
+One-token-at-a-time sampler for autoregressive decoding. Pipeline applied to the
+input logits ``(B, V)``:
+
+1. **Greedy short-circuit** — if ``temperature == 0`` return ``argmax`` and the
+   corresponding ``log_softmax`` log-prob; skip everything below.
+2. **Temperature** — divide logits by ``temperature``.
+3. **Top-k** — take the k-th largest logit per row as a threshold; mask
+   strictly-below entries to ``-inf``.
+4. **Top-p (nucleus)** — sort descending, compute cumulative softmax, mark the
+   first index whose cumulative probability strictly exceeds ``top_p`` as the
+   start of the discard region (using a right-shift trick so the top-1 is always
+   kept), mask discarded entries to ``-inf``, and scatter back into the original
+   vocabulary indexing.
+5. **Sample** — `multinomial(softmax(logits), 1)` with the optional
+   ``torch.Generator`` for reproducibility.
+6. **Return** — `(token[B], log_prob[B])`. ``log_prob`` is read off the same
+   filtered ``log_softmax`` used for sampling, so RL ratios computed against this
+   value are exact.
+
+The function is intentionally stateless and KV-cache-free; callers loop over it
+for multi-token generation.
+
 ## CUDAPrefetcher (initializer.py)
 
 Prefetches one batch ahead using a side CUDA stream:

@@ -1,0 +1,67 @@
+# @package _global_
+# Nanochat SFT on SmolTalk-style chat data.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/nanochat/sft \
+#       load_checkpoint_path=results/nanochat/<pretrain-run>/last.pt
+
+defaults:
+  - /default
+  - /dataset: smoltalk_sft
+  - /model: nanochat_gpt_d20
+  - /loss: lm_sft
+  - /optimizer: muon_adamw
+  - /scheduler: nanochat_warmup_cosine
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: nanochat_sft_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/nanochat/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false
+
+batch_size: 16
+gradient_accumulation_steps: 4
+num_epochs: 2
+validation_interval: 1
+clip_grad_norm: 1.0
+
+# SFT uses smaller LRs than pretraining.
+warmup_steps: 200
+total_steps: 5000
+
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+# Override the optimizer LRs for SFT (smaller than pretrain).
+optimizer_groups:
+  muon:
+    _target_: optimizer.muon.Muon
+    lr: 0.005
+    momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    weight_decay: 0.0
+  adamw:
+    _target_: torch.optim.AdamW
+    lr: 0.0002
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.0
+lr: 0.005
+
+# Resume from pretrain.
+load_checkpoint_path: null  # set on the CLI: load_checkpoint_path=...
+strict: true
+resume_training: false
+
+callbacks:
+  wandb:
+    logging_interval: 25
+    log_text_data: false
+  checkpoint:
+    save_every_n_epochs: 1

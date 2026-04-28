@@ -115,6 +115,31 @@ Cross-entropy loss for autoregressive models with teacher forcing. Shifts predic
 ShiftedTeacherForcing(shift=1, ignore_index=-100)
 ```
 
+Use `shift=0` when the dataset already returns shifted `(input, target)` pairs
+(see `FineWebEduDataset`, `SmolTalkSFTDataset`).
+
+### `grpo_loss.py` — GRPO clipped surrogate (per-token, masked)
+
+Per-token clipped surrogate for GRPO with optional KL-to-reference. Pulls
+`log_prob_new`, `log_prob_old`, `advantage`, `completion_mask`, and (optional)
+`log_prob_ref` from the trainer's data container via `LossComponent`'s
+`context_mapping`. The KL term uses Schulman's k3 estimator
+`exp(log_prob_ref - log_prob_new) - (log_prob_ref - log_prob_new) - 1`, which
+is positive and low-variance and matches upstream nanochat / DeepSeek-Math.
+
+```python
+GRPOLoss(kl_coef=0.0)
+```
+
+The PG term is masked over completion tokens and divided by the completion
+token count, so longer completions don't dominate the gradient.
+
+### `policy_losses.py` — PPO-style policy losses
+
+`PPOClipLoss`, `ValueLoss`, `EntropyBonus` — standard PPO components used by
+the SIMPLER-VLA RL flow. GRPO doesn't use these (see `grpo_loss.py`) but they
+share the same `LossContainer` plumbing.
+
 ### `utils.py` — Loss Utilities
 
 `call_loss_with_epoch(loss_fn, pred, target, epoch)` — calls a loss with `epoch` kwarg if the loss function's signature accepts it. Used internally by phased/weighted losses.

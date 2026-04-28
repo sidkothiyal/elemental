@@ -1,0 +1,70 @@
+# @package _global_
+# Nanochat midtraining: a continuation of pretraining on a (typically smaller,
+# higher-quality) corpus, resuming from a pretrain checkpoint with a lower lr.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/nanochat/midtrain \
+#       load_checkpoint_path=results/nanochat/<pretrain-run>/last.pt
+#
+# This config inherits the pretrain dataset by default. To use a different
+# midtraining mix, override `dataset` on the CLI or in your override file.
+
+defaults:
+  - /default
+  - /dataset: fineweb_edu
+  - /model: nanochat_gpt_d20
+  - /loss: lm_pretrain
+  - /optimizer: muon_adamw
+  - /scheduler: nanochat_warmup_cosine
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: nanochat_midtrain_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/nanochat/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false
+
+batch_size: 32
+gradient_accumulation_steps: 4
+num_epochs: 1
+validation_interval: 0
+clip_grad_norm: 1.0
+
+# Smaller LRs and shorter horizon than pretraining.
+warmup_steps: 100
+total_steps: 10000
+
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+optimizer_groups:
+  muon:
+    _target_: optimizer.muon.Muon
+    lr: 0.005
+    momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    weight_decay: 0.0
+  adamw:
+    _target_: torch.optim.AdamW
+    lr: 0.0002
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.0
+lr: 0.005
+
+# Resume weights from pretrain. Override on the CLI.
+load_checkpoint_path: null
+strict: true
+resume_training: false
+
+callbacks:
+  wandb:
+    logging_interval: 25
+    log_text_data: false
+  checkpoint:
+    save_every_n_epochs: 1

@@ -1,0 +1,17 @@
+# @package rl
+# Group Relative Policy Optimization with GSM8K verifier.
+
+_target_: rl.grpo.GRPOAlgorithm
+
+verifier:
+  _target_: rl.verifiers.gsm8k_verifier.GSM8KVerifier
+  format_bonus: 0.0
+
+tokenizer_path: ${tokenizer_path}
+group_size: 8
+prompts_per_batch: 8
+num_policy_epochs: 1
+minibatch_size: 16
+clip_range: 0.2
+normalize_advantages: true
+kl_coef: 0.0

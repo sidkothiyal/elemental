@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 
 from callback import callback as callback_mod
 from utils import checkpoint, distributed  # pylint: disable=no-name-in-module
@@ -207,21 +207,23 @@ def initialize_dataset(
     """
     dataloaders = hy_utils.instantiate(dataloader_config)
 
-    # Set up distributed samplers if needed for distributed training
+    # Set up distributed samplers if needed for distributed training.
+    # IterableDatasets shard themselves inside __iter__, so DistributedSampler
+    # is both unnecessary and incompatible — skip them.
     if use_distributed:
-        dataloaders["train"] = distributed.get_distributed_dataloader(
-            dataloaders["train"], local_rank, world_size, shuffle=True
-        )
-        dataloaders["val"] = distributed.get_distributed_dataloader(
-            dataloaders["val"], local_rank, world_size, shuffle=False
-        )
-        dataloaders["test"] = (
-            distributed.get_distributed_dataloader(
-                dataloaders["test"], local_rank, world_size, shuffle=False
+
+        def _maybe_wrap(loader, *, shuffle):
+            if loader is None:
+                return None
+            if isinstance(loader.dataset, IterableDataset):
+                return loader
+            return distributed.get_distributed_dataloader(
+                loader, local_rank, world_size, shuffle=shuffle
             )
-            if dataloaders["test"] is not None
-            else None
-        )
+
+        dataloaders["train"] = _maybe_wrap(dataloaders["train"], shuffle=True)
+        dataloaders["val"] = _maybe_wrap(dataloaders["val"], shuffle=False)
+        dataloaders["test"] = _maybe_wrap(dataloaders["test"], shuffle=False)
 
     if device is not None:
         dataloaders["train"] = CUDAPrefetcher(dataloaders["train"], device, channels_last)

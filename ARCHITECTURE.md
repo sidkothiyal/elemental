@@ -255,10 +255,17 @@ commented ONNX-level entries.
 | Device/dtype/seed init | `src/utils/initializer.py` |
 | Remote backup | `src/utils/remote_backup/` |
 | Graph nodes | `src/nodes/` |
-| RL algorithms / rollout buffer / GAE | `src/rl/` |
-| Vectorized RL environments | `src/env/` |
-| Policy wrappers (diffusion / autoregressive) | `src/rl/policy_wrapper.py`, `src/rl/diffusion_policy_wrapper.py` |
+| RL algorithms / rollout buffers / GAE | `src/rl/` (PPO + GRPO; `text_rollout_buffer.py` for variable-length completions) |
+| Vectorized RL environments | `src/env/` (incl. `prompt_iterator_env.py` for GRPO) |
+| Policy wrappers (diffusion / autoregressive) | `src/rl/policy_wrapper.py`, `src/rl/diffusion_policy_wrapper.py`, `src/rl/autoregressive_policy_wrapper.py` |
+| RL reward verifiers (GRPO) | `src/rl/verifiers/` (e.g. `gsm8k_verifier.py`) |
 | PPO / value / entropy losses | `src/loss/policy_losses.py` |
+| GRPO loss | `src/loss/grpo_loss.py` |
 | Episode metric trackers | `src/metrics/episode_metrics.py` |
 | Rollout callbacks (video, metrics) | `src/callback/rollout_video_callback.py`, `src/callback/rollout_metrics_callback.py` |
+| Custom optimizers / schedulers / param-group partition | `src/optimizer/` (Muon, MultiOptimizer, WarmupCosineLR, partition predicates) |
+| BPE tokenizer + chat template | `src/data_processor/bpe_tokenizer.py` |
+| Token sampling (top-k/p/temperature) | `src/utils/sampling.py` |
+| Tokenizer training entry point | `src/tools/train_tokenizer.py` |
 | Checkpoint surgery | `src/tools/checkpoint_surgeon.py` |
+| Nanochat full pipeline | `configs/experiment/nanochat/{pretrain,sft,grpo_gsm8k}.yaml` |

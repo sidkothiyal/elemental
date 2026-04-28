@@ -9,6 +9,7 @@ import logging
 import os
 from typing import Any, Callable
 
+import hydra.utils as hy_utils
 import torch
 from omegaconf import DictConfig
 from torch import nn
@@ -354,10 +355,21 @@ def build_optim_dict_or_single(
 ) -> torch.optim.Optimizer | dict[str, torch.optim.Optimizer]:
     """Build an optimizer — a dict keyed by submodule name when *model* is a ModuleDict.
 
+    Three branches in priority order:
+
+    1. ``config.optimizer_groups`` is set → return a :class:`MultiOptimizer` that
+       partitions ``model``'s parameters by predicate (e.g. nanochat's Muon +
+       AdamW recipe). Each named group instantiates one sub-optimizer.
+    2. ``model`` is an ``nn.ModuleDict`` → return one optimizer per submodule
+       (used by GAN / customizable trainers).
+    3. Otherwise → a single ``torch.optim.<X>`` over all trainable params.
+
     Reads ``config.optimizer`` (class name), ``config.optimizer_params`` (kwargs),
-    and ``config.lr``. Used by the base ``Trainer`` for single-optimizer setups
-    and by ``GANTrainer`` / ``CustomizableTrainer`` for dict-of-optimizers.
+    and ``config.lr``.
     """
+    if "optimizer_groups" in config and config.optimizer_groups is not None:
+        return _build_multi_optimizer(config, model)
+
     optimizer_class = getattr(torch.optim, config.get("optimizer", "AdamW"))
     optimizer_params = dict(config.get("optimizer_params", {}) or {})
     optimizer_params = {k: v for k, v in optimizer_params.items() if v is not None}
@@ -376,25 +388,78 @@ def build_optim_dict_or_single(
     return optimizer_class(trainable_params, lr=config.lr, **optimizer_params)
 
 
+def _build_multi_optimizer(config: DictConfig, model: nn.Module) -> Any:
+    """Construct a MultiOptimizer from ``config.optimizer_groups`` + an optional partition spec.
+
+    ``config.optimizer_partition`` selects the predicate set. Currently the only
+    built-in is ``"nanochat_default"`` (Muon for 2-D matrix block params, AdamW
+    for everything else). Custom partitions can be supplied as a Hydra
+    ``_target_:`` pointing at a callable that returns ``dict[str, predicate]``.
+    """
+    # Local import to keep helpers.py free of optimizer-package side-effects at import time.
+    from optimizer.multi_optimizer import MultiOptimizer  # pylint: disable=import-outside-toplevel
+    from optimizer.param_groups import (  # pylint: disable=import-outside-toplevel
+        nanochat_default,
+        partition_params,
+    )
+
+    partition_cfg = config.get("optimizer_partition", "nanochat_default")
+    if partition_cfg == "nanochat_default":
+        predicates = nanochat_default()
+    else:
+        predicates = hy_utils.instantiate(partition_cfg)
+
+    partitions = partition_params(model, predicates)
+
+    sub_optimizers: dict = {}
+    for group_name, opt_cfg in config.optimizer_groups.items():
+        if group_name not in partitions:
+            raise ValueError(
+                f"optimizer_groups defines '{group_name}' but partition does not "
+                f"(known: {list(partitions)})"
+            )
+        params = partitions[group_name]
+        if not params:
+            logger.warning("Optimizer group %s has no parameters; skipping", group_name)
+            continue
+        sub_optimizers[group_name] = hy_utils.instantiate(opt_cfg, params=params)
+
+    default_group = config.get("optimizer_default_group", None)
+    return MultiOptimizer(sub_optimizers, default_group=default_group)
+
+
 def build_scheduler_dict_or_single(
     config: DictConfig,
     optim: torch.optim.Optimizer | dict[str, torch.optim.Optimizer],
 ) -> torch.optim.lr_scheduler.LRScheduler | dict[str, torch.optim.lr_scheduler.LRScheduler] | None:
     """Build an LR scheduler — a dict when *optim* is a dict, else a single scheduler.
 
-    Reads ``config.lr_scheduler`` (class name) and ``config.lr_scheduler_params``
-    (kwargs). Returns None when no ``lr_scheduler`` is configured.
-    """
-    sched_name = config.get("lr_scheduler", None)
-    if sched_name is None:
-        return None
-    scheduler_class = getattr(torch.optim.lr_scheduler, sched_name)
-    scheduler_params = dict(config.get("lr_scheduler_params", {}) or {})
-    scheduler_params = {k: v for k, v in scheduler_params.items() if v is not None}
+    Two config shapes accepted:
 
+    1. **Legacy** (``config.lr_scheduler`` is a string): looks up the class on
+       ``torch.optim.lr_scheduler`` and instantiates with ``lr_scheduler_params``.
+    2. **Target** (``config.lr_scheduler`` is a dict with ``_target_``): uses
+       Hydra ``instantiate`` and passes the optimizer in as ``optimizer=``.
+       Required for custom schedulers (e.g. warmup-cosine).
+
+    Returns None when no ``lr_scheduler`` is configured.
+    """
+    sched_cfg = config.get("lr_scheduler", None)
+    if sched_cfg is None:
+        return None
+
+    if isinstance(sched_cfg, str):
+        scheduler_class = getattr(torch.optim.lr_scheduler, sched_cfg)
+        scheduler_params = dict(config.get("lr_scheduler_params", {}) or {})
+        scheduler_params = {k: v for k, v in scheduler_params.items() if v is not None}
+        if isinstance(optim, dict):
+            return {name: scheduler_class(o, **scheduler_params) for name, o in optim.items()}
+        return scheduler_class(optim, **scheduler_params)
+
+    # Target-style: Hydra-instantiated.
     if isinstance(optim, dict):
-        return {name: scheduler_class(o, **scheduler_params) for name, o in optim.items()}
-    return scheduler_class(optim, **scheduler_params)
+        return {name: hy_utils.instantiate(sched_cfg, optimizer=o) for name, o in optim.items()}
+    return hy_utils.instantiate(sched_cfg, optimizer=optim)
 
 
 def materialize_and_average_losses(

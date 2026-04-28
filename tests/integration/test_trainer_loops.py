@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from callback.callback import Callback, CallbackList
 from loss.loss_container import LossComponent, LossContainer
+from training.gan_trainer import GANTrainer
 from training.trainer import Trainer
 
 # ---------------------------------------------------------------------------
@@ -304,8 +305,6 @@ class TestBatchLoopGan:
     """GAN tests — populated once GANTrainer exists (step 5 of the refactor)."""
 
     def _run(self, setup, phase="train", config=None, **kwargs):
-        from training.gan_trainer import GANTrainer  # pylint: disable=import-outside-toplevel
-
         callbacks = kwargs.pop("callbacks", CallbackList([]))
         trainer = GANTrainer(
             config=config or {},

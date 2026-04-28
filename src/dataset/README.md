@@ -51,6 +51,35 @@ Tokenized WikiText-103 for language model training. Returns `{"input": token_ids
 
 Character-level or token-level Shakespeare text dataset.
 
+### `fineweb_edu_dataset.py` — FineWeb-EDU streaming dataset (nanochat pretrain)
+
+Streaming `IterableDataset` that pulls FineWeb-EDU documents from HuggingFace,
+tokenizes with the project BPE, separates docs with `<|bos|>`, and packs into
+fixed `(seq_len + 1)`-token windows. Yields already-shifted training examples
+`{"input": tokens[:-1], "target": tokens[1:]}`, so `ShiftedTeacherForcing(shift=0)`
+works directly. Sharding (rank × DataLoader worker) is performed inside
+`__iter__`; the trainer skips `DistributedSampler` for `IterableDataset`s.
+
+The pure packer `pack_token_stream(text_iter, tokenizer, seq_len)` is exposed
+for unit tests and reuse.
+
+### `smoltalk_sft_dataset.py` — SmolTalk-style SFT dataset
+
+Map-style dataset that encodes each conversation with the nanochat chat
+template, then converts the loss-mask convention into the ignore-index
+convention so the existing `ShiftedTeacherForcing(shift=0, ignore_index=-100)`
+loss can be reused unchanged.
+
+The pure encoder `encode_sft_example(messages, tokenizer, max_length)` is
+exposed for testing.
+
+### `gsm8k_dataset.py` — GSM8K prompts dataset (GRPO)
+
+Map-style dataset that returns `{"prompt_text", "answer_text"}` pairs. No
+tokenization here — `PromptIteratorEnv` builds the chat-formatted prompt at
+sample time and `GSM8KVerifier` parses the canonical numeric answer from
+`answer_text`.
+
 ### `remote_dataset.py` — RemoteDataset
 
 ZeroMQ client that fetches processed samples from a running `DatasetServer`. Drop-in replacement for local datasets.

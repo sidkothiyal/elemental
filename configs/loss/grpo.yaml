@@ -1,0 +1,18 @@
+# @package _global_
+# GRPO loss: per-token clipped surrogate, masked over completion tokens, with
+# optional KL-to-reference penalty.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    grpo:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.grpo_loss.GRPOLoss
+        kl_coef: 0.0
+      pred_key: rl/log_prob_new
+      target_key: rl/log_prob_old
+      context_mapping:
+        rl/advantage: advantage
+        action_info/completion_mask: completion_mask
+        rl/clip_range: clip_range
+      weight: 1.0

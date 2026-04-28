@@ -1,0 +1,21 @@
+# @package _global_
+# Byte-level BPE tokenizer training config for the nanochat pipeline.
+#
+# Override `corpus.dataset`, `corpus.max_docs`, or swap the corpus entry to a
+# `FileLineIterator` for local smoke-testing.
+
+tokenizer:
+  vocab_size: 65536
+  min_frequency: 2
+  save_path: artifacts/tokenizer/nanochat_bpe.json
+  special_tokens:
+    - "<|bos|>"
+    - "<|user|>"
+    - "<|assistant|>"
+    - "<|eot|>"
+  corpus:
+    _target_: data_processor.corpus_iterators.HFStreamIterator
+    dataset: HuggingFaceFW/fineweb-edu
+    split: train
+    text_key: text
+    max_docs: 200000

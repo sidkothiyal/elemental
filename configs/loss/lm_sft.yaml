@@ -1,0 +1,15 @@
+# @package _global_
+# SFT loss: same shape as pretrain loss but with ignore_index masking the
+# non-assistant target positions written by SmolTalkSFTDataset.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    cross_entropy:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.shifted_teacher_forcing.ShiftedTeacherForcing
+        shift: 0
+        ignore_index: -100
+      pred_key: pred
+      target_key: target
+      weight: 1.0

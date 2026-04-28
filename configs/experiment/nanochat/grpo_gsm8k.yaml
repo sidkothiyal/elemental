@@ -1,0 +1,97 @@
+# @package _global_
+# Nanochat GRPO on GSM8K math problems.
+#
+# Usage:
+#   torchrun --nproc_per_node=1 src/trainer.py experiment/nanochat/grpo_gsm8k \
+#       load_checkpoint_path=results/nanochat/<sft-run>/last.pt
+
+defaults:
+  - /default
+  - /model: nanochat_gpt_d20
+  - /loss: grpo
+  - /optimizer: muon_adamw
+  - /scheduler: nanochat_warmup_cosine
+  - /callback: default
+  - /policy_wrapper: autoregressive_policy
+  - /rollout_buffer: text_grpo
+  - /env: gsm8k_prompts
+  - /rl: grpo
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: nanochat_grpo_gsm8k_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/nanochat/
+
+mode: "rl"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false
+
+# RL reads prompts from the env, not a supervised dataloader.
+dataloader: null
+
+# Top-level knobs (referenced by env / rollout_buffer / rl configs).
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+grpo_prompts_per_batch: 8
+grpo_group_size: 8
+grpo_capacity: 64  # prompts_per_batch * group_size
+grpo_prompt_max_length: 512
+grpo_completion_max_length: 256
+
+# RL outer loop.
+batch_size: 1               # unused in RL mode but required by /default
+num_epochs: 50              # outer GRPO iterations
+gradient_accumulation_steps: 1
+clip_grad_norm: 1.0
+validation_interval: 0
+
+warmup_steps: 50
+total_steps: 5000
+
+# Optimizer — smaller LRs for RL than SFT.
+optimizer_groups:
+  muon:
+    _target_: optimizer.muon.Muon
+    lr: 0.001
+    momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    weight_decay: 0.0
+  adamw:
+    _target_: torch.optim.AdamW
+    lr: 0.00005
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.0
+lr: 0.001
+
+# Override sampler / GRPO knobs.
+policy_wrapper:
+  max_new_tokens: ${grpo_completion_max_length}
+  temperature: 1.0
+  top_p: 0.95
+  # Set the EOS to the tokenizer's <|eot|> id (4 — bos=0,user=1,assistant=2,eot=3 by
+  # default; verify in the trained tokenizer).
+  eos_token_id: 3
+
+rl:
+  group_size: ${grpo_group_size}
+  prompts_per_batch: ${grpo_prompts_per_batch}
+  num_policy_epochs: 1
+  minibatch_size: 16
+  clip_range: 0.2
+  normalize_advantages: true
+  kl_coef: 0.0
+
+# Resume from SFT checkpoint.
+load_checkpoint_path: null
+strict: true
+resume_training: false
+
+callbacks:
+  wandb:
+    logging_interval: 1
+    log_text_data: false
+  checkpoint:
+    save_every_n_epochs: 5

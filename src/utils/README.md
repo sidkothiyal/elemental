@@ -84,6 +84,16 @@ torch_compile:
 
 See `ENVIRONMENT_SETUP.md` and `beam.yaml` for the full env var list.
 
+### `sampling.py` — Token Sampling
+
+`sample_next_token(logits, *, temperature, top_k, top_p, generator) -> (token, log_prob)` —
+single source of truth for autoregressive next-token sampling. Supports greedy
+(`temperature=0`), temperature scaling, top-k truncation, and nucleus (top-p)
+filtering. Returns the sampled token id **and** its log-probability under the
+filtered distribution actually sampled from — the latter is what RL importance
+ratios need, so rollout code does not have to recompute it. Used by
+`AutoregressiveLM.generate` and `NanochatGPT.generate`.
+
 ### `torch_np_utils.py` — Tensor/NumPy Conversions
 
 `to_numpy(tensor)` — moves to CPU, detaches, converts to numpy. Handles all dtypes including bfloat16 (cast to float32 first).

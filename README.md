@@ -4,7 +4,8 @@ A modular PyTorch ML training library supporting image compression, classificati
 
 ## Key Features
 
-- **Multi-task training**: autoencoder, classification, GAN, diffusion, masked autoencoder, autoregressive LM, RL (PPO)
+- **Multi-task training**: autoencoder, classification, GAN, diffusion, masked autoencoder, autoregressive LM, RL (PPO/GRPO)
+- **Full LLM pipeline**: BPE tokenizer training, base pretraining (FineWeb-EDU), SFT (SmolTalk), GRPO RL (GSM8K) — see `configs/experiment/nanochat/`
 - **ONNX export**: export any trained model or sub-module to ONNX via `src/exporter.py`; supports PyTorch-level submodule extraction and ONNX-level graph slicing (`onnx.utils.extract_model`)
 - **Hydra-based config**: hierarchical, composable YAML configs with experiment overrides
 - **Remote datasets**: ZeroMQ dataset server + client for training on data held on another machine
@@ -49,6 +50,14 @@ uv run python src/trainer.py experiment/gan/cityscapes_seg
 
 # VLA diffusion PPO in SIMPLER (ManiSkill)
 uv run python src/trainer.py experiment/vla/vla_rl_ppo
+
+# Nanochat full pipeline (BPE → pretrain → SFT → GRPO on GSM8K)
+uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+uv run python src/trainer.py experiment/nanochat/pretrain
+uv run python src/trainer.py experiment/nanochat/sft \
+    load_checkpoint_path=results/nanochat/<pretrain-run>/last.pt
+uv run python src/trainer.py experiment/nanochat/grpo_gsm8k \
+    load_checkpoint_path=results/nanochat/<sft-run>/last.pt
 
 # Override any config value on the command line (Hydra syntax)
 uv run python src/trainer.py experiment/autoencoder/compression_unet lr=0.001 num_epochs=500

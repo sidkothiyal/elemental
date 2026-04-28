@@ -76,6 +76,27 @@ AutoregressiveLM(encoder=Transformer(...), token_embedding=..., positional_embed
 
 Use with `ShiftedTeacherForcing` loss and `GeneratePostProcessor` for text generation at evaluation.
 
+### `nanochat_gpt.py` — Nanochat-style GPT
+
+Faithful port of Karpathy's nanochat architecture: RMSNorm pre-norm, rotary
+position embeddings on Q/K, QK-norm (RMSNorm on Q and K post-projection),
+squared-ReLU MLP, untied input/output embeddings, and `F.scaled_dot_product_attention`
+with causal masking (Flash on CUDA). No biases anywhere.
+
+```python
+NanochatGPT(vocab_size=65536, embed_dim=1280, num_heads=10, num_layers=20,
+            ff_embed_dim=5120, max_length=2048)
+```
+
+`generate(input_ids, max_new_tokens, temperature, top_k, top_p, eos_token_id)`
+delegates to the shared `utils.sampling.sample_next_token` so RL rollouts get
+exact log-probs of sampled tokens. Pretraining/SFT use `ShiftedTeacherForcing`
+with `shift=0` (the dataset handles the shift); GRPO uses `GRPOLoss` via the
+`AutoregressivePolicyWrapper`. Three depth tiers shipped:
+[d12](../../configs/model/nanochat_gpt_d12.yaml),
+[d20](../../configs/model/nanochat_gpt_d20.yaml),
+[d26](../../configs/model/nanochat_gpt_d26.yaml).
+
 ### `autoencoder.py` — Autoencoder Class Hierarchy
 
 Base `Autoencoder` class with `encode -> bottleneck -> decode` pipeline, plus concrete subclasses:

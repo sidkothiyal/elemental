@@ -1,0 +1,23 @@
+# @package _global_
+# Nanochat optimizer recipe: Muon for 2-D matrix block params, AdamW for everything else
+# (embeddings, lm_head, RMSNorm scales). Picks the partition by name.
+optimizer_groups:
+  muon:
+    _target_: optimizer.muon.Muon
+    lr: 0.02
+    momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    weight_decay: 0.0
+  adamw:
+    _target_: torch.optim.AdamW
+    lr: 0.0008
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.0
+
+optimizer_partition: nanochat_default
+
+# ``lr`` is read for telemetry/late-bound param groups (e.g. RL value head);
+# we report the Muon group's base lr as the headline value.
+lr: 0.02
