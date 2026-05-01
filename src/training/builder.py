@@ -15,7 +15,7 @@ from typing import Type
 import hydra
 import hydra.utils as hy_utils
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from training.customizable_trainer import CustomizableTrainer
 from training.gan_trainer import GANTrainer
@@ -129,6 +129,7 @@ def build_trainer(
     config_file: str,
     local_rank: int = -1,
     overrides: list[str] | None = None,
+    no_remote_logging: bool = False,
 ) -> Trainer | GraphTrainer:
     """Build and return a fully initialized ``Trainer`` (or subclass) instance.
 
@@ -143,6 +144,15 @@ def build_trainer(
     """
     with hydra.initialize(version_base=None, config_path="../../configs"):
         config = hydra.compose(config_name=config_file, overrides=overrides or [])
+
+    if no_remote_logging:
+        with open_dict(config):
+            if config.get("remote_backup") is not None:
+                config.remote_backup = None
+            callbacks_cfg = config.get("callbacks")
+            if callbacks_cfg is not None and "wandb" in callbacks_cfg:
+                config.callbacks.wandb = None
+        logger.info("Remote logging disabled: cleared remote_backup and callbacks.wandb")
 
     # Graph mode uses a completely different initialization path.
     if config.get("mode", None) == "graph":

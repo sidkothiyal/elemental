@@ -23,9 +23,19 @@ def _main(
     local_rank: int = typer.Option(
         int(os.environ.get("LOCAL_RANK", -1)), help="Local rank for distributed training"
     ),
+    no_remote_logging: bool = typer.Option(
+        False,
+        "--no-remote-logging",
+        help="Disable remote loggers (wandb callback, remote_backup) for this run.",
+    ),
 ) -> None:
     """Train a model using the specified Hydra config, with optional overrides."""
-    trainer = build_trainer(config_file, local_rank=local_rank, overrides=overrides or [])
+    trainer = build_trainer(
+        config_file,
+        local_rank=local_rank,
+        overrides=overrides or [],
+        no_remote_logging=no_remote_logging,
+    )
     if test:
         trainer.test()
     else:
