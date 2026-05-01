@@ -1,0 +1,60 @@
+# @package _global_
+# Higher-capacity convolutional autoencoder for image compression.
+# 8x spatial downsample, bottleneck dim = 256.
+#
+# Differences vs `simple_autoencoder`:
+#   * Wider (128 → 512 in encoder; mirrored in decoder).
+#   * Refinement convs at every resolution (stride-1 layers between strides),
+#     giving a residual-style refinement effect within each scale.
+#   * GroupNorm + SiLU instead of BatchNorm + ReLU — standard for modern
+#     image autoencoders / VQGANs; works better with small batches and AMP.
+#   * Decoder is heavier than the encoder (asymmetric capacity), since the
+#     decoder has to hallucinate detail from a quantized / lossy bottleneck.
+model:
+  _target_: model.autoencoder.Autoencoder
+
+  # Encoder — 8x downsample via three stride-2 stages, with one refinement conv
+  # after each stride. Channel schedule: 128 → 256 → 512 → 256 (bottleneck).
+  encoder:
+    _target_: model.blocks.conv_block.ConvBlock
+    in_channels: 3
+    channels:    [128, 128, 256, 256, 512, 512, 256]
+    kernel_sizes: [3,   3,   3,   3,   3,   3,   3]
+    strides:      [2,   1,   2,   1,   2,   1,   1]
+    paddings:     [1,   1,   1,   1,   1,   1,   1]
+    norm:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GroupNorm
+    norm_kwargs:
+      num_groups: 32
+    act:
+      _target_: hydra.utils.get_class
+      path: torch.nn.SiLU
+
+  # Decoder — mirror, but heavier. Three 2x bilinear upsamples with refinement
+  # convs (scale_factor=1.0) before and after each upsample, then a 3x3 RGB
+  # projection (no norm/act on the last conv).
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.upsample_block.UpsampleBlock
+        scale_factors: [1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0]
+        modes: bilinear
+        in_channels: 256
+        channels:    [512, 512, 256, 256, 128, 128, 64]
+        kernel_sizes: [3,   3,   3,   3,   3,   3,   3]
+        paddings:     [1,   1,   1,   1,   1,   1,   1]
+        norm:
+          _target_: hydra.utils.get_class
+          path: torch.nn.GroupNorm
+        norm_kwargs:
+          num_groups: 32
+        act:
+          _target_: hydra.utils.get_class
+          path: torch.nn.SiLU
+      - _target_: torch.nn.Conv2d
+        in_channels: 64
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1

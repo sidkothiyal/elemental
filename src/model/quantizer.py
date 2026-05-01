@@ -231,12 +231,13 @@ class Quantizer(nn.Module):
 
         # Replace codebook entries
         with torch.no_grad():
+            sampled = flattened_x[batch_indices].clone().to(self.codebook.dtype)
             if self.use_ema:
-                self.codebook[indices_to_resample] = flattened_x[batch_indices].clone()
-                self.ema_embed[indices_to_resample] = flattened_x[batch_indices].clone()
+                self.codebook[indices_to_resample] = sampled
+                self.ema_embed[indices_to_resample] = sampled
                 self.ema_cluster_size[indices_to_resample] = 1.0
             else:
-                self.codebook.data[indices_to_resample] = flattened_x[batch_indices].clone()
+                self.codebook.data[indices_to_resample] = sampled
 
             # Mark these entries as initialized from data
             self.codebook_initialized[indices_to_resample] = True
@@ -328,15 +329,14 @@ class Quantizer(nn.Module):
 
                 # Replace unused codebook entries with these random encodings
                 with torch.no_grad():
+                    sampled = flattened_x[random_batch_indices].clone().to(self.codebook.dtype)
                     if self.use_ema:
                         # Update both codebook and EMA statistics
-                        self.codebook[unused_indices] = flattened_x[random_batch_indices].clone()
-                        self.ema_embed[unused_indices] = flattened_x[random_batch_indices].clone()
+                        self.codebook[unused_indices] = sampled
+                        self.ema_embed[unused_indices] = sampled
                         self.ema_cluster_size[unused_indices] = 1.0
                     else:
-                        self.codebook.data[unused_indices] = flattened_x[
-                            random_batch_indices
-                        ].clone()
+                        self.codebook.data[unused_indices] = sampled
 
                     # Mark these as initialized
                     self.codebook_initialized[unused_indices] = True

@@ -1,0 +1,20 @@
+# Remap a legacy `simple_autoencoder` (nn.Sequential) checkpoint into the
+# key layout expected by `model.autoencoder.Autoencoder` (and its subclasses
+# like `VQVAE`):
+#   Sequential[0] (ConvBlock encoder)      -> encoder.*
+#   Sequential[1] (UpsampleBlock decoder)  -> decoder.0.*
+#   Sequential[2] (final Conv2d to RGB)    -> decoder.1.*
+# Works for both:
+#   * resuming `simple_compression_ae` after the model was switched from
+#     nn.Sequential to `Autoencoder`; and
+#   * finetuning `compression_vq_ae` from a Sequential AE checkpoint
+#     (codebook params `quantizer.*` have no source weights and rely on
+#     smart-init from encoder activations).
+checkpoint_surgery:
+  rename_rules:
+    - old: "0."
+      new: "encoder."
+    - old: "1."
+      new: "decoder.0."
+    - old: "2."
+      new: "decoder.1."

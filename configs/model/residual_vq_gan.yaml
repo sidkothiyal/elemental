@@ -1,0 +1,97 @@
+# @package _global_
+# VQ-GAN: VQVAE generator (matching `residual_autoencoder` topology) +
+# PatchGAN discriminator. Trainer auto-switches to GAN batch loop when
+# `mode: "gan"` and `model` is a ModuleDict({generator, discriminator}).
+#
+# The generator is a VQVAE wrapping the same encoder/decoder used in
+# `residual_autoencoder`, so checkpoint surgery can remap pretrained
+# AE weights (keys `encoder.*` / `decoder.*`) onto `generator.encoder.*` /
+# `generator.decoder.*`.
+
+model:
+  _target_: torch.nn.ModuleDict
+  modules:
+
+    generator:
+      _target_: model.autoencoder.VQVAE
+      codebook_size: 1024
+      codebook_dim: 256   # must match encoder output channels
+
+      # Codebook management — settings tuned for finetuning from a
+      # pretrained encoder (encoder activations are already meaningful).
+      quantizer_kwargs:
+        use_ema: true                          # EMA codebook updates (stable)
+        ema_decay: 0.99
+        commitment_loss_weight: 0.25           # standard VQ-VAE β
+        dictionary_loss_weight: 1.0
+        # Smart-init seeds codes from real activations rather than noise.
+        smart_init_enabled: true
+        smart_init_steps: 500
+        smart_init_initial_resample_pct: 0.5
+        smart_init_final_resample_pct: 0.0
+        # Revival kicks dead codes back to data points encountered in the batch.
+        codebook_revival_enabled: true
+        codebook_revival_threshold: 2
+        # Diversity loss prevents nearby codes from collapsing together.
+        diversity_loss_enabled: true
+        diversity_loss_weight: 0.1
+        diversity_loss_margin: 0.5
+        codebook_hit_summary_frequency: 100
+
+      encoder:
+        _target_: model.blocks.conv_block.ConvBlock
+        in_channels: 3
+        channels:    [128, 128, 256, 256, 512, 512, 256]
+        kernel_sizes: [3,   3,   3,   3,   3,   3,   3]
+        strides:      [2,   1,   2,   1,   2,   1,   1]
+        paddings:     [1,   1,   1,   1,   1,   1,   1]
+        norm:
+          _target_: hydra.utils.get_class
+          path: torch.nn.GroupNorm
+        norm_kwargs:
+          num_groups: 32
+        act:
+          _target_: hydra.utils.get_class
+          path: torch.nn.SiLU
+
+      decoder:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: model.blocks.upsample_block.UpsampleBlock
+            scale_factors: [1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0]
+            modes: bilinear
+            in_channels: 256
+            channels:    [512, 512, 256, 256, 128, 128, 64]
+            kernel_sizes: [3,   3,   3,   3,   3,   3,   3]
+            paddings:     [1,   1,   1,   1,   1,   1,   1]
+            norm:
+              _target_: hydra.utils.get_class
+              path: torch.nn.GroupNorm
+            norm_kwargs:
+              num_groups: 32
+            act:
+              _target_: hydra.utils.get_class
+              path: torch.nn.SiLU
+          - _target_: torch.nn.Conv2d
+            in_channels: 64
+            out_channels: 3
+            kernel_size: 3
+            stride: 1
+            padding: 1
+
+    # PatchGAN discriminator (Isola/Esser-style). ~70x70 receptive field.
+    # Default BatchNorm + LeakyReLU; the trailing 1-channel conv still gets
+    # norm/act applied — that's acceptable for PatchGAN logits in practice.
+    discriminator:
+      _target_: model.blocks.conv_block.ConvBlock
+      in_channels: 3
+      channels:    [64, 128, 256, 512, 1]
+      kernel_sizes: [4,  4,   4,   4,   4]
+      strides:      [2,  2,   2,   1,   1]
+      paddings:     [1,  1,   1,   1,   1]
+      act:
+        _target_: hydra.utils.get_class
+        path: torch.nn.LeakyReLU
+      act_kwargs:
+        negative_slope: 0.2
+        inplace: true

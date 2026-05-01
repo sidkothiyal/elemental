@@ -1,0 +1,13 @@
+# Remap a `compression_ae` (model.autoencoder.Autoencoder) checkpoint into the
+# key layout expected by the VQ-GAN ModuleDict, where the VQVAE generator
+# lives under `generator.*`:
+#   encoder.*  -> generator.encoder.*
+#   decoder.*  -> generator.decoder.*
+# The discriminator (`discriminator.*`) and codebook (`generator.quantizer.*`)
+# have no source weights and train from scratch / smart-init.
+checkpoint_surgery:
+  rename_rules:
+    - old: "encoder."
+      new: "generator.encoder."
+    - old: "decoder."
+      new: "generator.decoder."
