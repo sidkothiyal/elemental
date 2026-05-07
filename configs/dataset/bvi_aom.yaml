@@ -1,0 +1,49 @@
+# @package _global_
+# BVI-AOM video dataset for video-compression experiments.
+# See `.plans/video_compression_plan.md` for context.
+dataset_name: bvi_aom
+clip_length: 8
+frame_stride: 1
+target_shape: null   # set to e.g. [256, 256] in experiment configs that need crops
+bvi_aom_resolutions: ["272p"]   # override on the CLI: bvi_aom_resolutions=[272p,544p]
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.bvi_aom_dataset.BviAomDataset
+      root_dir: data/bvi_aom
+      resolutions: ${bvi_aom_resolutions}
+      clip_length: ${clip_length}
+      frame_stride: ${frame_stride}
+      target_shape: ${target_shape}
+      split: train
+      val_fraction: 0.1
+      random_temporal: true
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    prefetch_factor: 2
+    pin_memory: true
+    persistent_workers: true
+    drop_last: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.bvi_aom_dataset.BviAomDataset
+      root_dir: data/bvi_aom
+      resolutions: ${bvi_aom_resolutions}
+      clip_length: ${clip_length}
+      frame_stride: ${frame_stride}
+      target_shape: ${target_shape}
+      split: val
+      val_fraction: 0.1
+      random_temporal: false
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    prefetch_factor: 2
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  test: null

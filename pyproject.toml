@@ -62,6 +62,7 @@ autoresearch = [
 ]
 heavy = [
   "accelerate",
+  "av",
 #  "flash-attn; sys_platform == 'linux'",
   "mmcv; sys_platform == 'linux'",
   "ninja",

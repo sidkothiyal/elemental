@@ -9,6 +9,9 @@ Examples:
     python -m src.data_processor.download --download_dir=./data --dataset_name=tiny_imagenet
     python -m src.data_processor.download --download_dir=./data --dataset_name=tiny_shakespeare
     python -m src.data_processor.download --download_dir=./data --dataset_name=wikitext
+    python -m src.data_processor.download --download_dir=./data --dataset_name=bvi_aom
+    python -m src.data_processor.download --download_dir=./data --dataset_name=bvi_aom \
+        --parts="272p.tar.gz,544p.tar.gz"
 """
 
 import logging
@@ -19,7 +22,11 @@ from pathlib import Path
 import fire
 import yaml
 
-from data_processor.downloaders import kaggle_downloader, url_downloader
+from data_processor.downloaders import (
+    kaggle_downloader,
+    multi_part_archive_downloader,
+    url_downloader,
+)
 from data_processor.post_download_hooks.reorganizer import reorganize_dataset
 
 logging.basicConfig(
@@ -33,6 +40,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[0] / "dataset_config.yaml"
 DOWNLOADERS = {
     "kaggle": kaggle_downloader.KaggleDownloader(),
     "url": url_downloader.URLDownloader(),
+    "multi_part_archive": multi_part_archive_downloader.MultiPartArchiveDownloader(),
 }
 
 
@@ -50,7 +58,12 @@ POST_DOWNLOAD_HOOKS = {
 }
 
 
-def download(download_dir: str, dataset_name: str, redownload: bool = False) -> None:
+def download(
+    download_dir: str,
+    dataset_name: str,
+    redownload: bool = False,
+    parts: str | None = None,
+) -> None:
     """Download a dataset to the specified directory.
 
     Args:
@@ -59,6 +72,9 @@ def download(download_dir: str, dataset_name: str, redownload: bool = False) -> 
         dataset_name: Name of the dataset to download (must exist in dataset_config.yaml).
         redownload: If True, delete existing data and re-download. If False (default),
             skip download if data already exists.
+        parts: Comma-separated list of part filenames to download. Only used by
+            multi-part downloaders (e.g. 'multi_part_archive'); overrides the
+            'parts' list in dataset_config.yaml.
     """
     # Load config
     if not CONFIG_PATH.exists():
@@ -80,6 +96,9 @@ def download(download_dir: str, dataset_name: str, redownload: bool = False) -> 
 
     dataset_config = datasets[dataset_name]
     download_method = dataset_config["download_method"]
+
+    if parts is not None:
+        dataset_config["parts"] = [p.strip() for p in parts.split(",") if p.strip()]
 
     if download_method not in DOWNLOADERS:
         raise ValueError(

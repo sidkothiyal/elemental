@@ -22,3 +22,16 @@ datasets:
   #   download_method: url
   #   url: https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip
   #   extract: true
+
+  bvi_aom:
+    download_method: multi_part_archive
+    base_url: http://download.opencontent.netflix.com.s3.amazonaws.com/bvi_aom_dataset/
+    # Defaults to the three smaller resolutions. To download 2176p, override via the CLI
+    # (--parts="2176p_part_a.tar.gz,2176p_part_b.tar.gz") or edit this list. Available parts:
+    #   272p.tar.gz, 544p.tar.gz, 1088p.tar.gz,
+    #   2176p_part_a.tar.gz ... 2176p_part_f.tar.gz
+    parts:
+      - 272p.tar.gz
+      - 544p.tar.gz
+      - 1088p.tar.gz
+    extract: true

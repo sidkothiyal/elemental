@@ -6,11 +6,13 @@ Tools for downloading datasets and preprocessing raw data before training.
 
 ### `download.py` — Dataset Downloader
 
-Downloads datasets from configured sources (Kaggle, URLs). Runs post-download hooks for reorganization.
+Downloads datasets from configured sources (Kaggle, URLs, multi-part archive bundles such as BVI AOM). Runs post-download hooks for reorganization.
 
 ```bash
 uv run python src/data_processor/download.py
 ```
+
+For multi-part datasets you can pass `--parts="<file1>,<file2>"` to override the default part list in the config (e.g. `--dataset_name=bvi_aom --parts="272p.tar.gz,544p.tar.gz"`).
 
 Configured via `src/data_processor/dataset_config.yaml`.
 
@@ -69,6 +71,10 @@ Downloads Kaggle datasets using the Kaggle API.
 ### `downloaders/url_downloader.py`
 
 Downloads files from URLs with progress bars.
+
+### `downloaders/multi_part_archive_downloader.py`
+
+Downloads a configurable list of `.tar.gz` parts from a common `base_url` and extracts each into the dataset directory. Used for the BVI AOM dataset (Netflix public S3).
 
 ### `post_download_hooks/reorganizer.py`
 

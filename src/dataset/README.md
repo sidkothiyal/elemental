@@ -18,6 +18,23 @@ File discovery strategies:
 
 In `__getitem__`, call `resolve_path(remote_path) → local_path` to transparently cache remote files.
 
+### `bvi_aom_dataset.py` — BVI-AOM Video Dataset
+
+N-frame video clip dataset for video-compression experiments
+(see `.plans/video_compression_plan.md`). Loads `.mp4` / `.mkv` files from
+one or more resolution sub-directories (`272p`, `544p`, `1088p`) under
+`data/bvi_aom/`. Decodes frames on the fly via `torchvision.io.read_video`
+and caches per-video frame counts + fps in a sidecar `.bvi_aom_meta.json`.
+
+Returns `{"input": (T,C,H,W), "target": (T,C,H,W), "frame_encoding": (T,)}`
+with pixels in `[-1, 1]`.
+
+```python
+BviAomDataset(root_dir="data/bvi_aom", resolutions=["272p", "544p"],
+              clip_length=8, frame_stride=1, target_shape=(256, 256),
+              split="train", val_fraction=0.1)
+```
+
 ### `cityscapes_dataset.py` — Cityscapes Dataset
 
 Semantic segmentation dataset. Returns `{"input": image, "target": segmentation_mask}`.
