@@ -52,8 +52,13 @@ default-groups = ["dev", "heavy"]
 [dependency-groups]
 dev = [
   "ipykernel (>=6.25.1, <7)",
+  "pyinstrument>=5.1.2",
   "types-PyYAML",
   "types-requests",
+]
+autoresearch = [
+  "anthropic>=0.50",
+  "openai>=1.0",
 ]
 heavy = [
   "accelerate",

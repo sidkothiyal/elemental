@@ -7,6 +7,7 @@ forward/backward step. Subclasses (``GANTrainer``, ``RLTrainer``) override
 
 import logging
 import statistics
+import time
 from typing import Any
 
 import hydra.utils as hy_utils
@@ -34,6 +35,10 @@ from training.helpers import (
 from utils import distributed
 
 logger = logging.getLogger(__name__)
+
+
+class NaNLossError(RuntimeError):
+    """Raised when the training loss becomes NaN, signalling training divergence."""
 
 
 class Trainer:
@@ -79,6 +84,10 @@ class Trainer:
         self.checkpoint_data = checkpoint_data or {"epoch": None, "step": None}
         self.cuda_empty_cache_interval = cuda_empty_cache_interval
         self.resume_training = resume_training
+        # Set to True when a trial budget (max_steps/max_wall_time_sec) is hit
+        # so the epoch loop exits cleanly without raising.
+        self._stop_training: bool = False
+        self._train_start_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Public lifecycle
@@ -94,14 +103,34 @@ class Trainer:
             start_epoch = saved_epoch + 1
             logger.info("Resuming training from epoch %d", start_epoch)
 
+        max_wall_time = self.config.get("max_wall_time_sec", None)
+        self._train_start_time = time.perf_counter()
+
+        _exc: BaseException | None = None
         try:
             for epoch in range(start_epoch, self.config.num_epochs):
                 self.run_epoch(epoch)
+                if self._stop_training:
+                    logger.info("Trial budget reached — stopping training loop cleanly")
+                    break
+                if max_wall_time is not None:
+                    elapsed = time.perf_counter() - self._train_start_time
+                    if elapsed >= max_wall_time:
+                        logger.info(
+                            "max_wall_time_sec=%.1f reached (%.1fs elapsed) — stopping",
+                            max_wall_time,
+                            elapsed,
+                        )
+                        break
+        except BaseException as exc:
+            _exc = exc
+            raise
         finally:
-            self._finalize()
+            self._finalize(_exc)
 
     def test(self) -> dict[str, float]:
         """Run a single test-phase pass over the test loader."""
+        _exc: BaseException | None = None
         try:
             if distributed.is_main_process():
                 logger.info("Running test...")
@@ -110,11 +139,22 @@ class Trainer:
             if distributed.is_main_process():
                 logger.info("Test results: %s", test_loss)
             return test_loss
+        except BaseException as exc:
+            _exc = exc
+            raise
         finally:
-            self._finalize()
+            self._finalize(_exc)
 
-    def _finalize(self) -> None:
-        """Stop profiler and clean up distributed training."""
+    def _finalize(self, exc: BaseException | None = None) -> None:
+        """Stop profiler, finalize callbacks, and clean up distributed training."""
+        # Notify callbacks that support finalization (e.g. TrialSummaryCallback).
+        for cb in self.callbacks.callbacks:
+            if hasattr(cb, "finalize"):
+                try:
+                    cb.finalize(exc)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.exception("Error in callback.finalize() — ignoring")
+
         if self.profiler is not None:
             self.profiler.stop()
             self.profiler = None
@@ -241,9 +281,20 @@ class Trainer:
         # that stash refs to `data` observe post-batch state, not pre.
         data: dict = {}
 
+        max_steps = self.config.get("max_steps", None)
+
         training = phase == "train"
         for batch_idx, batch in enumerate(progress_bar):
             step = num_steps + batch_idx
+
+            # Trial budget: hard step cap (checked before the batch so the count is exact).
+            if max_steps is not None and step >= max_steps:
+                logger.info(
+                    "max_steps=%d reached at step %d — stopping batch loop", max_steps, step
+                )
+                self._stop_training = True
+                break
+
             self.callbacks.on_batch_start(step, phase)
 
             if training:
@@ -316,6 +367,12 @@ class Trainer:
 
             with record_function("loss"):
                 batch_loss, component_losses = self.loss(data)
+
+            if training and torch.isnan(batch_loss):
+                raise NaNLossError(
+                    f"NaN loss at epoch {epoch}, step {step} "
+                    f"(loss keys: {list(component_losses.keys())})"
+                )
 
             module_losses = collect_module_losses(
                 self.model,

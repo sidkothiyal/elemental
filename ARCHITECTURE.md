@@ -5,6 +5,9 @@ High-level architecture reference for the elemental ML training library.
 ## Project Structure
 
 ```
+autoresearch/             # LLM-driven hyperparameter / torch.compile search (opt-in, never imported by src/)
+├── agent.py              # Claude-powered propose→trial→observe loop (Anthropic SDK)
+└── search_spaces/        # YAML definitions for torch_compile and hparam search spaces
 src/
 ├── trainer.py            # Thin Hydra/Typer CLI — delegates to training.builder (handles all modes, incl. graph)
 ├── exporter.py           # Thin Hydra/Typer CLI — delegates to training.model_exporter for ONNX export
@@ -105,7 +108,31 @@ CallbackList dispatches to each Callback:
   update_config() → on_phase_start() → on_epoch_start() →
   on_batch_start() → on_batch_end() → on_epoch_end() →
   log_metrics() → on_lr_update() → on_phase_end()
+  [finally] _finalize(exc) → cb.finalize(exc)  ← TrialSummaryCallback writes JSON here
 ```
+
+### 4. Trial Budget & Autoresearch Hooks
+
+Three config keys (all nullable, zero-cost when null) enable the `autoresearch/` agent to run short, bounded trials:
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `max_steps` | `null` | Hard step cap; breaks the batch loop and sets `_stop_training = True` |
+| `max_wall_time_sec` | `null` | Wall-clock cap checked at epoch boundaries |
+| `+callbacks.trial_summary._target_=callback.trial_summary_callback.TrialSummaryCallback` | not set | Enables `TrialSummaryCallback` which writes `trial_summary.json` |
+
+The `TrialSummaryCallback.finalize(exc)` call is triggered from `Trainer._finalize(exc)` which receives the exception (or `None`) captured in `train()`'s `except BaseException` clause. This is the only mechanism that passes failure context into callbacks — `CallbackList.__getattr__` is not used here because `finalize` is not part of the standard `Callback` interface.
+
+Exit codes from `src/trainer.py` (for subprocess callers):
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Unexpected error |
+| 10 | CUDA out-of-memory |
+| 11 | torch.compile / dynamo / inductor error |
+| 12 | NaN loss (training diverged) |
+| 13 | Wall-time timeout |
 
 Implemented callbacks: `CheckpointCallback`, `MetricsCallback`, `WandbCallback`.
 

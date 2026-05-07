@@ -49,3 +49,9 @@ profiler: null
 
 # Remote backup strategy (null disables remote backup)
 remote_backup: null
+
+# Trial budget (autoresearch / hyperparameter search). Both null = no limit.
+# max_steps: hard cap on global step count; short-circuits the epoch loop.
+# max_wall_time_sec: wall-clock cap in seconds from train() entry.
+max_steps: null
+max_wall_time_sec: null

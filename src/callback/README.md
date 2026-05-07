@@ -59,6 +59,36 @@ pred_key: post_processed/formatted_pred
 target_key: target
 ```
 
+### `trial_summary_callback.py` — Autoresearch trial output
+
+Writes `trial_summary.json` at run end for autoresearch-style hyperparameter and `torch.compile` search. **Opt-in** — not included in default training, so normal runs have zero overhead.
+
+**Features**:
+- Tracks final and best-ever values for every metric that passes through `log_metrics`
+- Times each training step: step 0 captures compile-warmup latency, subsequent steps feed a rolling median
+- Records peak GPU memory via `torch.cuda.max_memory_allocated()`
+- Classifies failures (OOM, compile error, NaN, timeout) and records status in JSON
+
+**Output schema**:
+```json
+{
+  "status": "ok|oom|compile_error|nan|timeout|error",
+  "final":  {"val/loss_total": ..., "val/PSNR": ...},
+  "best":   {"val/PSNR": {"value": ..., "epoch": ...}},
+  "perf":   {"steps": N, "epochs": E, "compile_warmup_ms": ...,
+             "median_step_ms": ..., "peak_mem_gb": ...},
+  "config_overrides": [...], "git_sha": "...", "wandb_run_id": "..."
+}
+```
+
+**When to use**: Add to any trial run launched by the autoresearch agent. Pass via override:
+
+```bash
+python src/trainer.py experiment/autoencoder/compression_ae \
+  '+callbacks.trial_summary._target_=callback.trial_summary_callback.TrialSummaryCallback' \
+  max_steps=200 --no-remote-logging
+```
+
 ### `wandb_callback.py` — Weights & Biases logging
 
 Logs scalars, images, text, and 3D point clouds to W&B.

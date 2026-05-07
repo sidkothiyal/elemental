@@ -1,0 +1,97 @@
+# Search space for torch.compile + batch-size settings.
+#
+# Objective: minimise perf.ms_per_sample subject to status == "ok".
+# perf.ms_per_sample = median_step_ms / (batch_size * gradient_accumulation_steps)
+# is computed by the agent after each trial, so a smaller batch trivially
+# winning on per-step time is correctly penalised.
+#
+# Constraints (the agent is told these via the system prompt):
+#   - batch_size * gradient_accumulation_steps <= 32 (single-GPU memory budget)
+#   - mode=reduce-overhead with compile_optimizer_step=true → CUDA-graph conflict
+#
+# All `torch_compile.options.*` keys are forwarded verbatim to
+# `torch.compile(..., options={...})` by `compile_model_and_optimizer_step`
+# in src/utils/initializer.py — adding a new Inductor knob here requires no
+# code changes.
+#
+# Out of scope (need env-var plumbing rather than Hydra overrides):
+#   TORCHINDUCTOR_FX_GRAPH_REMOTE_CACHE / TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE etc.
+
+name: torch_compile
+objective: minimise
+metric: perf.ms_per_sample
+constraint: "status == 'ok'"
+
+# Fixed overrides applied to every trial — keeps each run short.
+fixed_overrides:
+  - max_steps=200
+  - num_epochs=9999
+  - --no-remote-logging
+
+parameters:
+  # ---- Batch-size / accumulation (fed into per-sample normalisation) ----
+  batch_size:
+    type: categorical
+    values: [1, 2, 4, 8]
+  gradient_accumulation_steps:
+    type: categorical
+    values: [1, 2, 4, 8]
+
+  # ---- Top-level torch.compile kwargs ----
+  torch_compile.mode:
+    type: categorical
+    values:
+      - "default"
+      - "reduce-overhead"
+      - "max-autotune-no-cudagraphs"
+      - "max-autotune"
+
+  torch_compile.fullgraph:
+    type: categorical
+    values: [true, false]
+
+  torch_compile.dynamic:
+    type: categorical
+    values: [false, true]
+
+  torch_compile.compile_optimizer_step:
+    type: categorical
+    values: [true, false]
+    # Note: incompatible with mode=reduce-overhead (CUDA graph conflict).
+
+  torch_compile.backend:
+    type: categorical
+    values: ["inductor"]
+
+  # ---- Inductor `options.*` knobs (forwarded verbatim) ----
+  # Most matter only with max-autotune* modes; agent should set them only then.
+  torch_compile.options.coordinate_descent_tuning:
+    type: categorical
+    values: [false, true]
+  torch_compile.options.shape_padding:
+    type: categorical
+    values: [false, true]
+  torch_compile.options.epilogue_fusion:
+    type: categorical
+    values: [false, true]
+  torch_compile.options.max_autotune_gemm_backends:
+    type: categorical
+    # Use Hydra list syntax — bare comma values trigger "Ambiguous value" parse
+    # errors (Hydra interprets them as multirun sweeps unless quoted/listed).
+    values:
+      - "[ATEN,TRITON]"
+      - "[ATEN,TRITON,CUTLASS]"
+      - "[TRITON]"
+  # NOTE: torch_compile.options.triton.cudagraphs intentionally omitted —
+  # the nested-key path is rejected by torch._inductor.config in this PyTorch
+  # version (see study torch_compile_0de96c). cudagraph behavior is already
+  # controlled via torch_compile.mode=max-autotune (on) vs
+  # max-autotune-no-cudagraphs (off).
+
+# Hydra override format examples (the agent emits these):
+#   batch_size=4
+#   gradient_accumulation_steps=4
+#   torch_compile.mode="max-autotune-no-cudagraphs"
+#   torch_compile.fullgraph=true
+#   +torch_compile.options.coordinate_descent_tuning=true
+#   +torch_compile.options.max_autotune_gemm_backends=[ATEN,TRITON,CUTLASS]

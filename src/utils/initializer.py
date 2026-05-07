@@ -8,7 +8,7 @@ from typing import Any
 import hydra.utils as hy_utils
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -332,26 +332,32 @@ def _tensorize_optimizer_lr(
     logger.info("Converted optimizer param_group lr values to tensors for torch.compile")
 
 
-def compile_model_and_optimizer_step(
+# Keys consumed by elemental itself; everything else in the compile config is
+# forwarded verbatim as kwargs to ``torch.compile`` (so e.g. ``options.*``,
+# ``mode``, ``fullgraph``, future PyTorch additions all flow through without
+# code changes).
+_RESERVED_COMPILE_KEYS = {"enabled", "compile_optimizer_step", "remote_cache"}
+
+
+def compile_model_and_optimizer_step(  # pylint: disable=too-many-locals
     model: nn.Module,
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
     compile_config: DictConfig | dict | None = None,
 ) -> nn.Module:
     """Compile model and optimizer for training using torch.compile.
 
+    The compile config is split into two parts:
+      * Elemental-managed keys: ``enabled``, ``compile_optimizer_step``, ``remote_cache``.
+      * Everything else is forwarded as ``**kwargs`` to ``torch.compile`` — including
+        ``mode``, ``backend``, ``fullgraph``, ``dynamic``, ``disable``, and any
+        Inductor ``options`` dict. This lets new PyTorch knobs be exposed by
+        adding a YAML key, without touching this function.
+
     Args:
         model: The model to compile.
         optimizer: The optimizer or dict of optimizers. If provided and
             compile_optimizer_step is enabled, optimizer.step will be compiled in-place.
-        compile_config: Configuration dict for torch.compile with the following options:
-            - enabled (bool): Whether to enable compilation. Default: False.
-            - mode (str): Compilation mode. Options: "default", "reduce-overhead",
-              "max-autotune", "max-autotune-no-cudagraphs". Default: "default".
-            - backend (str): Backend to use. Default: "inductor".
-            - fullgraph (bool): Whether to require full graph compilation. Default: False.
-            - dynamic (bool): Whether to use dynamic shapes. Default: None.
-            - disable (bool): Whether to disable dynamo tracing. Default: False.
-            - compile_optimizer_step (bool): Whether to compile optimizer.step. Default: False.
+        compile_config: Configuration dict for torch.compile.
 
     Returns:
         The compiled model if enabled, otherwise the original model.
@@ -360,12 +366,11 @@ def compile_model_and_optimizer_step(
     if compile_config is None:
         return model
 
-    # Convert DictConfig to dict if needed
     if isinstance(compile_config, DictConfig):
-        compile_config = dict(compile_config)
+        compile_config = OmegaConf.to_container(compile_config, resolve=True)
+    assert isinstance(compile_config, dict)
 
-    enabled = compile_config.get("enabled", False)
-    if not enabled:
+    if not compile_config.get("enabled", False):
         logger.info("torch.compile is disabled")
         return model
 
@@ -386,31 +391,29 @@ def compile_model_and_optimizer_step(
             triton=remote_cache_config.get("triton", False),
         )
 
-    # Extract compile options
-    mode = compile_config.get("mode", "default")
-    backend = compile_config.get("backend", "inductor")
-    fullgraph = compile_config.get("fullgraph", False)
-    dynamic = compile_config.get("dynamic", None)
-    disable = compile_config.get("disable", False)
     compile_optim_step = compile_config.get("compile_optimizer_step", False)
 
-    # Compile model
-    logger.info(
-        "Compiling model with torch.compile (mode=%s, backend=%s, fullgraph=%s, dynamic=%s)",
-        mode,
-        backend,
-        fullgraph,
-        dynamic,
-    )
+    compile_kwargs: dict[str, Any] = {
+        k: v for k, v in compile_config.items() if k not in _RESERVED_COMPILE_KEYS and v is not None
+    }
+    mode = compile_kwargs.get("mode", "default")
 
-    compiled_model = torch.compile(
-        model,
-        mode=mode,
-        backend=backend,
-        fullgraph=fullgraph,
-        dynamic=dynamic,
-        disable=disable,
-    )
+    # torch.compile rejects ``mode`` and ``options`` together (mode is a preset bundle of
+    # options). When both are present, expand the mode-preset into options first and merge,
+    # with explicit ``options.*`` keys taking precedence — that lets users start from a mode
+    # and tweak individual options on top.
+    if "mode" in compile_kwargs and "options" in compile_kwargs:
+        from torch._inductor import list_mode_options  # pylint: disable=import-outside-toplevel
+
+        mode_options = dict(list_mode_options(compile_kwargs["mode"]))
+        explicit_options = compile_kwargs.pop("options")
+        compile_kwargs.pop("mode")
+        merged = {**mode_options, **explicit_options}
+        compile_kwargs["options"] = merged
+        logger.info("Merged mode=%s preset with explicit options; final options=%s", mode, merged)
+
+    logger.info("Compiling model with torch.compile kwargs=%s", compile_kwargs)
+    compiled_model = torch.compile(model, **compile_kwargs)
     logger.info("Model compiled successfully")
 
     # Compile optimizer.step in-place if requested.
@@ -420,16 +423,17 @@ def compile_model_and_optimizer_step(
     if compile_optim_step and optimizer is not None and mode != "reduce-overhead":
         _warn_if_capturable_false(optimizer)
         _tensorize_optimizer_lr(optimizer)
-        logger.info(
-            "Compiling optimizer.step with torch.compile (mode=%s, backend=%s)", mode, backend
-        )
+        # ``fullgraph`` on optimizer.step regularly trips on parameter-group iteration;
+        # drop it to keep the optimizer compile resilient while preserving mode/backend/options.
+        opt_compile_kwargs = {k: v for k, v in compile_kwargs.items() if k != "fullgraph"}
+        logger.info("Compiling optimizer.step with torch.compile kwargs=%s", opt_compile_kwargs)
 
         if isinstance(optimizer, dict):
             for name, opt in optimizer.items():
-                opt.step = torch.compile(opt.step, mode=mode, backend=backend)
+                opt.step = torch.compile(opt.step, **opt_compile_kwargs)
                 logger.info("Compiled optimizer.step for '%s'", name)
         else:
-            optimizer.step = torch.compile(optimizer.step, mode=mode, backend=backend)
+            optimizer.step = torch.compile(optimizer.step, **opt_compile_kwargs)
             logger.info("Compiled optimizer.step successfully")
     elif compile_optim_step and mode == "reduce-overhead":
         logger.warning(

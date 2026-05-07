@@ -55,6 +55,31 @@ One `MetricCollection` clone per phase — they maintain independent internal st
 
 Compute frequency: epoch 0 always, then every `phases[phase]` epochs, plus always on the last epoch.
 
+## TrialSummaryCallback (trial_summary_callback.py)
+
+Opt-in callback that writes one JSON file per run for machine-readable result consumption (autoresearch agent, CI checks).
+
+### Finalization protocol
+
+The standard `Callback` interface has no `finalize` hook. `TrialSummaryCallback` adds one:
+
+```python
+def finalize(self, exc: BaseException | None = None) -> None: ...
+```
+
+`Trainer._finalize(exc)` iterates `self.callbacks.callbacks` and calls `cb.finalize(exc)` on any callback that defines it. The `exc` value is `None` on clean exit or the raised exception otherwise — this is how status (`ok`, `oom`, `compile_error`, etc.) is determined.
+
+### Timing strategy
+
+- `on_batch_start` records `time.perf_counter()` for training-phase steps only.
+- `on_batch_end` computes elapsed ms; step 0 (lazy compile trace) is recorded separately as `compile_warmup_ms`; steps 1+ feed a `deque(maxlen=500)` rolling window.
+- No `torch.cuda.synchronize()` — CPU-side timing is sufficient for ranking compile modes; it slightly underestimates GPU time but has zero steady-state overhead.
+- When the callback is not registered, `on_batch_start/end` are never called — `CallbackList.__getattr__` skips absent implementations.
+
+### classify_exception helper
+
+`classify_exception(exc)` in this module is also imported by `src/trainer.py` to map exceptions to subprocess exit codes (0, 10–13). Both consumers share the same logic.
+
 ## WandbCallback (wandb_callback.py)
 
 ### Initialization Flow

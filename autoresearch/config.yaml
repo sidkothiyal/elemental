@@ -1,0 +1,24 @@
+# autoresearch configuration
+#
+# Controls which LLM provider and model are used by default when --provider
+# or --model are not passed on the CLI.
+#
+# Resolution order (highest priority first):
+#   1. --provider / --model CLI flags
+#   2. provider / providers.<provider>.model below
+
+# Default provider when --provider is omitted.
+provider: openrouter
+
+# Per-provider model defaults.
+# Add any provider here; only 'anthropic' and 'openrouter' are supported today.
+providers:
+  anthropic:
+    models:
+      - claude-sonnet-4-6
+      - claude-haiku-4-5-20251001
+  openrouter:
+    models:
+      - nvidia/nemotron-3-super-120b-a12b:free
+      - minimax/minimax-m2.5:free
+      - google/gemma-4-31b-it:free

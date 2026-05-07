@@ -19,8 +19,8 @@ defaults:
 experiment_name: compression_simple_ae_8x_phased_mse_ssim_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
-resume_training: true
-load_checkpoint_path: latest
+# resume_training: true
+# load_checkpoint_path: latest
 
 mode: "autoencoder"
 

@@ -2,14 +2,37 @@
 
 Delegates to :func:`training.builder.build_trainer` which constructs the
 appropriate :class:`training.trainer.Trainer` subclass based on ``config.mode``.
+
+Exit codes (consumed by the autoresearch agent):
+  0  — successful run
+  1  — unexpected error
+  10 — CUDA out-of-memory
+  11 — torch.compile / dynamo / inductor error
+  12 — NaN loss (training diverged)
+  13 — timeout (max_wall_time_sec exceeded)
 """
 
 import logging
 import os
+import sys
 
+import torch
 import typer
 
 from training.builder import build_trainer
+
+
+def _classify_exit_code(exc: BaseException) -> int:
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return 10
+    module = type(exc).__module__ or ""
+    if "dynamo" in module or "inductor" in module or "torch._compile" in module:
+        return 11
+    if type(exc).__name__ == "NaNLossError":
+        return 12
+    if isinstance(exc, TimeoutError):
+        return 13
+    return 1
 
 
 def _main(
@@ -36,10 +59,15 @@ def _main(
         overrides=overrides or [],
         no_remote_logging=no_remote_logging,
     )
-    if test:
-        trainer.test()
-    else:
-        trainer.train()
+    try:
+        if test:
+            trainer.test()
+        else:
+            trainer.train()
+    except BaseException as exc:  # pylint: disable=broad-exception-caught
+        # _finalize() (incl. TrialSummaryCallback.finalize) already ran inside
+        # train()/test() via their try/finally. We only need the exit code here.
+        sys.exit(_classify_exit_code(exc))
 
 
 if __name__ == "__main__":
