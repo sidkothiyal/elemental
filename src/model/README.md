@@ -205,6 +205,27 @@ PerceiverResampler(
 # forward(inputs: [B, N, D_in]) -> [B, num_latents, D_out]
 ```
 
+### `video_perceiver_ae.py` — Perceiver Resampler Video Autoencoder
+
+Phase 2 V1 of the video compression plan
+([`.plans/video_compression_plan.md`](../../.plans/video_compression_plan.md)).
+A single shared latent array per N-frame chunk, no per-frame residual.
+
+`VideoPerceiverEncoder` runs a 2D patch CNN over `B*T` reshaped frames,
+adds separable temporal + spatial positional embeddings, and feeds the
+flattened token sequence into `PerceiverResampler`. The resulting latent
+shape `(B, num_latents, latent_dim)` is independent of `T`.
+
+`VideoQueryDecoder` learns `(T, H_q, W_q)` per-position queries that
+cross-attend (via stacked `CrossAttentionBlock`s) to the latents, then
+runs a 2D refinement / upsample CNN per frame and reshapes back to
+`(B, T, C, H, W)`. Frames are decoded in parallel.
+
+Wire both halves into the standard `model.autoencoder.Autoencoder`; no
+bottleneck step is needed because compression happens inside the encoder.
+See `configs/model/perceiver_video_autoencoder.yaml` and
+`configs/experiment/autoencoder/compression_perceiver_video_ae_v1.yaml`.
+
 ### `nn_modules.py` — NN Utility Modules
 
 `Unsqueeze`, `Add`, `Concat`, `Flatten`, `Permute`, `Mean`, `Squeeze`, `SpatialToTokens` — simple wrappers for use in `nn.Sequential` or Hydra-instantiated pipelines. `SpatialToTokens` converts `[B, D, h, w]` spatial feature maps to `[B, h*w, D]` token sequences.
@@ -228,4 +249,6 @@ Wrapper around `flash_attn` for drop-in replacement of `nn.MultiheadAttention` i
 | `resnet_block.py` | `ResnetBlock` | ResNet-style residual block |
 | `linear_block.py` | `LinearBlock` | Linear + norm + activation |
 | `upsample_block.py` | `UpsampleBlock` | Upsample + ConvBlock |
+| `conv3d_block.py` | `Conv3dNormAct` / `ConvBlock3d` | Conv3d + norm + activation (video) |
+| `upsample3d_block.py` | `Upsample3dNormAct` / `Upsample3dBlock` | 3D Upsample + Conv3d (video) |
 | `conditional_conv_block.py` | `ConditionalConvBlock` | ConvBlock + time/condition embedding + optional cross-attention |

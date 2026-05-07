@@ -55,6 +55,20 @@ One `MetricCollection` clone per phase — they maintain independent internal st
 
 Compute frequency: epoch 0 always, then every `phases[phase]` epochs, plus always on the last epoch.
 
+## transforms.py
+
+Pure-tensor `nn.Module` adapters that bridge model output layouts to
+metric input expectations. They are kept here (rather than in `src/utils/`)
+so callback configs can reference them by a short
+`_target_: callback.transforms.<Name>` path.
+
+`FlattenTemporal` collapses the leading two dims of a 5-D tensor into one.
+Inputs of rank 3 or 4 are returned unchanged so the same callback config
+also works on image batches; rank 2 raises. The callback chain then sees
+`(B*T, C, H, W)` and reuses the existing 4-D `BaseMetric` implementations
+(PSNR / SSIM / MSE) verbatim — per-frame values are accumulated and the
+returned mean is the per-frame average over the epoch.
+
 ## TrialSummaryCallback (trial_summary_callback.py)
 
 Opt-in callback that writes one JSON file per run for machine-readable result consumption (autoresearch agent, CI checks).

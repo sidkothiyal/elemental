@@ -59,6 +59,29 @@ pred_key: post_processed/formatted_pred
 target_key: target
 ```
 
+### `transforms.py` — Tensor transforms for callback configs
+
+Small `nn.Module` callables for the `transform_pred` / `transform_target`
+slots on `MetricsCallback`. Use these when the data layout produced by the
+model does not match what an existing metric expects.
+
+- `FlattenTemporal` — folds the temporal axis of a video tensor into the
+  batch dimension: `(B, T, C, H, W) -> (B*T, C, H, W)`. 4-D and 3-D tensors
+  pass through unchanged. Used by
+  [`configs/callback/video_reconstruction_metrics.yaml`](../../configs/callback/video_reconstruction_metrics.yaml)
+  to apply the existing per-image PSNR / SSIM / MSE metrics to video
+  predictions and targets, averaging per-frame across all frames in all
+  clips of an epoch.
+
+```yaml
+# configs/callback/video_reconstruction_metrics.yaml
+_target_: callback.metrics_callback.MetricsCallback
+metrics:
+  psnr: {_target_: metrics.psnr.PSNR, data_range: 2.0}
+transform_pred:   {_target_: callback.transforms.FlattenTemporal}
+transform_target: {_target_: callback.transforms.FlattenTemporal}
+```
+
 ### `trial_summary_callback.py` — Autoresearch trial output
 
 Writes `trial_summary.json` at run end for autoresearch-style hyperparameter and `torch.compile` search. **Opt-in** — not included in default training, so normal runs have zero overhead.

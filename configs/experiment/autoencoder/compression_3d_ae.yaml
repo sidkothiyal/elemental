@@ -1,0 +1,61 @@
+# @package _global_
+# 3D-conv video autoencoder baseline on BVI-AOM (Phase 1.3 of
+# .plans/video_compression_plan.md). Apples-to-apples learned baseline against
+# the proposed Perceiver Resampler video AE.
+#
+# Loss: MSE only. SSIM/perceptual losses require a 4-D tensor; folding the
+# temporal axis into the batch in the loss (e.g. via a temporal-flatten
+# variant of SSIMLoss) is a follow-up.
+#
+# Resolution: the model is fully convolutional in (T, H, W) and works at any
+# clip shape whose H, W are divisible by 8 and T by 2 (set by the encoder
+# stride pattern below). Set `bvi_aom_resolutions` to a single resolution at
+# a time and pick `target_shape` to match (e.g. 272p ~= 480x272, so 256x256
+# is a safe crop; 544p ~= 960x544, so 512x512 is safe). When you change
+# `bvi_aom_resolutions`, update `target_shape` accordingly.
+#
+# Usage:
+#   # 272p training:
+#   uv run python src/trainer.py experiment/autoencoder/compression_3d_ae
+#   # 544p training:
+#   uv run python src/trainer.py experiment/autoencoder/compression_3d_ae \
+#       bvi_aom_resolutions=[544p] target_shape=[512,512] batch_size=2
+
+defaults:
+  - /default
+  - /dataset: bvi_aom
+  - /model: simple_3d_autoencoder
+  - /loss: mse
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/video_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_3d_ae_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# BVI-AOM clip layout. 256x256 random crops cleanly survive 8x spatial downsample.
+clip_length: 8
+target_shape: [256, 256]
+
+# Training overrides
+lr: 0.0003
+num_epochs: 1000
+validation_interval: 200
+batch_size: 8
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+callbacks:
+  wandb:
+    logging_interval: 200
+  checkpoint:
+    save_every_n_epochs: 10

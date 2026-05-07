@@ -163,6 +163,36 @@ Each layer is a `CrossAttentionBlock` from `combiner.py` — the same primitive 
 
 `forward` takes a `key_padding_mask` kwarg for future use, but it is currently ignored — `CrossAttentionBlock` does not thread masks into its `MultiheadAttention` call. Likewise AdaLN modulation is available in the block but not exposed by the resampler in v1.
 
+## VideoPerceiverEncoder / VideoQueryDecoder (video_perceiver_ae.py)
+
+```python
+class VideoPerceiverEncoder(nn.Module):
+    patch_encoder: nn.Module                   # 2D: (N,C,H,W) -> (N,D,h,w)
+    perceiver: PerceiverResampler              # latent_dim == embed_dim
+    temporal_pe: nn.Parameter(num_frames, D)
+    spatial_pe:  nn.Parameter(num_spatial_tokens, D)
+
+class VideoQueryDecoder(nn.Module):
+    queries: nn.Parameter(num_frames, H_q, W_q, D)
+    layers: nn.ModuleList[CrossAttentionBlock]  # self-attn -> cross-attn -> FFN
+    norm: nn.LayerNorm
+    refinement_decoder: nn.Module               # 2D: (N,D,H_q,W_q) -> (N,C,H,W)
+```
+
+Encoder forward: reshape `(B,T,C,H,W) -> (B*T,C,H,W)`, run `patch_encoder`,
+tokenize to `(B,T,h*w,D)`, add separable temporal+spatial PEs, flatten to
+`(B,T*h*w,D)`, run through `perceiver`. Output `(B,num_latents,D)` — *the
+shape does not depend on T*. This is the architectural claim of V1 and is
+pinned by `tests/src/model/test_video_perceiver_ae.py`.
+
+Decoder forward: broadcast learned queries to `(B,T*H_q*W_q,D)`, cross-attend
+to latents through stacked `CrossAttentionBlock`s, normalize, reshape to
+`(B*T,D,H_q,W_q)`, run `refinement_decoder`, reshape to `(B,T,C,H_out,W_out)`.
+
+The pair plugs into the standard `Autoencoder(encoder=..., decoder=...)`
+because `Autoencoder.decode` reads `B = z.shape[0]` and the decoder needs no
+extra arg.
+
 ## CachedModule (cached_module.py)
 
 Wraps any `nn.Module` whose output is deterministic for a given input. Computes a SHA-256 hash of all positional and keyword arguments (tensors → raw bytes + shape/dtype, nested lists recursed, strings → repr) to produce per-sample cache keys.

@@ -29,6 +29,20 @@ Linear + optional normalization + activation. Used in MLP layers.
 
 `nn.Upsample(scale_factor=2)` followed by a ConvBlock. Cleaner alternative to ConvTranspose2d for avoiding checkerboard artifacts.
 
+### `conv3d_block.py` — Conv3dNormAct / ConvBlock3d
+
+3D analogue of `conv_block.py`. Operates on `(B, C, T, H, W)` tensors
+(matching `nn.Conv3d`). Kernel / stride / padding accept either an `int`
+or a `(kT, kH, kW)` 3-tuple, so spatial-only or temporal-only downsampling
+patterns are easy to express. Default norm is `nn.BatchNorm3d`. Used by
+`configs/model/simple_3d_autoencoder.yaml` (the video AE baseline).
+
+### `upsample3d_block.py` — Upsample3dNormAct / Upsample3dBlock
+
+3D analogue of `upsample_block.py`. Default mode is `"trilinear"`.
+Anisotropic scale factors (e.g. `(1, 2, 2)` for spatial-only upsampling)
+are supported.
+
 ### `conditional_conv_block.py` — ConditionalConvBlock
 
 ConvBlock extended for diffusion models. Adds:
