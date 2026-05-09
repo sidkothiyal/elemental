@@ -36,7 +36,10 @@ callbacks:
 
 ### WandB Callback (`wandb.yaml`)
 - Logs metrics to Weights & Biases
-- Logs sample images/predictions
+- Logs sample images/predictions; 5-D `(B, T, C, H, W)` tensors are auto-routed
+  to `wandb.Video` (configurable via `video_fps`, `video_value_range`,
+  `max_videos_per_log`)
+- Configurable `image_value_range` for image data normalised outside `[0, 1]`
 - Configurable logging interval
 
 ### Checkpoint Callback (`checkpoint.yaml`)

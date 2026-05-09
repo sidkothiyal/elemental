@@ -3,6 +3,7 @@
 import logging
 import os
 import random
+from typing import Any, cast
 
 import numpy as np
 import plotly.graph_objects as go
@@ -41,6 +42,10 @@ class WandbCallback(callback.Callback):
         resume_training: bool = False,
         load_checkpoint_path: str | None = None,
         field_loggers: dict[str, str] | None = None,
+        video_fps: int = 8,
+        video_value_range: tuple[float, float] = (-1.0, 1.0),
+        max_videos_per_log: int = 1,
+        image_value_range: tuple[float, float] = (0.0, 1.0),
     ):
         """Initialize the callback.
 
@@ -64,6 +69,15 @@ class WandbCallback(callback.Callback):
             field_loggers: Optional dict mapping data-container keys to logger
                 type strings (e.g. ``"point3d"``). For those keys, the specified
                 logger is used instead of the default image/text logging.
+            video_fps: Playback fps for ``wandb.Video`` clips.
+            video_value_range: ``(lo, hi)`` value range of incoming 5-D video
+                tensors. Maps to ``[0, 255]`` uint8 before logging. Defaults to
+                BVI-AOM convention ``(-1.0, 1.0)``.
+            max_videos_per_log: Number of batch elements to log per video step.
+            image_value_range: ``(lo, hi)`` value range of incoming image
+                tensors. Defaults to ``(0.0, 1.0)`` to preserve historical
+                behaviour; set to ``(-1.0, 1.0)`` for image AEs whose data is
+                normalised to that range.
         """
         logger.info(
             "Initializing WandbCallback with project: %s, entity: %s, exp_name: %s",
@@ -81,6 +95,14 @@ class WandbCallback(callback.Callback):
         self._class_colors = class_colors
         self._num_classes = num_classes
         self._field_loggers = dict(field_loggers) if field_loggers else None
+
+        self._video_fps = video_fps
+        # Hydra/OmegaConf delivers list values for sequence params; coerce to a
+        # 2-tuple so downstream helpers can rely on the static type.
+        self._video_value_range = cast(tuple[float, float], tuple(video_value_range))
+        self._max_videos_per_log = max_videos_per_log
+        self._image_value_range = cast(tuple[float, float], tuple(image_value_range))
+        self._warned_shape_keys: set[str] = set()
 
         if self._num_classes and self._class_colors is None:
             self._class_colors = self._generate_class_colors(self._num_classes)
@@ -219,6 +241,43 @@ class WandbCallback(callback.Callback):
             return {k: WandbCallback._first_sample(v) for k, v in label.items()}
         return label
 
+    # -- Value-range helpers -------------------------------------------
+
+    @staticmethod
+    def _denormalize_to_uint8(x: torch.Tensor, value_range: tuple[float, float]) -> torch.Tensor:
+        """Map a tensor in ``value_range`` to ``uint8`` ``[0, 255]`` (clamped).
+
+        Casts bf16/fp16 → fp32 first so the numpy hop downstream is safe.
+        """
+        lo, hi = value_range
+        x = x.float()
+        if hi != lo:
+            x = (x - lo) / (hi - lo)
+        return (x.clamp(0.0, 1.0) * 255).to(torch.uint8)
+
+    @staticmethod
+    def _denormalize_to_unit_float(x: np.ndarray, value_range: tuple[float, float]) -> np.ndarray:
+        """Map a numpy array in ``value_range`` to float ``[0, 1]`` (clamped).
+
+        No-op when ``value_range == (0.0, 1.0)`` so the default path stays
+        bit-identical to the historical behaviour.
+        """
+        lo, hi = value_range
+        if (lo, hi) == (0.0, 1.0):
+            return x
+        return np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+
+    def _warn_unsupported_shape(self, tag: str, shape) -> None:
+        """Emit a one-time warning for an unsupported logging shape."""
+        if tag in self._warned_shape_keys:
+            return
+        logger.warning(
+            "WandbCallback: unsupported tensor shape for key %r: %s — skipping",
+            tag,
+            tuple(shape),
+        )
+        self._warned_shape_keys.add(tag)
+
     # -- Image logging -------------------------------------------------
 
     def _log_image(
@@ -234,13 +293,18 @@ class WandbCallback(callback.Callback):
 
         Handles dicts by recursing, then processes a single image tensor:
         transposes NCHW → NHWC, takes the first sample, and optionally
-        converts class-index maps to RGB using ``_class_colors``.
+        converts class-index maps to RGB using ``_class_colors``. 5-D
+        ``(B, T, C, H, W)`` tensors are auto-routed to :meth:`_log_video`.
         """
         if isinstance(image, dict):
             for key, img_value in image.items():
                 target = target_label[key] if target_label is not None else None
                 pred = pred_label[key] if pred_label is not None else None
                 self._log_image(step, phase, f"{tag}/{key}", img_value, target, pred)
+            return
+
+        if isinstance(image, torch.Tensor) and image.ndim == 5:
+            self._log_video(step, phase, tag, image)
             return
 
         if isinstance(image, torch.Tensor):
@@ -253,6 +317,7 @@ class WandbCallback(callback.Callback):
         pred_label = self._first_sample(pred_label)
 
         if image.ndim not in [2, 3]:
+            self._warn_unsupported_shape(tag, image.shape)
             return
 
         if image.ndim == 3 and image.shape[2] not in [1, 3] and self._num_classes:
@@ -262,6 +327,8 @@ class WandbCallback(callback.Callback):
             for i in range(self._num_classes):
                 colored_image[image == i] = self._class_colors[i]  # type: ignore
             image = colored_image
+        else:
+            image = self._denormalize_to_unit_float(image, self._image_value_range)
 
         caption = ""
         if target_label is not None:
@@ -271,6 +338,31 @@ class WandbCallback(callback.Callback):
         wandb_image = wandb.Image(image, caption=caption)
 
         self._wandb_logger.log({f"{phase}/{tag}": wandb_image, f"{phase}/step": step})
+
+    # -- Video logging -------------------------------------------------
+
+    def _log_video(
+        self,
+        step: int,
+        phase: str,
+        tag: str,
+        video: torch.Tensor,
+    ) -> None:
+        """Log a 5-D ``(B, T, C, H, W)`` tensor as ``wandb.Video`` clip(s).
+
+        Logs the first ``self._max_videos_per_log`` batch elements after
+        mapping ``self._video_value_range`` → ``uint8`` ``[0, 255]``.
+        """
+        if video.shape[0] == 0:
+            return
+        n = min(self._max_videos_per_log, video.shape[0])
+        clips = self._denormalize_to_uint8(video[:n].detach(), self._video_value_range)
+        arr = torch_np_utils.to_numpy(clips)  # (n, T, C, H, W) uint8
+        if n == 1:
+            payload: Any = wandb.Video(arr[0], fps=self._video_fps)
+        else:
+            payload = [wandb.Video(arr[i], fps=self._video_fps) for i in range(n)]
+        self._wandb_logger.log({f"{phase}/{tag}": payload, f"{phase}/step": step})
 
     # -- Text logging --------------------------------------------------
 
@@ -330,10 +422,15 @@ class WandbCallback(callback.Callback):
         if data is None:
             return
         xs, ys, zs = data[:, 0], data[:, 1], data[:, 2]
-        fig = go.Figure(data=[go.Scatter3d(x=xs, y=ys, z=zs, mode="markers", marker=dict(size=4))])
+        fig = go.Figure(data=[go.Scatter3d(x=xs, y=ys, z=zs, mode="markers", marker={"size": 4})])
         fig.update_layout(
             title=tag,
-            scene=dict(xaxis_title="x", yaxis_title="y", zaxis_title="z", aspectmode="data"),
+            scene={
+                "xaxis_title": "x",
+                "yaxis_title": "y",
+                "zaxis_title": "z",
+                "aspectmode": "data",
+            },
         )
         self._wandb_logger.log({f"{phase}/{tag}": wandb.Plotly(fig), f"{phase}/step": step})
 
@@ -353,25 +450,30 @@ class WandbCallback(callback.Callback):
                     y=ys,
                     z=zs,
                     mode="lines+markers",
-                    line=dict(
-                        width=4,
-                        color=point_indices,
-                        colorscale="Bluered",
-                        showscale=True,
-                        colorbar=dict(title="Point order"),
-                    ),
-                    marker=dict(
-                        size=3,
-                        color=point_indices,
-                        colorscale="Bluered",
-                        showscale=False,
-                    ),
+                    line={
+                        "width": 4,
+                        "color": point_indices,
+                        "colorscale": "Bluered",
+                        "showscale": True,
+                        "colorbar": {"title": "Point order"},
+                    },
+                    marker={
+                        "size": 3,
+                        "color": point_indices,
+                        "colorscale": "Bluered",
+                        "showscale": False,
+                    },
                 )
             ]
         )
         fig.update_layout(
             title=tag,
-            scene=dict(xaxis_title="x", yaxis_title="y", zaxis_title="z", aspectmode="data"),
+            scene={
+                "xaxis_title": "x",
+                "yaxis_title": "y",
+                "zaxis_title": "z",
+                "aspectmode": "data",
+            },
         )
         self._wandb_logger.log({f"{phase}/{tag}": wandb.Plotly(fig), f"{phase}/step": step})
 

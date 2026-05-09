@@ -38,7 +38,7 @@ dependencies = [
   "tqdm (>=4.66.5, <5)",
   "transformers (>=4.57)",
   "typer>=0.24.1",
-  "wandb (>=0.19.7, <0.20.0)",
+  "wandb[media]>=0.19.7,<0.20.0",
   "zstandard",
   "onnxscript>=0.6.2",
   "lpips>=0.1.4",

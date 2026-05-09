@@ -44,10 +44,12 @@ clip_length: 8
 target_shape: [256, 256]
 
 # Training overrides
+# channels_last is 4-D only; 3D conv uses 5-D (NCTHW) tensors.
+channels_last: false
 lr: 0.0003
 num_epochs: 1000
 validation_interval: 200
-batch_size: 8
+batch_size: 16
 
 dtype:
   _target_: hydra.utils.get_object

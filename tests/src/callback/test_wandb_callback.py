@@ -21,10 +21,11 @@ class TestWandbCallback:
 
         with patch("wandb.init", return_value=mock_run) as mock_init, patch(
             "wandb.Image"
-        ) as mock_image, patch("wandb.log"):
+        ) as mock_image, patch("wandb.Video") as mock_video, patch("wandb.log"):
             self.mock_init = mock_init
             self.mock_run = mock_run
             self.mock_image = mock_image
+            self.mock_video = mock_video
             yield
 
     def _make_callback(self, **kwargs):
@@ -65,3 +66,63 @@ class TestWandbCallback:
         # Step 5 is not a logging interval, so no image should be logged
         cb.on_batch_end(step=5, phase="train", data=data)
         # Verify no image was logged (run.log shouldn't be called for images at step 5)
+
+    def test_5d_tensor_routes_to_video(self):
+        cb = self._make_callback()
+        # (B, T, C, H, W) — values in [-1, 1]
+        video = torch.zeros(2, 4, 3, 8, 8)
+        cb._log_image(step=0, phase="train", tag="pred", image=video)
+
+        self.mock_video.assert_called_once()
+        # First positional arg is the numpy uint8 clip; check it ranges to [0, 255]
+        clip = self.mock_video.call_args[0][0]
+        assert clip.dtype.name == "uint8"
+        assert clip.shape == (4, 3, 8, 8)  # n=1 single-clip path drops batch dim
+        # value 0.0 in (-1, 1) range → midpoint → 127
+        assert clip.min() == 127 and clip.max() == 127
+        # fps default
+        assert self.mock_video.call_args.kwargs["fps"] == 8
+        self.mock_image.assert_not_called()
+
+    def test_video_value_range_override(self):
+        cb = self._make_callback(video_value_range=[0.0, 1.0])
+        video = torch.full((1, 2, 3, 4, 4), 1.0)  # all-1, range [0, 1]
+        cb._log_image(step=0, phase="train", tag="pred", image=video)
+        clip = self.mock_video.call_args[0][0]
+        assert clip.max() == 255 and clip.min() == 255
+
+    def test_max_videos_per_log_respected(self):
+        cb = self._make_callback(max_videos_per_log=2)
+        video = torch.zeros(4, 2, 3, 4, 4)
+        cb._log_image(step=0, phase="train", tag="pred", image=video)
+        # n=2 path produces a list payload of two wandb.Video calls
+        assert self.mock_video.call_count == 2
+
+    def test_unsupported_shape_warns_once(self):
+        cb = self._make_callback()
+        with patch.object(WandbCallback, "_warn_unsupported_shape") as mock_warn:
+            # 1-D tensor — falls past every shape branch in _log_image.
+            bad = torch.zeros(5)
+            cb._log_image(step=0, phase="train", tag="weird_key", image=bad)
+            cb._log_image(step=0, phase="train", tag="weird_key", image=bad)
+        # Both calls reach the unsupported-shape branch; warn-once is enforced
+        # inside _warn_unsupported_shape, exercised separately below.
+        assert mock_warn.call_count == 2
+
+        # Direct contract test on warn-once: only the first call appends.
+        cb._warn_unsupported_shape("k", (5,))
+        cb._warn_unsupported_shape("k", (5,))
+        assert cb._warned_shape_keys == {"k"}
+        # Different keys are independent.
+        cb._warn_unsupported_shape("other", (5,))
+        assert cb._warned_shape_keys == {"k", "other"}
+
+    def test_image_value_range_default_is_noop(self):
+        cb = self._make_callback()
+        img = torch.full((1, 3, 4, 4), 0.5)
+        cb._log_image(step=0, phase="train", tag="pred", image=img)
+        # default range (0, 1): wandb.Image gets the original values back
+        arr = self.mock_image.call_args[0][0]
+        # After NCHW→NHWC + first-sample, shape is (4, 4, 3); values stay 0.5.
+        assert arr.shape == (4, 4, 3)
+        assert abs(float(arr.mean()) - 0.5) < 1e-6

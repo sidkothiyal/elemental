@@ -9,3 +9,13 @@ mode: ${mode}
 results_dir: ${results_dir}
 resume_training: ${oc.select:resume_training,false}
 load_checkpoint_path: ${oc.select:load_checkpoint_path,null}
+# Visual logging knobs.
+# - video_value_range: range of 5-D video tensors in the data container.
+#     Defaults to BVI-AOM convention (-1, 1); set to (0, 1) for datasets that
+#     do not symmetrically normalise.
+# - image_value_range: range of 4-D image tensors. (0, 1) preserves historical
+#     behaviour; image AEs whose data is in (-1, 1) should override.
+video_fps: 8
+video_value_range: [-1.0, 1.0]
+max_videos_per_log: 1
+image_value_range: [0.0, 1.0]

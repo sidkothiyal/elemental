@@ -114,7 +114,7 @@ python src/trainer.py experiment/autoencoder/compression_ae \
 
 ### `wandb_callback.py` — Weights & Biases logging
 
-Logs scalars, images, text, and 3D point clouds to W&B.
+Logs scalars, images, video clips, text, and 3D point clouds to W&B.
 
 **Features**:
 - Logs visual data at configurable `logging_interval` steps
@@ -122,11 +122,18 @@ Logs scalars, images, text, and 3D point clouds to W&B.
 - Supports classification mode (shows target/pred labels in image captions)
 - Text decoding via tokenizer for language model runs
 - 3D point cloud / line logging via Plotly
+- Auto-routes 5-D `(B, T, C, H, W)` tensors to `wandb.Video` (denormalises
+  `video_value_range` → uint8 `[0, 255]`, configurable `video_fps`)
+- Configurable `image_value_range` for images normalised outside `[0, 1]`
 - Selective logging via `to_log` list (logs all keys by default)
 - `field_loggers` dict to override per-key logging method
+- Warns once per key (instead of silently dropping) on unsupported tensor shapes
 - Auto-resume: saves run ID to file, resumes W&B run on `resume_training: true`
 
-**When to use**: Include in all runs. Configure `log_text_data: true` for language models.
+**When to use**: Include in all runs. Configure `log_text_data: true` for
+language models. For video AEs the defaults
+(`video_value_range: [-1, 1]`, `video_fps: 8`) match BVI-AOM and
+`clip_length: 8`, so no overrides are required.
 
 ```yaml
 _target_: callback.wandb_callback.WandbCallback

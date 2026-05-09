@@ -108,11 +108,19 @@ For each key in `_to_log` (or default keys):
 1. `_dispatch_field_logger()` — custom logger for point3d / line3d
 2. `_log_dict_scalars()` — dict of scalars → wandb.log()
 3. `_log_text()` — tokenizer.decode → wandb table (if log_text_data)
-4. `_log_image()` — numpy conversion → wandb.Image
+4. `_log_image()` — auto-routes 5-D tensors to `_log_video()`; otherwise numpy conversion → wandb.Image
 
 ### Image Handling
 
-Tensors are moved to numpy via `torch_np_utils.to_numpy()`, transposed NCHW→NHWC, first sample extracted. Multi-channel class-index outputs (when `num_classes` is set) are converted to RGB using `_class_colors`.
+Tensors are moved to numpy via `torch_np_utils.to_numpy()`, transposed NCHW→NHWC, first sample extracted. Multi-channel class-index outputs (when `num_classes` is set) are converted to RGB using `_class_colors`. Natural-image branches map `image_value_range` → `[0, 1]` float via `_denormalize_to_unit_float()` (no-op when range is `(0, 1)`).
+
+### Video Handling
+
+5-D `(B, T, C, H, W)` tensors are auto-detected at the top of `_log_image()` and forwarded to `_log_video()`. The first `max_videos_per_log` clips are denormalised from `video_value_range` (e.g. `(-1, 1)` for BVI-AOM) to `uint8 [0, 255]` via `_denormalize_to_uint8()`, then passed to `wandb.Video(arr, fps=video_fps)` in NTCHW layout. bf16 inputs are upcast to fp32 before the numpy hop.
+
+### Unsupported Shapes
+
+Anything that lands in `_log_image()` with `ndim ∉ {2, 3, 4, 5}` triggers `_warn_unsupported_shape(tag)` — one log line per key per run, then a silent skip. Replaces the older silent-drop behaviour.
 
 ### 3D Logging
 
