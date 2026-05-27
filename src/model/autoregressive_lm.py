@@ -1,11 +1,11 @@
 """Autoregressive language model."""
 
 import torch
-import torch.nn as nn
-from torch.nn import functional as F
+from torch import nn
 from transformers import AutoTokenizer
 
 from model.transformer import Transformer
+from utils.sampling import sample_next_token
 
 # from transformers import AutoModel
 
@@ -106,15 +106,23 @@ class AutoregressiveLM(nn.Module):
 
         return logits
 
-    def generate(self, input_ids: torch.Tensor, max_new_tokens: int):
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int,
+        *,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        top_p: float | None = None,
+    ):
         """Generate text."""
         for _ in range(max_new_tokens):
             input_ids = input_ids[:, -self.max_length :]
             logits = self(input_ids, training=False)
-            logits = logits[:, -1, :]
-            probs = F.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            input_ids = torch.cat([input_ids, next_token], dim=1)
+            next_token, _ = sample_next_token(
+                logits[:, -1, :], temperature=temperature, top_k=top_k, top_p=top_p
+            )
+            input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=1)
         return input_ids
 
 

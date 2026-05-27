@@ -1,0 +1,57 @@
+# Default training configuration - base values shared across all experiments
+
+# Training parameters
+lr: 0.0001
+num_epochs: 100
+test: false
+batch_size: 64
+seed: 42
+
+# Device configuration
+device: "gpu"
+# Use channels_last (NHWC) memory format on CUDA for image workloads.
+# Eliminates NCHW↔NHWC layout conversions inside cuDNN.
+# Only applies to 4D tensors after batching; no effect on CPU or non-image tasks.
+channels_last: true
+# Auto-tune cuDNN conv algorithm per (input size, kernel, layout).
+# Best for fixed-size inputs. Adds warmup cost on first batch.
+cudnn_benchmark: true
+
+# Optional parameters (set to null if not used)
+# Interval (in epochs) at which torch.cuda.empty_cache() is called to defragment GPU memory.
+# 0 = disabled (recommended for most runs); n = runs every n epochs.
+cuda_empty_cache_interval: 0
+validation_interval: 5
+gradient_accumulation_steps: 1
+clip_grad_norm: null
+dtype: null
+
+# Default optimizer and scheduler (trainer.py uses these strings with getattr)
+optimizer: "AdamW"
+lr_scheduler: "CosineAnnealingLR"
+lr_scheduler_params:
+  T_max: ${num_epochs}
+
+# Checkpoint loading (optional)
+load_checkpoint_path: null
+load_keys: null
+strict: true
+resume_training: false
+
+# Post-processor pipeline (null disables post-processing)
+postprocessors: null
+
+# Controls which data-container keys WandbCallback logs (null = log everything)
+to_log: null
+
+# Profiler configuration (null disables profiling)
+profiler: null
+
+# Remote backup strategy (null disables remote backup)
+remote_backup: null
+
+# Trial budget (autoresearch / hyperparameter search). Both null = no limit.
+# max_steps: hard cap on global step count; short-circuits the epoch loop.
+# max_wall_time_sec: wall-clock cap in seconds from train() entry.
+max_steps: null
+max_wall_time_sec: null

@@ -1,0 +1,50 @@
+# @package _global_
+# Simple convolutional VQ-VAE: same ConvBlock encoder + UpsampleBlock decoder as
+# simple_autoencoder, but wrapped in VQVAE with a vector-quantization bottleneck.
+# The codebook_dim must match the encoder output channels (256).
+model:
+  _target_: model.autoencoder.VQVAE
+  codebook_size: 1024
+  codebook_dim: 256   # must match encoder output channels
+
+  # Smart-init the codebook from real encoder activations rather than random
+  # noise. Particularly important when finetuning from a pretrained encoder:
+  # activations are meaningful from step 0, so seeded codes start near the
+  # actual data manifold and dead-code rate stays low.
+  quantizer_kwargs:
+    smart_init_enabled: true
+    smart_init_steps: 500              # longer init phase when encoder is pretrained
+    smart_init_initial_resample_pct: 0.5
+    smart_init_final_resample_pct: 0.0
+    codebook_revival_enabled: true
+    codebook_revival_threshold: 2
+    use_ema: true
+    ema_decay: 0.99
+    diversity_loss_enabled: true
+    diversity_loss_weight: 0.1
+
+  encoder:
+    _target_: model.blocks.conv_block.ConvBlock
+    in_channels: 3
+    channels: [64, 128, 256]
+    kernel_sizes: [3, 3, 3]
+    strides: [2, 2, 2]
+    paddings: [1, 1, 1]
+
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.upsample_block.UpsampleBlock
+        scale_factors: [2.0, 2.0, 2.0]
+        modes: bilinear
+        in_channels: 256
+        channels: [128, 64, 32]
+        kernel_sizes: [3, 3, 3]
+        paddings: [1, 1, 1]
+      # Final projection to RGB (no norm/activation)
+      - _target_: torch.nn.Conv2d
+        in_channels: 32
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1

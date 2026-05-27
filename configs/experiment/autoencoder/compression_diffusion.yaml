@@ -1,0 +1,41 @@
+# @package _global_
+# Compression Autoencoder using Diffusion model
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_diffusion
+
+defaults:
+  - /default
+  - /dataset: div2k_diffusion
+  - /model: diffusion_unet
+  - /loss: l1
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_autoencoder_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.0003
+num_epochs: 5000
+validation_interval: 500
+batch_size: 32
+clip_grad_norm: 1.0
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override specific callback values (by name)
+callbacks:
+  wandb:
+    logging_interval: 500
+  checkpoint:
+    save_every_n_epochs: 10

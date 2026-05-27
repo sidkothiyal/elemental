@@ -1,0 +1,84 @@
+# Metrics callback configuration
+# Tracks and logs metrics during training using TorchMetrics
+#
+# data_range = 2.0 because both DIV2K and BVI-AOM datasets normalise pixels to
+# [-1, 1] (see dataset.div2k_dataset.DIV2KDataset and
+# dataset.bvi_aom_dataset.BviAomDataset). Older runs that used data_range=1.0
+# under-reported PSNR by ~6 dB and computed SSIM/MSE with the wrong constants.
+
+_target_: callback.metrics_callback.MetricsCallback
+
+# Metrics to track - define as dict of name -> metric config
+# These will be wrapped in a MetricCollection
+#
+# All metrics inherit from BaseMetric and support optional extended statistics:
+#   compute_min: false        # minimum per-sample value
+#   compute_max: false        # maximum per-sample value
+#   compute_std: false        # standard deviation of per-sample values
+#   compute_median: false     # median per-sample value
+#   compute_percentiles: []   # e.g. [5.0, 95.0] for 5th/95th percentile
+#   compute_histogram: false  # histogram of per-sample value distribution
+#   num_buckets: 50           # target number of histogram buckets
+#   min_bucket_size: 0.0      # merge buckets narrower than this (0 = disabled)
+#
+# When any extended stat is enabled, the metric returns a dict with sub-keys
+# logged as "<phase>/<metric_name>/mean", "<phase>/<metric_name>/min", etc.
+# Histograms are logged as native wandb.Histogram objects.
+metrics:
+  mse:
+    _target_: metrics.mse.MSE
+    data_range: 2.0
+    normalize: false
+    # compute_min: false
+    # compute_max: false
+    # compute_std: false
+    # compute_median: false
+    # compute_percentiles: []
+    # compute_histogram: false
+    # num_buckets: 50
+    # min_bucket_size: 0.0
+  psnr:
+    _target_: metrics.psnr.PSNR
+    data_range: 2.0
+    # compute_min: false
+    # compute_max: false
+    # compute_std: false
+    # compute_median: false
+    # compute_percentiles: []
+    # compute_histogram: false
+    # num_buckets: 50
+    # min_bucket_size: 0.0
+  ssim:
+    _target_: metrics.ssim.SSIM
+    data_range: 2.0
+    win_size: 11
+    win_sigma: 1.5
+    # compute_min: false
+    # compute_max: false
+    # compute_std: false
+    # compute_median: false
+    # compute_percentiles: []
+    # compute_histogram: false
+    # num_buckets: 50
+    # min_bucket_size: 0.0
+
+# Phases to track metrics for with computation frequency
+# Key: phase name (train/val/test)
+# Value: compute metrics every nth epoch (1 = every epoch, 2 = every other, etc.)
+phases:
+  train: 250  # Compute training metrics every 250 epochs (saves computation)
+  val: 10    # Compute validation metrics every 10 epochs
+  test: 1    # Compute test metrics every epoch
+
+# Whether to log metrics per batch (can be expensive)
+log_per_batch: false
+
+# Keys into the unified data container passed to on_batch_end
+pred_key: pred
+target_key: target
+
+# Optional transforms for predictions/targets before metric computation
+# Set to null to disable
+# Example: for classification, you might use a lambda or partial to apply argmax
+transform_pred: null
+transform_target: null

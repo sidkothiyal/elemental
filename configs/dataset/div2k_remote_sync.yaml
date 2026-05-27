@@ -1,0 +1,28 @@
+# @package _global_
+# DIV2K dataset with remote directory sync (Approach 1 — sync mode)
+# Entire remote directory is rsync'd to local cache before training starts.
+# Simpler than stream mode; supports incremental sync on restart.
+#
+# Requires: remote_config.remote_root pointing to a machine/bucket with the DIV2K data.
+
+defaults:
+  - div2k
+  - _self_
+
+dataloader:
+  train:
+    dataset:
+      remote_config:
+        mode: sync
+        protocol: ssh  # or s3
+        remote_root: "user@storage-host:/datasets/div2k/train"
+        cache_dir: /tmp/elemental_cache/div2k/train
+        ssh_key_path: ~/.ssh/id_rsa
+  val:
+    dataset:
+      remote_config:
+        mode: sync
+        protocol: ssh
+        remote_root: "user@storage-host:/datasets/div2k/val"
+        cache_dir: /tmp/elemental_cache/div2k/val
+        ssh_key_path: ~/.ssh/id_rsa

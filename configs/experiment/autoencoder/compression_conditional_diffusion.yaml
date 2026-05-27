@@ -1,0 +1,127 @@
+# @package _global_
+# Conditional Diffusion model for image compression on DIV2K
+# Uses CNN-based conditional model and encoder/decoder
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_conditional_diffusion
+
+defaults:
+  - /default
+  - /dataset: div2k_diffusion
+  - /loss: l1
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_autoencoder_conditional_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.0003
+num_epochs: 5000
+validation_interval: 500
+batch_size: 24
+clip_grad_norm: 1.0
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 500
+  checkpoint:
+    save_every_n_epochs: 10
+  metrics:
+    pred_key: "pred/pred_x0"
+
+# DenoisingDiffusionModel returns a dict; point loss at the x0 prediction
+loss:
+  losses:
+    main:
+      pred_key: "pred/pred_x0"
+
+to_log:
+  - input/input
+  - input/cond
+  - target
+  - pred/pred_x0
+
+model_input_args:
+  - "t"
+  - "cond"
+
+model:
+  _target_: model.diffusion.DenoisingDiffusionModel
+  use_timestep_embedding: true
+  timestep_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: torch.nn.Embedding
+        num_embeddings: 1000
+        embedding_dim: 64
+  prediction_type: "x0"
+  conditional_model:
+    _target_: model.blocks.conv_block.ConvBlock
+    in_channels: 3
+    channels: [32, 64, 128, 256, 512]
+    kernel_sizes: [3, 3, 3, 3, 3]
+    strides: [2, 2, 2, 2, 2]
+    paddings: [1, 1, 1, 1, 1]
+  model:
+    _target_: model.autoencoder.ConditionalAutoencoder
+    encoder:
+      _target_: model.combiner.DiffusionCombiner
+      model:
+        _target_: model.blocks.conv_block.ConvBlock
+        in_channels: 3
+        channels: [32, 64, 128, 256, 512]
+        kernel_sizes: [3, 3, 3, 3, 3]
+        strides: [2, 2, 2, 2, 2]
+        paddings: [1, 1, 1, 1, 1]
+      time_mlp: null
+      aux_features_combiner: null
+    decoder:
+      _target_: model.combiner.DiffusionCombiner
+      model:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: model.blocks.convtranspose_block.ConvTransposeBlock
+            in_channels: 512
+            channels: [256, 128, 64, 32, 16]
+            kernel_sizes: [2, 2, 2, 2, 2]
+            strides: [2, 2, 2, 2, 2]
+            paddings: [0, 0, 0, 0, 0]
+            output_paddings: [0, 0, 0, 0, 0]
+          - _target_: torch.nn.Conv2d
+            in_channels: 16
+            out_channels: 3
+            kernel_size: 3
+            stride: 1
+            padding: 1
+      time_mlp:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.SiLU
+          - _target_: torch.nn.Linear
+            in_features: 64
+            out_features: 1024
+      aux_features_combiner:
+        _target_: model.combiner.Combiner
+        combiner:
+          _target_: model.nn_modules.Concat
+          axis: 1
+        model:
+          _target_: torch.nn.Conv2d
+          in_channels: 1024
+          out_channels: 512
+          kernel_size: 3
+          stride: 1
+          padding: 1

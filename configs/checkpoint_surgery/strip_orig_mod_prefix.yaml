@@ -1,0 +1,4 @@
+checkpoint_surgery:
+  rename_rules:
+    - old: "_orig_mod."
+      new: ""

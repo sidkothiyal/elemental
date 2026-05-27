@@ -1,0 +1,31 @@
+# @package _global_
+# DIV2K dataset with remote file streaming (Approach 1 — stream mode)
+# Files are downloaded on-the-fly and cached locally.
+# First epoch downloads + trains simultaneously; subsequent epochs use cache.
+#
+# Requires: remote_config.remote_root pointing to a machine/bucket with the DIV2K data.
+# Supported protocols: ssh, s3, http
+
+defaults:
+  - div2k
+  - _self_
+
+dataloader:
+  train:
+    dataset:
+      remote_config:
+        mode: stream
+        protocol: ssh  # or s3, http
+        remote_root: "user@storage-host:/datasets/div2k/train"
+        cache_dir: /tmp/elemental_cache/div2k/train
+        ssh_key_path: ~/.ssh/id_rsa
+        prefetch_workers: 4
+  val:
+    dataset:
+      remote_config:
+        mode: stream
+        protocol: ssh
+        remote_root: "user@storage-host:/datasets/div2k/val"
+        cache_dir: /tmp/elemental_cache/div2k/val
+        ssh_key_path: ~/.ssh/id_rsa
+        prefetch_workers: 4

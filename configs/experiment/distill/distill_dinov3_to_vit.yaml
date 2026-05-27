@@ -1,0 +1,40 @@
+# @package _global_
+# Feature distillation — frozen DINOv3-s16 teacher into a smaller ViT student
+# on DIV2K images. Only the student is trained; the teacher acts as a fixed
+# feature extractor. The per-batch graph is defined in
+# configs/graph/distill_per_batch.yaml.
+#
+# Usage: python src/trainer.py experiment/distill/distill_dinov3_to_vit
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: distill_dinov3_to_vit
+  - /loss: distillation
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /graph: distill_per_batch
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: distill_dinov3_to_vit_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/distill/
+
+mode: "customizable"
+
+lr: 0.0003
+num_epochs: 200
+validation_interval: 25
+batch_size: 16
+target_shape: [224, 224]  # match student patch grid (14×14 @ patch_size=16)
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Trainer emits the graph's scalar outputs keyed by name; rename for display.
+metrics_format:
+  distillation: distillation_loss

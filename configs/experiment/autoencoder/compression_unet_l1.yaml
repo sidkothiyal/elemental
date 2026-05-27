@@ -1,0 +1,39 @@
+# @package _global_
+# Compression Autoencoder using UNet with L1 loss
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_unet_l1
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: unet_compression
+  - /loss: l1
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_autoencoder_unet_l1_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.0003
+num_epochs: 200
+validation_interval: 25
+batch_size: 64
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 100
+  checkpoint:
+    save_every_n_epochs: 10

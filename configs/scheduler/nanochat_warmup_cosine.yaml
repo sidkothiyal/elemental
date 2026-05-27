@@ -1,0 +1,14 @@
+# @package _global_
+# Linear warmup → cosine decay → floor at min_lr_ratio.
+# Steps refer to OPTIMIZER steps, so it pairs with ``scheduler_step_per: batch``.
+warmup_steps: 1000
+total_steps: 100000
+min_lr_ratio: 0.1
+
+lr_scheduler:
+  _target_: optimizer.schedulers.WarmupCosineLR
+  warmup_steps: ${warmup_steps}
+  total_steps: ${total_steps}
+  min_lr_ratio: ${min_lr_ratio}
+
+scheduler_step_per: batch

@@ -1,0 +1,12 @@
+# Trial summary callback — opt-in for autoresearch / hyperparameter search.
+#
+# Usage:
+#   python src/trainer.py experiment/autoencoder/compression_ae \
+#     '+callbacks.trial_summary._target_=callback.trial_summary_callback.TrialSummaryCallback' \
+#     max_steps=200 --no-remote-logging
+#
+# Writes results/<mode>/<experiment>/trial_summary.json at run end with
+# status, metrics, best values, step timing, and peak GPU memory.
+# NOT included in default.yaml — zero overhead for normal training runs.
+
+_target_: callback.trial_summary_callback.TrialSummaryCallback

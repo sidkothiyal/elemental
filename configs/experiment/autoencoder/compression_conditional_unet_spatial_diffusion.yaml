@@ -1,0 +1,264 @@
+# @package _global_
+# Conditional Diffusion model for image compression with SPATIAL conditioning
+# Uses Router with backbone mirroring UNet encoder and heads producing
+# multi-resolution features that are concatenated with UNet features.
+#
+# Key difference from cross-attention configs:
+# - conditioning_mode: "concat" - concatenate spatial features instead of cross-attention
+# - Router backbone mirrors UNet encoder's downsampling structure
+# - Each head upsamples bottleneck features to match corresponding UNet level's resolution
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_conditional_unet_spatial_diffusion
+
+defaults:
+  - /default
+  - /loss: l1
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_autoencoder_conditional_unet_spatial_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+resume_training: true
+load_checkpoint_path: latest
+
+# Custom dataset with 960 width for transformer patches
+target_shape: [640, 960]
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/train
+        target_shape: ${target_shape}
+      prediction_type: "x0"
+      noise_schedule: "cosine"
+      timestep_bias: "loss_aware"
+      timestep_loss:
+        _target_: torch.nn.L1Loss
+        reduction: "none"
+      loss_ema_decay: 0.99
+      loss_aware_warmup: 500
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/val
+        target_shape: ${target_shape}
+      prediction_type: "x0"
+      noise_schedule: "cosine"
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+  test:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/val
+        target_shape: ${target_shape}
+      prediction_type: "x0"
+      noise_schedule: "cosine"
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+
+# Training overrides
+lr: 0.0003
+num_epochs: 10000
+validation_interval: 500
+batch_size: 4
+gradient_accumulation_steps: 4
+clip_grad_norm: 1.0
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 500
+  checkpoint:
+    save_every_n_epochs: 10
+  metrics:
+    pred_key: "pred/pred_x0"
+
+# DenoisingDiffusionModel returns a dict; point loss at the x0 prediction
+loss:
+  losses:
+    main:
+      pred_key: "pred/pred_x0"
+
+to_log:
+  - input/input
+  - input/cond
+  - target
+  - pred/pred_x0
+
+model_input_args:
+  - "t"
+  - "cond"
+
+model:
+  _target_: model.diffusion.DenoisingDiffusionModel
+  timestep_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: torch.nn.Embedding
+        num_embeddings: 1000
+        embedding_dim: 128
+  prediction_type: "x0"
+  noise_schedule: "cosine"
+  data_normalized_minus1_1: true
+  # Inference parameters
+  inference_method: "ddim"
+  start_timestep: 999
+  num_denoising_steps: 250
+  denoising_delta: 0.00001
+  # Debug settings
+  debug_dir: debug/compression_conditional_unet_spatial_diffusion/
+  debug_mode: false
+  debug_save_interval: 10
+  direct_prediction: false
+  conditional_model:
+    _target_: model.router.Router
+    backbone:
+      # Mirror UNet encoder: 5 stages of 2x downsampling (32x total)
+      # Input: [640, 960] → Output: [20, 30] with 192 channels
+      _target_: model.blocks.conv_block.ConvBlock
+      in_channels: 3
+      channels: [12, 24, 48, 96, 192]  # Same as UNet encoder channels
+      kernel_sizes: [3, 3, 3, 3, 3]
+      strides: [2, 2, 2, 2, 2]  # 32x total downsampling
+      paddings: [1, 1, 1, 1, 1]
+    heads:
+      # Each head upsamples bottleneck features to match UNet level's spatial resolution
+      # Bilinear upsample + 1x1 conv to adjust channels
+      # Level 0: needs [640, 960] spatial (original resolution)
+      level_0:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Upsample
+            scale_factor: 32.0
+            mode: "bilinear"
+          - _target_: torch.nn.Conv2d
+            in_channels: 192
+            out_channels: 192
+            kernel_size: 1
+      # Level 1: needs [320, 480] spatial (2x downsampled from original)
+      level_1:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Upsample
+            scale_factor: 16.0
+            mode: "bilinear"
+          - _target_: torch.nn.Conv2d
+            in_channels: 192
+            out_channels: 192
+            kernel_size: 1
+      # Level 2: needs [160, 240] spatial (4x downsampled from original)
+      level_2:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Upsample
+            scale_factor: 8.0
+            mode: "bilinear"
+          - _target_: torch.nn.Conv2d
+            in_channels: 192
+            out_channels: 192
+            kernel_size: 1
+      # Level 3: needs [80, 120] spatial (8x downsampled from original)
+      level_3:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Upsample
+            scale_factor: 4.0
+            mode: "bilinear"
+          - _target_: torch.nn.Conv2d
+            in_channels: 192
+            out_channels: 192
+            kernel_size: 1
+      # Level 4: needs [40, 60] spatial (16x downsampled from original)
+      level_4:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Upsample
+            scale_factor: 2.0
+            mode: "bilinear"
+          - _target_: torch.nn.Conv2d
+            in_channels: 192
+            out_channels: 192
+            kernel_size: 1
+      # Level 5 (bottleneck): needs [20, 30] spatial (32x downsampled - same as backbone output)
+      level_5:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Conv2d
+            in_channels: 192
+            out_channels: 192
+            kernel_size: 1
+    rename_backbone_input:
+      x: "cond"
+    rename_head_input:
+      level_0:
+        x: "backbone"
+      level_1:
+        x: "backbone"
+      level_2:
+        x: "backbone"
+      level_3:
+        x: "backbone"
+      level_4:
+        x: "backbone"
+      level_5:
+        x: "backbone"
+  model:
+    _target_: model.unet.UNet
+    in_channels: 3
+    out_channels: 3
+    channels: [12, 24, 48, 96, 192, 192]
+    skip_first_connection: false
+    checkpoint_blocks: null
+    checkpoint_modules: null
+    checkpoint_use_reentrant: false
+    use_conditional_blocks: true
+    time_embed_dim: 128
+    cond_embed_dim: 192  # Matches head output channels
+    num_groups: [1, 6, 6, 6, 6]
+    dropout: 0.2
+    # Spatial conditioning: concatenate features instead of cross-attention
+    conditioning_mode: "concat"
+    use_cross_attn: false  # Not used for spatial conditioning
+    cross_attn_num_heads: 1  # Not used for spatial conditioning
+    # Map each UNet level to corresponding Router head
+    cond_level_mapping:
+      0: "level_0"  # Encoder block 0
+      1: "level_1"  # Encoder block 1
+      2: "level_2"  # Encoder block 2
+      3: "level_3"  # Encoder block 3
+      4: "level_4"  # Encoder block 4
+      5: "level_5"  # Bottleneck

@@ -1,0 +1,22 @@
+# @package _global_
+# CPU-only profiling — ~1-3% overhead
+# Good for: CI/nightly runs, quick op timing
+profiler:
+  enabled: true
+  activities:
+    - CPU
+  schedule:
+    wait: 1          # skip first step (JIT warmup noise)
+    warmup: 1        # start tracing but discard
+    active: 3        # record these steps
+    repeat: 1        # single cycle then stop
+  record_shapes: false
+  profile_memory: false
+  with_stack: false
+  with_flops: false
+  output:
+    print_table: true
+    table_sort_by: "cpu_time_total"
+    table_row_limit: 20
+    export_chrome_trace: true
+    tensorboard: false

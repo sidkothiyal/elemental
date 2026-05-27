@@ -1,0 +1,21 @@
+# @package _global_
+# L1 + LPIPS perceptual loss.
+#
+# L1 keeps low-frequency colour/structure correct; LPIPS (Zhang et al. 2018)
+# adds the human-perceptual texture/sharpness signal that pure pixel losses
+# (MSE/SSIM) are missing — the single biggest reconstruction-quality win for
+# image autoencoders.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    l1:
+      _target_: loss.loss_container.LossComponent
+      weight: 1.0
+      loss_fn:
+        _target_: torch.nn.L1Loss
+    perceptual:
+      _target_: loss.loss_container.LossComponent
+      weight: 1.0
+      loss_fn:
+        _target_: loss.lpips_loss.LPIPSLoss
+        net: vgg

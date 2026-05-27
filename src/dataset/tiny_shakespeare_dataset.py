@@ -1,18 +1,34 @@
+"""Dataset for the Tiny Shakespeare character-level language modelling corpus."""
+
 import pathlib
 
 import dill
 import lz4.frame as lz4
-from torch.utils.data import Dataset
+
+from dataset.base_dataset import BaseDataset
 
 
-class TinyShakespeareDataset(Dataset):
-    def __init__(self, dataset_dir: str, split: str, block_size: int):
+class TinyShakespeareDataset(BaseDataset):
+    """Character-level dataset built from the Tiny Shakespeare text file."""
+
+    def __init__(
+        self,
+        dataset_dir: str,
+        split: str,
+        block_size: int,
+        remote_config: dict | None = None,
+    ):
+        super().__init__(remote_config=remote_config)
         self.dataset_dir = pathlib.Path(dataset_dir)
         self.split = split
         self.block_size = block_size
 
-        split_dataset_dir = self.dataset_dir / f"{split}_data.pkl.lz4"
-        with lz4.open(split_dataset_dir, "rb") as f:
+        # For sync mode, point dataset_dir at the local cache
+        if self.is_remote and self.remote_mode == "sync":
+            self.dataset_dir = self.remote_root_as_local()
+
+        split_dataset_path = self.resolve_path(self.dataset_dir / f"{split}_data.pkl.lz4")
+        with lz4.open(split_dataset_path, "rb") as f:
             self.chars, self.stoi, self.itos, self.data = dill.load(f)
 
     def __len__(self):

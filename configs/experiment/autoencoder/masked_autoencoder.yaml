@@ -1,0 +1,36 @@
+# @package _global_
+# Masked Autoencoder on Cityscapes
+#
+# Usage: python src/trainer.py experiment/autoencoder/masked_autoencoder
+
+defaults:
+  - /default
+  - /dataset: cityscapes_autoencoder
+  - /model: masked_autoencoder
+  - /loss: masked_loss
+  - /optimizer: adam
+  - /scheduler: step_lr
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: masked_autoencoder_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/masked_autoencoder/
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.0005
+num_epochs: 1000
+batch_size: 64
+
+# Scheduler params override
+lr_scheduler_params:
+  step_size: 20
+  gamma: 0.90
+
+# Override checkpoint callback to save less frequently
+callbacks:
+  checkpoint:
+    save_every_n_epochs: 50

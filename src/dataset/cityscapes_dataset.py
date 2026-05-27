@@ -5,8 +5,10 @@ import numpy as np
 import torch
 from torch.utils import data
 
+from dataset.base_dataset import BaseDataset
 
-class CityscapesDataset(data.Dataset):
+
+class CityscapesDataset(BaseDataset):
     """Cityscapes dataset."""
 
     def __init__(
@@ -16,6 +18,7 @@ class CityscapesDataset(data.Dataset):
         depth_enabled: bool = True,
         segmentation_class_id_mapping: dict[int, int] | None = None,
         rename_output_keys: dict[str, str] | None = None,
+        remote_config: dict | None = None,
     ):
         """Cityscapes dataset constructor.
 
@@ -24,7 +27,9 @@ class CityscapesDataset(data.Dataset):
             segmentation_enabled: Whether to load the segmentation masks.
             depth_enabled: Whether to load the depth maps.
             class_id_mapping: Mapping of class ids.
+            remote_config: Optional remote storage configuration.
         """
+        super().__init__(remote_config=remote_config)
         self.root_dir = pathlib.Path(root_dir)
         self.segmentation_enabled = segmentation_enabled
         self.depth_enabled = depth_enabled
@@ -34,11 +39,19 @@ class CityscapesDataset(data.Dataset):
 
         self.rename_output_keys = rename_output_keys
 
+        # For sync mode, point root_dir at the local cache
+        if self.is_remote and self.remote_mode == "sync":
+            self.root_dir = self.remote_root_as_local()
+
         self.image_dir = self.root_dir / "image"
         self.seg_mask_dir = self.root_dir / "label"
         self.depth_dir = self.root_dir / "depth"
 
-        self.images = list(self.image_dir.glob("*.npy"))
+        # Discover image files
+        self.images = self.list_files(self.image_dir, "*.npy")
+
+        # Prefetch all files (images + labels + depth share names)
+        self.start_prefetch(self._all_file_paths())
 
     def __len__(self):
         """Get the length of the dataset."""
@@ -53,17 +66,25 @@ class CityscapesDataset(data.Dataset):
             item_data[new_key] = item_data[old_key]
         return item_data
 
+    def _all_file_paths(self) -> list[pathlib.Path]:
+        """Build complete list of files to prefetch (all subdirs)."""
+        paths = list(self.images)
+        for img_path in self.images:
+            paths.append(self.seg_mask_dir / img_path.name)
+            paths.append(self.depth_dir / img_path.name)
+        return paths
+
     def __getitem__(self, idx) -> dict[str, torch.Tensor]:
         """Get an item from the dataset.
 
         Args:
             idx: Index of the item to get.
         """
-        image_path = self.images[idx]
+        image_path = self.resolve_path(self.images[idx])
         file_name = image_path.name
 
-        seg_mask_path = self.seg_mask_dir / file_name
-        depth_path = self.depth_dir / file_name
+        seg_mask_path = self.resolve_path(self.seg_mask_dir / file_name)
+        depth_path = self.resolve_path(self.depth_dir / file_name)
 
         image = np.load(image_path).transpose(2, 0, 1)
         seg_mask = np.load(seg_mask_path)

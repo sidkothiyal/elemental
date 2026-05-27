@@ -1,0 +1,68 @@
+# @package _global_
+# Next-frame prediction on Open X-Embodiment images.
+#
+# Uses a pretrained compression autoencoder (encoder + decoder) with a learnable
+# combiner that aggregates N context-frame latents to predict the next frame.
+#
+# Usage:
+#   # First train the compression AE:
+#   python src/trainer.py experiment/autoencoder/compression_ae_oxe
+#
+#   # Then train the frame predictor (set pretrained_checkpoint):
+#   python src/trainer.py experiment/autoencoder/frame_prediction_oxe \
+#       model.pretrained_checkpoint=results/autoencoder/<run>/checkpoints/best.pt
+
+defaults:
+  - /default
+  - /dataset: open_x_embodiment_frame_prediction
+  - /model: frame_predictor
+  - /loss: phased_mse_ssim
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: frame_prediction_oxe_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+resume_training: true
+load_checkpoint_path: latest
+
+mode: "autoencoder"
+
+# ─── Dataset overrides ───────────────────────────────────────────────────────
+data_dir: data/open_x_embodiment/fractal20220817_data/0.1.0
+num_episodes: null
+
+# Context frames (must match model combiner num_frames)
+num_context_frames: 4
+# sequence_length = num_context_frames + 1
+sequence_length: 5
+
+# ─── Model overrides ─────────────────────────────────────────────────────────
+# Freeze encoder/decoder initially to train only the combiner, then unfreeze
+model:
+  pretrained_checkpoint: null   # SET THIS to your trained AE checkpoint path
+  freeze_encoder: true
+  freeze_decoder: true
+
+# ─── Training hyper-parameters ───────────────────────────────────────────────
+lr: 0.0003
+num_epochs: 1000
+validation_interval: 100
+batch_size: 32
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# ─── Callbacks ───────────────────────────────────────────────────────────────
+callbacks:
+  wandb:
+    logging_interval: 200
+  checkpoint:
+    save_every_n_epochs: 5

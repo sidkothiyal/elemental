@@ -1,0 +1,18 @@
+# @package _global_
+# VQ-GAN compression losses.
+#   * feature_matching = L1 + VGG perceptual (sharp + perceptually correct).
+#   * adversarial      = BCEWithLogits over the PatchGAN discriminator.
+# Trainer's GAN batch loop combines feature_matching + adversarial for the
+# generator and trains the discriminator with adversarial alone.
+loss:
+  feature_matching:
+    _target_: loss.weighted_loss.WeightedLoss
+    normalize_weights: false
+    weights: [1.0, 1.0]
+    loss_fns:
+      - _target_: torch.nn.L1Loss
+      - _target_: loss.lpips_loss.LPIPSLoss
+        net: vgg
+
+  adversarial:
+    _target_: torch.nn.BCEWithLogitsLoss

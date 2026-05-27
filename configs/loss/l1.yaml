@@ -1,0 +1,9 @@
+# @package _global_
+# L1/Mean Absolute Error loss
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.L1Loss

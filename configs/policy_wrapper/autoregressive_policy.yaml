@@ -1,0 +1,10 @@
+# @package policy_wrapper
+# Autoregressive LLM policy wrapper for GRPO/RLHF training.
+# Generates with temperature/top-p sampling, returns per-token log-probs and a
+# completion mask aligned with the first ``eos_token_id``.
+
+_target_: rl.autoregressive_policy_wrapper.AutoregressivePolicyWrapper
+max_new_tokens: 256
+temperature: 1.0
+top_p: 0.95
+eos_token_id: null  # set to the tokenizer's <|eot|> id in the experiment config

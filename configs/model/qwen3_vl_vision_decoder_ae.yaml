@@ -1,0 +1,108 @@
+# @package _global_
+# Qwen3-VL-2B vision encoder (frozen) + ViT-based decoder autoencoder.
+#
+# Encoder:  Qwen/Qwen3-VL-2B-Thinking  — vision tower only (model.model.visual)
+#   24 layers, 16 heads, 1024 dim — frozen feature extractor.  ~307 M params.
+#   The LLM decoder is never loaded (model_submodule extracts only the vision tower).
+#
+# Two extraction modes — switch by changing extract_layer and decoder embed_dim:
+#
+#   Mode A — pre-merge (default):
+#     extract_layer: null → last_hidden_state  →  2400 tokens × 1024 dim
+#     spatial_merge_size: 1,  decoder embed_dim: 1024
+#     Token-count ratio: 0.67× of input pixels  (960×640 input → 2400 tokens
+#     vs 3×960×640 ≈ 1.8 M values; this is NOT an information-theoretic
+#     compression ratio since each token is 1024-dim)
+#
+#   Mode B — post-merge (spatial_merge_size=2):
+#     extract_layer: "pooler_output" → pooler_output  →  600 tokens × 2048 dim
+#     spatial_merge_size: 2,  decoder embed_dim: 2048
+#     Token-count ratio: 1.33×
+#
+# Decoder matches encoder depth: 24 transformer layers, 1024 dim, 16 heads.
+#
+# Input key mapping:  processor outputs pixel_values + image_grid_thw;
+#   Qwen3-VL's vision forward expects hidden_states + grid_thw.
+#
+# Positional embeddings: Learnable2DPositionalEmbedding with 60×40 base grid.
+# The decoder is trained from scratch so the base grid just sets the init size.
+model:
+  _target_: model.autoencoder.HFVisionAutoencoder
+  patch_size: 16
+  spatial_merge_size: 1  # set to 2 when using extract_layer: "pooler_output"
+
+  encoder:
+    _target_: model.hf_vision.HFVisionEncoder
+    model_name: "Qwen/Qwen3-VL-2B-Thinking"
+    model_submodule: "model.visual"
+    processor_output_filter: ["pixel_values", "image_grid_thw"]
+    processor_to_model_key_map:
+      pixel_values: hidden_states
+      image_grid_thw: grid_thw
+    extract_layer: null  # null = last_hidden_state (pre-merge, 1024 dim)
+                         # "pooler_output" = post-merge, 2048 dim, set spatial_merge_size: 2
+                         # int (e.g. 11) = hidden_states[11] (intermediate block, 1024 dim)
+    torch_dtype: "bfloat16"
+    attn_implementation: "sdpa"
+    device_map: "auto"
+    freeze_model: true
+    interpolate_pos_encoding: false
+    processor_kwargs:
+      do_resize: false
+      do_center_crop: false
+
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.nn_modules.SpatialToTokens
+      - _target_: model.vit.ViT
+        embed_dim: 1024         # matches hidden_size (Mode A); use 2048 for Mode B
+        num_transformer_layers: 24
+        attn_heads: 16
+        ff_embed_dim: 4096
+        num_tokens: 2400
+        pos_embedding:
+          _target_: model.positional_embeddings.Learnable2DPositionalEmbedding
+          grid_size: [60, 40]
+          embed_dim: 1024
+        dropout: 0.0
+        attention_dropout: 0.0
+        bias: false
+        checkpoint_transformer_layers: "all"
+      - _target_: model.patcher_unpatcher.Unpatcher
+        image_size: [32, 960, 640]  # [unpatch_channels, 60×16, 40×16]
+        patch_size: [16, 16]
+        embed_dim: 1024
+        decoder_projection_dim: 32
+        conv_decoder:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: torch.nn.Conv2d
+              in_channels: 32
+              out_channels: 64
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 64
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 64
+              out_channels: 64
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 64
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 64
+              out_channels: 32
+              kernel_size: 3
+              padding: 1
+            - _target_: torch.nn.BatchNorm2d
+              num_features: 32
+            - _target_: torch.nn.GELU
+            - _target_: torch.nn.Conv2d
+              in_channels: 32
+              out_channels: 3
+              kernel_size: 3
+              padding: 1

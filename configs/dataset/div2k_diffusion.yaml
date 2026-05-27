@@ -1,0 +1,44 @@
+# @package _global_
+# DIV2K dataset wrapped for diffusion training
+dataset_name: div2k_diffusion
+target_shape: [640, 1024]
+prediction_type: "x0"
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/train
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: ${prediction_type}
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 6
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/val
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: ${prediction_type}
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 6
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  test: null

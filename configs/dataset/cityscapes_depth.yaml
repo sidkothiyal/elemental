@@ -1,0 +1,38 @@
+# @package _global_
+# Cityscapes dataset configuration for depth estimation
+dataset_name: cityscapes_depth
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.cityscapes_dataset.CityscapesDataset
+      root_dir: data/cityscapes/train
+      segmentation_enabled: false
+      depth_enabled: true
+      rename_output_keys:
+        depth: target
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 8
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.cityscapes_dataset.CityscapesDataset
+      root_dir: data/cityscapes/val
+      segmentation_enabled: false
+      depth_enabled: true
+      rename_output_keys:
+        depth: target
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 8
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  test: null

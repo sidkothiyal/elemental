@@ -1,0 +1,52 @@
+# @package _global_
+# Next-frame prediction model: pretrained AE encoder + combiner + AE decoder.
+# Encoder and decoder architecture must match the pretrained autoencoder.
+#
+# Default: matches simple_autoencoder.yaml (ConvBlock encoder, UpsampleBlock + Conv2d decoder).
+# Set pretrained_checkpoint to load weights from a trained compression AE.
+
+# Number of input context frames
+num_context_frames: 4
+
+model:
+  _target_: model.frame_predictor.FramePredictor
+
+  pretrained_checkpoint: null   # path to trained AE checkpoint
+  encoder_key: "0"              # key for encoder in checkpoint state_dict
+  decoder_key: "1,2"            # keys for decoder modules (upsample + final conv)
+  freeze_encoder: false
+  freeze_decoder: false
+
+  # Encoder — must match pretrained AE encoder architecture
+  encoder:
+    _target_: model.blocks.conv_block.ConvBlock
+    in_channels: 3
+    channels: [64, 128, 256]
+    kernel_sizes: [3, 3, 3]
+    strides: [2, 2, 2]
+    paddings: [1, 1, 1]
+
+  # Decoder — must match pretrained AE decoder architecture
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.upsample_block.UpsampleBlock
+        scale_factors: [2.0, 2.0, 2.0]
+        modes: bilinear
+        in_channels: 256
+        channels: [128, 64, 32]
+        kernel_sizes: [3, 3, 3]
+        paddings: [1, 1, 1]
+      - _target_: torch.nn.Conv2d
+        in_channels: 32
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1
+
+  # Combiner — aggregates N latent frames into one
+  combiner:
+    _target_: model.frame_predictor.LatentSequenceCombiner
+    mode: conv1d              # mean | last | conv1d | attention
+    num_frames: ${num_context_frames}
+    latent_channels: 256      # must match encoder output channels

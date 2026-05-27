@@ -1,0 +1,16 @@
+# @package _global_
+# LM pretraining loss: cross-entropy on next-token prediction.
+# The dataset already shifts (input = tokens[:-1], target = tokens[1:]), so we
+# use shift=0 — applying CE directly to logits and targets without re-slicing.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    cross_entropy:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.shifted_teacher_forcing.ShiftedTeacherForcing
+        shift: 0
+        ignore_index: -100
+      pred_key: pred
+      target_key: target
+      weight: 1.0

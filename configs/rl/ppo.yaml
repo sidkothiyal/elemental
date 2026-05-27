@@ -1,0 +1,20 @@
+# @package rl
+# Proximal Policy Optimization. Every knob here is a Hydra override, e.g.
+#   `rl.clip_range=0.1 rl.num_policy_epochs=8 rl.gae.gamma=0.995`
+
+_target_: rl.ppo.PPOAlgorithm
+
+steps_per_rollout: 128            # env-steps per env per RL iteration
+num_policy_epochs: 4              # passes over each rollout
+minibatch_size: 64
+
+clip_range: 0.2                   # PPO policy clipping ε
+value_clip_range: 0.2             # null disables value clipping
+target_kl: 0.02                   # null disables early-stop on KL divergence
+normalize_advantages: true
+deterministic_eval: true
+
+gae:
+  _target_: rl.advantages.GAEConfig
+  gamma: 0.99
+  lam: 0.95

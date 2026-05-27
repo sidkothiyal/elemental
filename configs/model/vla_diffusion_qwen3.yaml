@@ -1,0 +1,74 @@
+# @package _global_
+# VLA Diffusion model: frozen Qwen3-VL-2B conditioner + ActionDenoisingTransformer denoiser.
+# Expects action_dim, num_action_chunks, num_diffusion_timesteps, prediction_type, noise_schedule,
+# and timestep_embed_dim to be defined in the global config (e.g. from the dataset config or
+# experiment overrides).
+
+timestep_embed_dim: 256
+
+model_input_args:
+  - "t"
+  - "cond"
+
+model:
+  _target_: model.diffusion.DenoisingDiffusionModel
+
+  # -- Timestep embedding --
+  timestep_model:
+    _target_: model.timestep_embedding.SinusoidalTimestepEmbedding
+    dim: ${timestep_embed_dim}
+
+  # -- Conditional model: Frozen Qwen3-VL-2B VLM --
+  # Returns full sequence [B, seq_len, hidden_dim] for cross-attention in the transformer.
+  conditional_model:
+    _target_: model.vla_modules.VLAConditioner
+    vlm:
+      _target_: model.cached_module.CachedModule
+      max_memory_items: 0    # -1 = unlimited in-memory LRU cache, 0 is disabled
+      cache_dir: /home/siddharth/fast_storage/datasets/open-x-embodiment-qwen3-2b-vl-cached/
+      compress: false         # lz4-compress disk files (requires lz4 package)
+      module:
+        _target_: model.hf_llm.HFVLM
+        model_name: "Qwen/Qwen3-VL-2B-Thinking"
+        torch_dtype:
+          _target_: hydra.utils.get_object
+          _args_:
+            - torch.bfloat16
+        attn_implementation: "sdpa"
+        device_map: "auto"
+        freeze_model: true
+    vlm_hidden_dim: 2048  # VLM output hidden dim for eager projection layer init
+    projection_dim: 512   # Project VLM hidden to 512 for cross-attention
+    return_sequence: true # Return [B, L, D] for cross-attention (not mean-pooled)
+
+  # -- Denoising backbone: Diffusion transformer with cross-attention --
+  model:
+    _target_: model.vla_modules.ActionDenoisingTransformer
+    action_dim: ${action_dim}
+    num_chunks: ${num_action_chunks}
+    embed_dim: 512
+    cond_dim: 512         # Must match conditional_model.projection_dim
+    time_dim: ${timestep_embed_dim}
+    num_layers: 8
+    num_heads: 8
+    ff_ratio: 4
+    dropout: 0.0
+
+  clamp_predictions: false
+  # -- Diffusion settings --
+  num_timesteps: ${num_diffusion_timesteps}
+  prediction_type: ${prediction_type}
+  noise_schedule: ${noise_schedule}
+  data_normalized_minus1_1: true  # Actions are quantile-normalized to [-1, 1]
+
+  # -- Inference (eval) settings --
+  inference_method: "ddim"
+  start_timestep: 99        # num_diffusion_timesteps - 1
+  num_denoising_steps: 10
+  denoising_delta: 0.0001
+
+  # -- Debug --
+  debug_dir: debug/vla_diffusion_qwen3/
+  debug_mode: false
+  debug_save_interval: 10
+  direct_prediction: false

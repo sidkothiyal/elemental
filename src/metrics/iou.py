@@ -1,28 +1,51 @@
 """IoU metric."""
 # pylint: disable=no-member
 import torch
-from torchmetrics import Metric
+
+from metrics.base_metric import BaseMetric
 
 
-class IoU(Metric):
-    """IoU metric for segmentation tasks."""
+class IoU(BaseMetric):
+    """IoU metric for segmentation tasks.
+
+    IoU operates on per-class pixel statistics and does not produce a single
+    per-sample scalar, so the extended statistics (min, max, histogram, etc.)
+    from :class:`~metrics.base_metric.BaseMetric` are not supported. Enabling
+    any of the ``compute_*`` flags will raise a ``ValueError``.
+    """
 
     def __init__(
         self,
         num_classes: int,
         use_logits: bool = False,
+        **kwargs,
     ):
         """IoU metric for segmentation tasks.
 
         The expected shape of the predictions and targets are:
         - If `use_logits` is `True`: (N, C, H, W)
-        - If `use_logits` is `True`: (N, H, W)
+        - If `use_logits` is `False`: (N, H, W)
 
         Args:
             num_classes: Number of classes in the dataset.
             use_logits: Whether predictions are logits.
+            **kwargs: Keyword arguments forwarded to
+                :class:`~metrics.base_metric.BaseMetric`. All ``compute_*``
+                extended-statistics flags must remain ``False``.
+
+        Raises:
+            ValueError: If any extended-statistics flag is enabled.
         """
-        super().__init__()
+        extended_flags = {k: v for k, v in kwargs.items() if k.startswith("compute_") and v}
+        if extended_flags:
+            raise ValueError(
+                f"IoU does not support per-sample extended statistics. "
+                f"The following flags were enabled: {list(extended_flags.keys())}. "
+                "Extended statistics require a per-sample scalar metric, "
+                "which IoU (a per-class aggregation) does not produce."
+            )
+
+        super().__init__(**kwargs)
         self._num_classes = num_classes
         self._use_logits = use_logits
         self.add_state(
@@ -31,6 +54,12 @@ class IoU(Metric):
             dist_reduce_fx="sum",
         )
         self.add_state("union", default=torch.zeros(num_classes), dist_reduce_fx="sum")
+
+    def compute_sample_metric(self, preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Not implemented — IoU does not produce a per-sample scalar metric."""
+        raise NotImplementedError(
+            "IoU does not support per-sample scalar metrics. Use update() / compute() directly."
+        )
 
     def reset(self):
         """Reset the metric."""

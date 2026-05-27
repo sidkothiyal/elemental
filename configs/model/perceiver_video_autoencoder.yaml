@@ -1,0 +1,105 @@
+# @package _global_
+# Phase 2 V1: global-latent video autoencoder.
+#
+# Encoder: per-frame patch CNN (2D ConvBlock with 8x downsample) + Perceiver
+# Resampler over T*N spatial tokens. The Perceiver collapses the entire
+# (T, h*w) context into a fixed (num_latents, latent_dim) latent — bottleneck
+# size is independent of T *and* of the input spatial size.
+#
+# Decoder: learned per-frame queries on a base 2D grid cross-attend to the
+# latents, then a 2D upsample CNN reconstructs each frame. The base grid is
+# bicubic-interpolated at runtime to whatever (h, w) the encoder's patch CNN
+# produces, so the same trained model can run at multiple resolutions
+# (within a fixed aspect ratio).
+#
+# Defaults assume 64x64 chunks at training -> 8x8 patch grid -> 64 spatial
+# tokens per frame. ``base_spatial_grid`` and ``base_query_grid`` are tied to
+# this canonical training resolution; runtime input shape is read from the
+# patch encoder's output and propagated to the decoder.
+
+num_frames: ${clip_length}
+patch_embed_dim: 256
+num_latents: 64
+latent_dim: 256
+
+base_grid_h: 8
+base_grid_w: 8
+
+perceiver_layers: 4
+perceiver_heads: 8
+perceiver_ff: 1024
+
+decoder_layers: 4
+decoder_heads: 8
+decoder_ff: 1024
+
+model:
+  _target_: model.video_perceiver_ae.VideoPerceiverAutoencoder
+  encoder:
+    _target_: model.video_perceiver_ae.VideoPerceiverEncoder
+    num_frames: ${num_frames}
+    embed_dim: ${latent_dim}
+    base_spatial_grid:
+      - ${base_grid_h}
+      - ${base_grid_w}
+    patch_encoder:
+      _target_: model.blocks.conv_block.ConvBlock
+      in_channels: 3
+      channels:
+        - 64
+        - 128
+        - ${latent_dim}
+      kernel_sizes: [3, 3, 3]
+      strides: [2, 2, 2]
+      paddings: [1, 1, 1]
+      norm:
+        _target_: hydra.utils.get_class
+        path: torch.nn.GroupNorm
+      norm_kwargs: {num_groups: 32}
+      act:
+        _target_: hydra.utils.get_class
+        path: torch.nn.SiLU
+    perceiver:
+      _target_: model.perceiver_resampler.PerceiverResampler
+      num_latents: ${num_latents}
+      latent_dim: ${latent_dim}
+      num_layers: ${perceiver_layers}
+      num_heads: ${perceiver_heads}
+      ff_embed_dim: ${perceiver_ff}
+      use_self_attention: true
+  decoder:
+    _target_: model.video_perceiver_ae.VideoQueryDecoder
+    num_frames: ${num_frames}
+    base_query_grid:
+      - ${base_grid_h}
+      - ${base_grid_w}
+    embed_dim: ${latent_dim}
+    num_layers: ${decoder_layers}
+    num_heads: ${decoder_heads}
+    ff_embed_dim: ${decoder_ff}
+    dropout: 0.0
+    out_channels: 3
+    refinement_decoder:
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: model.blocks.upsample_block.UpsampleBlock
+          scale_factors: [2.0, 2.0, 2.0]
+          modes: bilinear
+          align_corners: false
+          in_channels: ${latent_dim}
+          channels: [128, 64, 32]
+          kernel_sizes: [3, 3, 3]
+          paddings: [1, 1, 1]
+          norm:
+            _target_: hydra.utils.get_class
+            path: torch.nn.GroupNorm
+          norm_kwargs: {num_groups: 32}
+          act:
+            _target_: hydra.utils.get_class
+            path: torch.nn.SiLU
+        - _target_: torch.nn.Conv2d
+          in_channels: 32
+          out_channels: 3
+          kernel_size: 3
+          stride: 1
+          padding: 1

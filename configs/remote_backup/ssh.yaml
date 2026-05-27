@@ -1,0 +1,11 @@
+# SSH/SCP-based remote backup strategy
+_target_: utils.remote_backup.ssh_strategy.SSHBackupStrategy
+host: null       # must be overridden per experiment
+username: null   # must be overridden per experiment
+remote_dir: null # must be overridden per experiment
+ssh_key_path: null
+port: 22
+experiment_name: ${experiment_name}
+backup_on:
+  - "last"
+  - "best"

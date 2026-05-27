@@ -1,0 +1,80 @@
+# @package _global_
+# VLA (Vision-Language-Action) Diffusion model for robotic action prediction.
+#
+# Architecture:
+#   - Backbone: Frozen Qwen3-VL-2B VLM extracts features from observation images
+#   - Head: DenoisingDiffusionModel predicts action chunks via iterative denoising
+#   - Denoiser: ActionDenoisingTransformer with cross-attention to VLM sequence
+#
+# Usage: python src/trainer.py experiment/vla/vla_diffusion_qwen3
+
+defaults:
+  - /default
+  - /dataset: open_x_embodiment_diffusion
+  - /model: vla_diffusion_qwen3
+  - /postprocessor: vla_action_slices
+  - /loss: vla_mse_slices
+  - /optimizer: adamw
+  - /scheduler: one_cycle
+  - /callback: default
+  - /callback/vla_action_metrics@callbacks.metrics
+  - /torch_compile
+  # - /profiler: full
+  - _self_
+
+experiment_name: vla_diffusion_qwen3_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/vla/
+
+torch_compile:
+  enabled: true
+  mode: "reduce-overhead"        # CUDA graphs reduce kernel launch overhead for the small denoiser
+  dynamic: false                 # Fixed batch_size=64, fixed action_dim/chunks — static shapes enable better optimization
+  compile_optimizer_step: false  # Incompatible with reduce-overhead (already guarded in code)
+
+# resume_training: true
+# load_checkpoint_path: latest
+
+# Uses "autoencoder" mode: model(input) → pred, loss(pred, target)
+mode: "autoencoder"
+# Required for DDP if using distributed training (frozen VLM params are unused in backward)
+find_unused_parameters: true
+channels_last: false
+
+# ─── Dataset overrides ───────────────────────────────────────────────────────
+data_dir: data/open_x_embodiment/fractal20220817_data/0.1.0
+num_episodes: null
+
+# ─── Training hyper-parameters ───────────────────────────────────────────────
+lr: 0.0003
+num_epochs: 1000
+validation_interval: 200
+batch_size: 64
+gradient_accumulation_steps: 1
+clip_grad_norm: 1.0
+max_steps_per_epoch:
+  train: 500
+  val: 50
+
+# OneCycleLR needs total_steps (num_epochs * steps_per_epoch)
+lr_scheduler_params:
+  total_steps: 500000     # 1000 epochs * 500 steps/epoch
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.float32
+
+# ─── Callbacks ───────────────────────────────────────────────────────────────
+callbacks:
+  wandb:
+    logging_interval: 100
+    field_loggers:
+      post_processed/world_vector_input: line3d
+      post_processed/world_vector_target: line3d
+      post_processed/world_vector_pred: line3d
+      post_processed/rotation_delta_input: line3d
+      post_processed/rotation_delta_target: line3d
+      post_processed/rotation_delta_pred: line3d
+  checkpoint:
+    save_every_n_epochs: 1
+    max_checkpoints_saved: 1

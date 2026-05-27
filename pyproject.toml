@@ -8,46 +8,70 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
+  "aiohttp",
   "black (>=25.1.0, <26.0.0)",
+  "boto3",
   "dill",
-  "hydra-core",
+  "datasets",
   "einops",
   "fire (>=0.6.0, <1.0.0)",
+  "fsspec",
+  "hydra-core",
+  "kaggle",
+  "lark",
   "lz4",
-  "matplotlib (>=3.10.0, <4.0.0)", # Unused
   "numpy (>=2.0.0, <3)",
-  "onnx (>=1.17.0, <2)", # Unused
-  "onnxruntime (>=1.20.0, <2)", # Unused
-  "onnxscript (>=0.2, <0.3)", # Unused
-  "osmnx (>=2.0.1, <3.0.0)", # Unused
+  "open-clip-torch",
+  "plotly (>=5.0.0, <6.0.0)",
   "pre-commit",
-  "pyyaml (>=6.0.2, <7.0.0)", # Unused
+  "pyzmq",
+  "py-spy",
   "pytest",
-  "scikit-learn (>=1.6.1, <2.0.0)", # Unused
-  "torch",
+  "pytest-cov",
+  "pytorch-msssim",
+  "pyyaml (>=6.0.2, <7.0.0)",
+  "s3fs",
+  "sshfs",
+  "tfrecord",
+  "timm",
   "torchmetrics (>=1.0.0, <2.0.0)",
-  "torchvision", # Unused
-  "transformers",
-  "tqdm (>=4.66.5, <5)", # Unused
-  "wandb (>=0.19.7, <0.20.0)", # Unused
+  "tqdm (>=4.66.5, <5)",
+  "transformers (>=4.57)",
+  "typer>=0.24.1",
+  "wandb[media]>=0.19.7,<0.20.0",
+  "zstandard",
+  "onnxscript>=0.6.2",
+  "lpips>=0.1.4",
 ]
 
 [tool.uv]
 package = true
+no-build-isolation-package = ["flash-attn"]
+default-groups = ["dev", "heavy"]
 
 [dependency-groups]
 dev = [
   "ipykernel (>=6.25.1, <7)",
+  "pyinstrument>=5.1.2",
+  "types-PyYAML",
+  "types-requests",
 ]
-
-[project.optional-dependencies]
-dev = [
-  "pylint ~=2.14.0",
-  "toml ~=0.10.2",
-  "yapf ~=0.32.0",
+autoresearch = [
+  "anthropic>=0.50",
+  "openai>=1.0",
 ]
-test = [
-  "pytest-cov ~=3.0.0",
+heavy = [
+  "accelerate",
+  "av",
+#  "flash-attn; sys_platform == 'linux'",
+  "mmcv; sys_platform == 'linux'",
+  "ninja",
+#  "simpler-env",
+  "tensorflow[and-cuda]; sys_platform == 'linux'",
+  "tensorflow; sys_platform == 'darwin'",
+  "tensorflow-datasets",
+  "torch (>=2.9)",
+  "torchvision",
 ]
 
 [tool.isort]
@@ -57,14 +81,13 @@ force_single_line = false
 line_length = 100
 
 [tool.pylint.MASTER]
+init-hook = "import sys; sys.path.insert(0, 'src')"
+source-roots = ["src"]
 extension-pkg-allow-list = [
     "numpy",
     "torch",
     "torchvision",
     "wandb",
-    "onnx",
-    "onnxruntime",
-    "sklearn",
 ]
 
 [tool.pylint.MESSAGES_CONTROL]
@@ -73,25 +96,65 @@ disable = [
     "c-extension-no-member",
 ]
 
-[tool.yapf]
-blank_line_before_nested_class_or_def = true
-
-#[tool.pytest.ini_options]
-#addopts = "--cov --cov-report html --cov-report term-missing --cov-fail-under 95"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+# Default: run everything except slow E2E runs, GPU-only, and HF-download-requiring tests.
+# Override with: pytest -m "e2e" / pytest -m "gpu" / pytest -m "hf"
+addopts = "-v --tb=short -m 'not e2e and not slow and not gpu and not hf'"
+markers = [
+    "unit: Fast unit tests with no I/O or GPU",
+    "integration: Config loading and component wiring tests",
+    "e2e: End-to-end short training runs on synthetic data",
+    "slow: Tests that take more than 10 seconds",
+    "gpu: Tests that require a CUDA GPU",
+    "hf: Tests requiring HuggingFace model downloads",
+    "golden: Tests that pin exact numeric outputs to catch regressions",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
 
 [tool.coverage.run]
 source = ["src"]
+omit = [
+    "src/*/__init__.py",
+    "src/data_processor/downloaders/*",
+    "src/data_processor/post_download_hooks/*",
+    "src/data_processor/compute_open_x_stats.py",
+    "src/data_processor/download.py",
+    "src/dataset/dataset_server.py",
+    "src/utils/distributed.py",
+    "src/utils/remote_backup/*",
+    "src/utils/s3_cache_backend.py",
+    "src/utils/wandb_utils.py",
+    "src/tools/*",
+]
+
+[tool.coverage.report]
+fail_under = 30
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+]
 
 [tool.uv.sources]
 torch = [
   { index = "pytorch", marker = "sys_platform == 'darwin'"},
-  { index = "pytorch-cu124", marker = "sys_platform == 'linux'"},
-  { index = "pytorch-cu126", marker = "sys_platform == 'win32'"},
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux'"},
+  { index = "pytorch-cu128", marker = "sys_platform == 'win32'"},
 ]
 torchvision = [
   { index = "pytorch", marker = "sys_platform == 'darwin'"},
-  { index = "pytorch-cu124", marker = "sys_platform == 'linux'"},
-  { index = "pytorch-cu126", marker = "sys_platform == 'win32'"},
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux'"},
+  { index = "pytorch-cu128", marker = "sys_platform == 'win32'"},
+]
+mmcv = [
+    { url = "https://github.com/sidkothiyal/builtlibs/releases/download/mmcv/mmcv-2.2.0-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux'"},
 ]
 
 [[tool.uv.index]]
@@ -100,9 +163,5 @@ url = "https://download.pytorch.org/whl"
 
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"

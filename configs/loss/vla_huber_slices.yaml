@@ -1,0 +1,26 @@
+# @package _global_
+# Huber loss on post-processed action slices for VLA: world_vector, rotation_delta, gripper_closedness_action.
+# Uses pred_x0 slices (predicted clean actions) matched against target (clean action x0).
+# Post-processors must run before loss so that post_processed/*_pred and post_processed/*_target exist.
+# All three Huber losses are summed.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    world_vector:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.HuberLoss
+      pred_key: post_processed/world_vector_pred
+      target_key: post_processed/world_vector_target
+    rotation_delta:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.HuberLoss
+      pred_key: post_processed/rotation_delta_pred
+      target_key: post_processed/rotation_delta_target
+    gripper_closedness_action:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: torch.nn.HuberLoss
+      pred_key: post_processed/gripper_closedness_action_pred
+      target_key: post_processed/gripper_closedness_action_target

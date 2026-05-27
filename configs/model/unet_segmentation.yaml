@@ -1,0 +1,8 @@
+# @package _global_
+# UNet model configuration for segmentation
+num_classes: 31
+
+model:
+  _target_: model.unet.UNet
+  in_channels: 3
+  out_channels: ${num_classes}

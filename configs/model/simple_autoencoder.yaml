@@ -1,0 +1,30 @@
+# @package _global_
+# Simple convolutional autoencoder: 8x downsample (encoder) → 8x upsample (decoder).
+# Uses ConvBlock for the encoder and UpsampleBlock for the decoder.
+# Wrapped in `model.autoencoder.Autoencoder` so the same encoder.*/decoder.*
+# parameter layout can be reloaded by VQVAE / VQ-GAN configs without surgery.
+model:
+  _target_: model.autoencoder.Autoencoder
+  encoder:
+    _target_: model.blocks.conv_block.ConvBlock
+    in_channels: 3
+    channels: [64, 128, 256]
+    kernel_sizes: [3, 3, 3]
+    strides: [2, 2, 2]
+    paddings: [1, 1, 1]
+  decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.upsample_block.UpsampleBlock
+        scale_factors: [2.0, 2.0, 2.0]
+        modes: bilinear
+        in_channels: 256
+        channels: [128, 64, 32]
+        kernel_sizes: [3, 3, 3]
+        paddings: [1, 1, 1]
+      - _target_: torch.nn.Conv2d
+        in_channels: 32
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1

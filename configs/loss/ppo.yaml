@@ -1,0 +1,34 @@
+# @package _global_
+# PPO loss: clipped policy-gradient + clipped value + entropy bonus, all composed
+# through the standard LossContainer. `rl/*` keys are populated by RLTrainer.train_batch
+# and PPOAlgorithm.update before the loss runs.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    policy:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.policy_losses.PPOClipLoss
+      pred_key: rl/log_prob_new
+      target_key: rl/log_prob_old
+      context_mapping:
+        rl/advantage: advantage
+        rl/clip_range: clip_range
+      weight: 1.0
+    value:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.policy_losses.ValueLoss
+      pred_key: rl/value_new
+      target_key: rl/return
+      context_mapping:
+        rl/value_old: value_old
+        rl/value_clip_range: clip_range
+      weight: 0.5
+    entropy:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.policy_losses.EntropyBonus
+      pred_key: rl/entropy
+      target_key: rl/entropy      # ignored by EntropyBonus but required by LossComponent
+      weight: -0.01               # negative weight = entropy bonus (encourage exploration)

@@ -1,0 +1,7 @@
+# @package rollout_buffer
+# Buffer for GRPO text rollouts. Capacity = prompts_per_batch * group_size.
+
+_target_: rl.text_rollout_buffer.TextRolloutBuffer
+capacity: ${grpo_capacity}
+prompt_max_length: ${grpo_prompt_max_length}
+completion_max_length: ${grpo_completion_max_length}

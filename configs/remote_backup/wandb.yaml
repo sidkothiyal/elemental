@@ -1,0 +1,8 @@
+# WandB artifact-based remote backup strategy
+_target_: utils.remote_backup.wandb_strategy.WandbBackupStrategy
+entity: "elemental-ai"
+project: "elemental"
+experiment_name: ${experiment_name}
+backup_on:
+  - "last"
+  - "best"

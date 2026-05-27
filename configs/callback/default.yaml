@@ -1,0 +1,9 @@
+# @package _global_
+# Default callback configuration - WandB + Checkpoint
+# Composes callbacks from individual config files using named keys
+
+defaults:
+  - wandb@callbacks.wandb
+  - checkpoint@callbacks.checkpoint
+
+# callbacks dict is populated by the defaults above

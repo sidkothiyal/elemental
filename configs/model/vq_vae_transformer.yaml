@@ -1,0 +1,95 @@
+# @package _global_
+# VQ-VAE with Transformer encoder/decoder
+model:
+  _target_: model.patcher_unpatcher.PatcherUnpatcher
+  image_size: [64, 640, 960]
+  patch_size: [16, 16]
+  embed_dim: 256
+  conv_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 3
+        out_channels: 16
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 16
+        out_channels: 32
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 32
+        out_channels: 64
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+  model:
+    _target_: model.autoencoder.VQVAE
+    encoder:
+      _target_: model.transformer.Transformer
+      embed_dim: 256
+      num_heads: 8
+      num_layers: 6
+      ff_embed_dim: 256
+    decoder:
+      _target_: model.transformer.Transformer
+      embed_dim: 256
+      num_heads: 8
+      num_layers: 4
+      ff_embed_dim: 256
+    codebook_size: 1024
+    codebook_dim: 256
+  decoder_projection_dim: 64
+  model_downsample_factor: 2
+  conv_decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 64
+        out_channels: 32
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: torch.nn.Upsample
+        mode: bilinear
+        scale_factor: 2
+      - _target_: model.blocks.resnet_block.ResNetStage
+        block_type:
+          _target_: hydra.utils.get_class
+          _args_:
+            - model.blocks.resnet_block.BasicResNetBlock
+        in_channels: 32
+        out_channels: 16
+        num_blocks: 1
+        stride: 1
+        groups: 1
+        dilation: 1
+      - _target_: torch.nn.Conv2d
+        in_channels: 16
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1

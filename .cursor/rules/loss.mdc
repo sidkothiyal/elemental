@@ -1,0 +1,15 @@
+---
+description: Rules for loss functions
+globs: ["src/loss/**", "configs/loss/**"]
+alwaysApply: false
+---
+
+# Loss Rules
+
+## Structure
+Use `LossContainer` + `LossComponent` for multi-loss setups. Each component needs `pred_key` and `target_key` pointing to the data container.
+
+## Adding a Loss
+1. `src/loss/my_loss.py` — subclass `nn.Module`
+2. Config with `_target_`, `pred_key`, `target_key`
+3. Update `src/loss/README.md` and `src/loss/ARCHITECTURE.md`

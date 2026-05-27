@@ -1,0 +1,46 @@
+# @package _global_
+# ImageNet/TinyImageNet dataset configuration for classification
+dataset_name: imagenet
+dataset_dir: data/tiny_imagenet
+
+classes:
+  _target_: dataset.imagenet_dataset.read_classes
+  dataset_dir: ${dataset_dir}
+
+num_classes:
+  _target_: builtins.len
+  _args_:
+    - ${classes}
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.imagenet_dataset.ImagenetDataset
+      root_dir: ${dataset_dir}/train
+      split: train
+      classes: ${classes}
+      normalize: true
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 8
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.imagenet_dataset.ImagenetDataset
+      root_dir: ${dataset_dir}/val
+      split: val
+      classes: ${classes}
+      normalize: true
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 8
+    prefetch_factor: 3
+    pin_memory: true
+    persistent_workers: true
+    drop_last: false
+  test: null

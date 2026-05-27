@@ -1,0 +1,13 @@
+# @package _global_
+# Transformer encoder configuration
+embedding_dim: 768
+ff_embed_dim: 1536
+num_heads: 6
+num_layers: 6
+
+transformer:
+  _target_: model.transformer.Transformer
+  embed_dim: ${embedding_dim}
+  num_heads: ${num_heads}
+  num_layers: ${num_layers}
+  ff_embed_dim: ${ff_embed_dim}

@@ -1,0 +1,29 @@
+# @package _global_
+# GAN for Semantic Segmentation on Cityscapes
+#
+# Usage: python src/trainer.py experiment/gan/cityscapes_seg
+
+defaults:
+  - /default
+  - /dataset: cityscapes_seg
+  - /model: gan_segmentation
+  - /loss: gan
+  - /optimizer: adam
+  - /scheduler: step_lr
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: gan_seg_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/gan/
+
+mode: "gan"
+
+# Training overrides
+batch_size: 8
+
+# Override wandb callback to include num_classes
+callbacks:
+  wandb:
+    num_classes: 31

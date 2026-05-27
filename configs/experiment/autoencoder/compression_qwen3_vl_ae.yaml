@@ -1,0 +1,50 @@
+# @package _global_
+# Compression Autoencoder — Qwen3-VL-2B vision tower (frozen) + ViT-based decoder
+# on DIV2K.  Only the decoder is trained; the vision encoder acts as a fixed
+# feature extractor.  The Qwen3-VL LLM is never loaded.
+#
+# Default mode: pre-merge (extract_layer: null in model config)
+#   2400 tokens × 1024 dim → 0.67× compression on 960×640 input
+#
+# For post-merge mode: set extract_layer: "pooler" and spatial_merge_size: 2
+#   in configs/model/qwen3_vl_vision_decoder_ae.yaml, and update decoder embed_dim
+#   to 2048 and base_grid_size to [30, 20].
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_qwen3_vl_ae
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: qwen3_vl_vision_decoder_ae
+  - /loss: mse
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_qwen3_vl_ae_mse_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+resume_training: true
+load_checkpoint_path: latest
+
+mode: "autoencoder"
+
+lr: 0.0001
+num_epochs: 1000
+validation_interval: 100
+batch_size: 1
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+callbacks:
+  wandb:
+    logging_interval: 100
+  checkpoint:
+    save_every_n_epochs: 10

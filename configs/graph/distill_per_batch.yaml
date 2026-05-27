@@ -1,0 +1,87 @@
+# @package _global_
+# Feature-distillation per-batch graph for CustomizableTrainer.
+#
+# Works with any `model` that is a ModuleDict({teacher, student}) where the
+# teacher has all params frozen (requires_grad=False) and the student is
+# trainable. Both submodules must accept `batch["input"]` and return tensors
+# that `loss_fn.distillation` can consume.
+#
+# `optim` will only contain a `student` key because `build_optim_dict_or_single`
+# skips submodules with no trainable params — so this graph never references
+# `optim.teacher`.
+#
+# Scope variables pre-seeded by CustomizableTrainer:
+# `model`, `optim`, `loss_fn`, `scaler`, `config`, `device`, `dtype`,
+# `batch`, `epoch`, `training`.
+graph:
+  _target_: nodes.graph_node.GraphNode
+  name: DistillPerBatch
+  expose_all_outputs: true
+  statements:
+    # teacher_out = model["teacher"](batch["input"])  (frozen; internally no_grad)
+    - _target_: nodes.executor.ExecuteFunction
+      name: TeacherForward
+      function: node:model.teacher
+      args: ["node:batch.input"]
+      inputs: []
+      outputs: [teacher_out]
+
+    # student_out = model["student"](batch["input"])
+    - _target_: nodes.executor.ExecuteFunction
+      name: StudentForward
+      function: node:model.student
+      args: ["node:batch.input"]
+      inputs: []
+      outputs: [student_out]
+
+    # distill_loss = call_loss_with_epoch(loss_fn["distillation"], student_out, teacher_out, epoch)
+    - _target_: nodes.executor.ExecuteFunction
+      name: DistillLoss
+      function: loss.utils.call_loss_with_epoch
+      args:
+        - "node:loss_fn.distillation"
+        - "node:student_out"
+        - "node:teacher_out"
+        - "node:epoch"
+      inputs: []
+      outputs: [distill_loss]
+
+    # optim["student"].zero_grad()
+    - _target_: nodes.executor.ExecuteFunction
+      name: StudentZeroGrad
+      function: node:optim.student.zero_grad
+      args: []
+      inputs: []
+      outputs: []
+
+    # distill_loss.backward()
+    - _target_: nodes.executor.ExecuteFunction
+      name: StudentBackward
+      function: node:distill_loss.backward
+      args: []
+      inputs: []
+      outputs: []
+
+    # optim["student"].step()
+    - _target_: nodes.executor.ExecuteFunction
+      name: StudentStep
+      function: node:optim.student.step
+      args: []
+      inputs: []
+      outputs: []
+
+    # total = distill_loss.detach()
+    - _target_: nodes.executor.ExecuteFunction
+      name: DetachTotal
+      function: node:distill_loss.detach
+      args: []
+      inputs: []
+      outputs: [total]
+
+    # distillation = distill_loss.detach()  (named copy for metrics_format)
+    - _target_: nodes.executor.ExecuteFunction
+      name: DetachDistill
+      function: node:distill_loss.detach
+      args: []
+      inputs: []
+      outputs: [distillation]

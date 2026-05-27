@@ -1,0 +1,35 @@
+# VLA action prediction metrics callback.
+# Computes offline metrics on predicted vs target action chunks (pred/pred_x0 vs target).
+#
+# Metrics:
+#   - action_mae:        Mean Absolute Error over all action dimensions
+#   - action_mse:        Mean Squared Error over all action dimensions
+#   - action_ade:        Average Displacement Error (mean L2 across chunks, position dims)
+#   - action_fde:        Final Displacement Error (L2 at last chunk, position dims)
+#   - gripper_accuracy:  Binary accuracy of gripper open/close prediction
+
+_target_: callback.metrics_callback.MetricsCallback
+
+metrics:
+  action_mae:
+    _target_: metrics.action_mae.ActionMAE
+  action_mse:
+    _target_: metrics.mse.MSE
+  action_ade:
+    _target_: metrics.action_displacement.ActionADE
+    pos_dim: 3    # world_vector (first 3 dims)
+  action_fde:
+    _target_: metrics.action_displacement.ActionFDE
+    pos_dim: 3
+  gripper_l1:
+    _target_: metrics.gripper_accuracy.GripperL1
+    gripper_idx: -1     # last dim of action vector
+
+phases:
+  train: -1     # disabled
+  val: 60       # every 60th epoch (~1x per full data pass)
+
+log_per_batch: false
+
+pred_key: pred/pred_x0
+target_key: target

@@ -1,0 +1,12 @@
+# @package env
+# Dummy vectorized env for CI smoke tests and pipeline verification.
+# Provides random observations and a dense quadratic reward; no simulator required.
+
+_target_: env.dummy_vec_env.DummyVecEnv
+num_envs: 4
+action_dim: ${action_dim}
+num_action_chunks: ${num_action_chunks}
+image_shape: [3, 224, 224]
+text_prompt: "Predict the next robot action."
+max_episode_steps: 20
+seed: ${seed}

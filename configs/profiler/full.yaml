@@ -1,0 +1,30 @@
+# @package _global_
+# Full profiling — all knobs enabled, high overhead
+# Good for: pre-release performance audit (single run, not production training)
+#
+# WARNING: Do NOT use with torch.compile or CUDA graphs — the profiler's
+# allocation hooks can break graph capture. Use separate runs.
+profiler:
+  enabled: true
+  activities:
+    - CPU
+    - CUDA
+  # step_per: "batch" (default) — profiler.step() fires after each batch
+  #           "epoch" — profiler.step() fires after each epoch (including
+  #                     validation & inter-epoch ops like cleanup_memory)
+  step_per: "epoch"
+  schedule:
+    wait: 1
+    warmup: 1
+    active: 3
+    repeat: 1
+  record_shapes: true
+  profile_memory: true
+  with_stack: true
+  with_flops: true
+  output:
+    print_table: true
+    table_sort_by: "self_cuda_time_total"
+    table_row_limit: 30
+    export_chrome_trace: true
+    tensorboard: true

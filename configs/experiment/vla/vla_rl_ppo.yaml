@@ -1,0 +1,64 @@
+# @package _global_
+# PPO fine-tuning of the VLA diffusion model in SIMPLER.
+#
+# This reuses the supervised VLA diffusion model (Qwen3-VL-2B + ActionDenoisingTransformer)
+# and wraps it in a DiffusionPolicyWrapper exposing act / evaluate_actions + a value head.
+# All RL knobs — algorithm, env, policy wrapper, buffer, loss — are individually overridable.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/vla/vla_rl_ppo
+#   uv run python src/trainer.py experiment/vla/vla_rl_ppo env=dummy rl.steps_per_rollout=8  (smoke)
+
+defaults:
+  - /default
+  - /model: vla_diffusion_qwen3          # same model as supervised
+  - /env: simpler_google_robot           # override env=dummy for CI smoke
+  - /policy_wrapper: diffusion_policy
+  - /rl: ppo
+  - /rollout_buffer: on_policy
+  - /loss: ppo
+  - /callback: default
+  - _self_
+
+experiment_name: vla_rl_ppo_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/vla_rl/
+
+# ─── Mode + model wiring ────────────────────────────────────────────────────
+mode: "rl"
+find_unused_parameters: true
+channels_last: false
+
+# Action / diffusion constants — must match the supervised pretraining config
+action_dim: 7
+num_action_chunks: 20
+num_diffusion_timesteps: 100
+prediction_type: x0
+noise_schedule: cosine
+
+# Init policy from supervised VLA checkpoint (override at the CLI for your run).
+load_checkpoint_path: null
+load_keys: [model]
+strict: false
+
+# ─── Optimization ───────────────────────────────────────────────────────────
+lr: 1.0e-5
+num_epochs: 500
+validation_interval: 10
+batch_size: ${rl.minibatch_size}       # reused downstream; RL reads batch size from the buffer
+clip_grad_norm: 1.0
+gradient_accumulation_steps: 1
+scheduler_step_per: epoch
+lr_scheduler: null                     # disable by default; override to CosineAnnealingLR etc
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.float32
+
+# Supervised dataloader is disabled — RL reads from env.
+dataloader: null
+postprocessors: null
+
+# ─── RL-specific ────────────────────────────────────────────────────────────
+rl:
+  eval_steps: 128                      # per sim-eval pass

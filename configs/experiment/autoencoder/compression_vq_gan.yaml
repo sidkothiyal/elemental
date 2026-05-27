@@ -1,0 +1,61 @@
+# @package _global_
+# Compression VQ-GAN: VQVAE generator + PatchGAN discriminator on DIV2K.
+#
+# Recommended training recipe (Esser et al., "Taming Transformers"):
+#   1. Pretrain `compression_ae` (residual_autoencoder + L1 + VGG perceptual)
+#      to convergence first.
+#   2. Run a checkpoint surgery to remap pretrained AE keys onto the VQ-GAN
+#      generator namespace:
+#          model.encoder.* -> model.generator.encoder.*
+#          model.decoder.* -> model.generator.decoder.*
+#      (See `configs/checkpoint_surgery/rename_simple_ae_to_vqvae.yaml` for
+#      the existing remap pattern; copy it and update the prefixes.)
+#   3. Run this experiment, finetuning generator (with new VQ codebook +
+#      adversarial) while training the discriminator from scratch.
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_vq_gan
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: residual_vq_gan
+  - /loss: vq_gan_compression
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_vq_gan_8x_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+# Finetune from the pretrained residual AE. Surgery is required to put
+# `encoder.*` / `decoder.*` under `generator.*` — see header comment.
+resume_training: false
+load_checkpoint_path: results/autoencoder/compression_ae_8x_l1_perceptual_latest/last.vqgan.pt
+load_keys: [model]
+strict: false
+
+mode: "gan"   # ModuleDict({generator, discriminator}) → trainer's GAN batch loop
+
+# Lower LR for finetuning the generator + standard GAN-era LR for the
+# discriminator. Smaller batch since the model + discriminator + VGG loss
+# all live in memory simultaneously.
+lr: 0.00005
+num_epochs: 1500
+validation_interval: 100
+batch_size: 8
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 100
+  checkpoint:
+    save_every_n_epochs: 10

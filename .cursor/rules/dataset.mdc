@@ -1,0 +1,15 @@
+---
+description: Rules for datasets
+globs: ["src/dataset/**", "configs/dataset/**"]
+alwaysApply: false
+---
+
+# Dataset Rules
+
+## Adding a Dataset
+1. `src/dataset/my_dataset.py` — extend `BaseDataset`
+2. `configs/dataset/my_dataset.yaml` — `_target_: dataset.my_dataset.MyDataset`
+3. Update `src/dataset/README.md` and `src/dataset/ARCHITECTURE.md`
+
+## Remote Datasets
+Check existing remote dataset infrastructure in `src/dataset/remote_dataset.py` and `src/dataset/dataset_server.py` before building custom loaders.

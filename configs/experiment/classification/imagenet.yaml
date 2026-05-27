@@ -1,0 +1,43 @@
+# @package _global_
+# Image Classification on TinyImageNet
+#
+# Usage: python src/trainer.py experiment/classification/imagenet
+
+defaults:
+  - /default
+  - /model: classification_cnn
+  - /dataset: imagenet
+  - /loss: cross_entropy
+  - /optimizer: adam
+  - /scheduler: step_lr
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: classification_imagenet_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/classification/
+
+mode: "classification"
+
+# Training overrides
+lr: 0.00025
+batch_size: 128
+
+# Scheduler params override
+lr_scheduler_params:
+  step_size: 2
+  gamma: 0.5
+
+# Post-processors: argmax class indices for callbacks / metrics
+postprocessors:
+  _target_: postprocessor.pipeline.PostProcessorPipeline
+  steps:
+    argmax:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.argmax.ArgmaxPostProcessor
+        dim: 1
+      input_mapping:
+        "pred": "pred"
+      output_key: "post_processed/formatted_pred"

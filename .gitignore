@@ -13,8 +13,13 @@ models/
 *.pth
 
 # Logs / Temp files
+autoresearch/runs/*
+debug/
+exports/
 outputs/
+results/
 logs/
+wheels/
 *.tmp
 
 # Jupyter Notebook
@@ -27,11 +32,15 @@ __pycache__/
 # OS
 .DS_Store
 
-# Environment
-*.lock
-
 # Package
 src/elemental.egg-info/
 
 # Wandb
 wandb/
+
+# Deploy logs
+deploy/logs/
+
+# Run script artifacts
+.deps_hash
+.heavy-deps-hash

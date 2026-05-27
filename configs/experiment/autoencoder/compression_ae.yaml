@@ -1,0 +1,61 @@
+# @package _global_
+# Higher-capacity Compression Autoencoder on DIV2K.
+#
+# Recommended changes over `simple_compression_ae`:
+#   * `residual_autoencoder` — bigger, GroupNorm+SiLU, refinement convs at
+#     every resolution, asymmetric (heavier decoder) capacity.
+#   * L1 + VGG perceptual loss — pure pixel losses (MSE/SSIM) optimise for
+#     average pixel error and produce blurry/grainy reconstructions; a
+#     perceptual loss restores high-frequency texture.
+#   * Smaller batch_size to fit the larger model at 640x1024.
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_ae
+
+defaults:
+  - /default
+  - /dataset: div2k
+  - /model: residual_autoencoder
+  - /loss: l1_perceptual
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_ae_8x_l1_perceptual_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+# resume_training: true
+# load_checkpoint_path: latest
+
+# torch.compile — static shapes, simple ops → safe to compile aggressively.
+torch_compile:
+  enabled: true
+  mode: "max-autotune-no-cudagraphs"  # best kernels; skip cudagraphs (plays poorly with grad accum)
+  backend: "inductor"
+  fullgraph: true       # AE has no graph breaks; catch regressions early
+  dynamic: false        # fixed 640x1024, no recompiles needed
+  compile_optimizer_step: true
+
+mode: "autoencoder"
+
+# Training overrides
+lr: 0.0003
+num_epochs: 1000
+validation_interval: 200
+batch_size: 4
+grad_accum_steps: 4   # effective batch = 16
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 200
+  checkpoint:
+    save_every_n_epochs: 10

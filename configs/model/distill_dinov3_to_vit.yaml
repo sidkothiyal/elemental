@@ -1,0 +1,41 @@
+# @package _global_
+# Feature-distillation model: frozen DINOv3-s16 teacher + smaller ViT student.
+#
+# Teacher: facebook/dinov3-vits16-pretrain-lvd1689m — 12 layers, 6 heads,
+# embed_dim=384, emits [B, N, 384] where N = 1 CLS + 4 register + 196 patches
+# at 224×224 input. Frozen: requires_grad=False on every parameter, so
+# build_optim_dict_or_single skips it and the optim dict only contains
+# {"student": ...}.
+#
+# Student: ViT in patch mode — 6 layers, 6 heads, embed_dim=384, ff=1536.
+# Emits [B, 196, 384] for 224×224 input. Prefix-token alignment against the
+# teacher's 201-token output is handled by DistillationFeatureLoss
+# (drop_teacher_prefix_tokens=5 in configs/loss/distillation.yaml).
+model:
+  _target_: torch.nn.ModuleDict
+  modules:
+    teacher:
+      _target_: model.hf_vision.HFVisionEncoder
+      model_name: "facebook/dinov3-vits16-pretrain-lvd1689m"
+      return_layers: null
+      torch_dtype: "bfloat16"
+      attn_implementation: "sdpa"
+      device_map: "auto"
+      freeze_model: true
+      interpolate_pos_encoding: true
+      processor_kwargs:
+        do_resize: false
+        do_center_crop: false
+
+    student:
+      _target_: model.vit.ViT
+      embed_dim: 384
+      num_transformer_layers: 6
+      attn_heads: 6
+      ff_embed_dim: 1536
+      image_size: [3, 224, 224]
+      patch_size: [16, 16]
+      num_classes: null
+      dropout: 0.0
+      attention_dropout: 0.0
+      bias: false

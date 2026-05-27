@@ -1,0 +1,22 @@
+# @package _global_
+# Autoregressive language model configuration
+embedding_dim: 768
+ff_embed_dim: 1536
+num_heads: 6
+num_layers: 6
+max_length: 1024
+pretrained_tokenizer: "gpt2"
+
+model:
+  _target_: model.autoregressive_lm.AutoregressiveLM
+  encoder:
+    _target_: model.transformer.Transformer
+    embed_dim: ${embedding_dim}
+    num_heads: ${num_heads}
+    num_layers: ${num_layers}
+    ff_embed_dim: ${ff_embed_dim}
+  token_embedding: null
+  positional_embedding: null
+  embedding_dim: ${embedding_dim}
+  max_length: ${max_length}
+  pretrained_tokenizer: ${pretrained_tokenizer}

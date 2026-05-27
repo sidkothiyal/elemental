@@ -1,0 +1,26 @@
+# @package _global_
+# Small Autoregressive LM for character-level training (e.g., Tiny Shakespeare)
+embedding_dim: 384
+ff_embed_dim: 768
+num_heads: 1
+num_layers: 1
+max_length: 256
+vocab_size: 65
+pretrained_tokenizer: null
+
+model:
+  _target_: model.autoregressive_lm.AutoregressiveLM
+  encoder:
+    _target_: model.transformer.Transformer
+    embed_dim: ${embedding_dim}
+    num_heads: ${num_heads}
+    num_layers: ${num_layers}
+    ff_embed_dim: ${ff_embed_dim}
+    dropout: 0.2
+    attention_dropout: 0.2
+  token_embedding: null
+  positional_embedding: null
+  embedding_dim: ${embedding_dim}
+  max_length: ${max_length}
+  pretrained_tokenizer: ${pretrained_tokenizer}
+  vocab_size: ${vocab_size}

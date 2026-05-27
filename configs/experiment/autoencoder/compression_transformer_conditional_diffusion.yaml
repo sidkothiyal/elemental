@@ -1,0 +1,221 @@
+# @package _global_
+# Transformer-based Conditional Diffusion model for image compression
+# Uses Patcher/Unpatcher with Transformer encoder/decoder
+#
+# Usage: python src/trainer.py experiment/autoencoder/compression_transformer_conditional_diffusion
+
+defaults:
+  - /default
+  - /loss: l1
+  - /optimizer: adamw
+  - /scheduler: cosine_annealing
+  - /callback: default
+  - /callback/image_reconstruction_metrics@callbacks.metrics
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: compression_autoencoder_transformer_conditional_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/autoencoder/
+
+mode: "autoencoder"
+
+# Custom dataset with 960 width for transformer patches
+target_shape: [640, 960]
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/train
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: "x0"
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.diffusion_dataset.DiffusionDataset
+      dataset:
+        _target_: dataset.div2k_dataset.DIV2KDataset
+        root_dir: data/div2k/val
+        target_shape: ${target_shape}
+      device: "cuda"
+      prediction_type: "x0"
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 4
+    persistent_workers: true
+    drop_last: false
+    multiprocessing_context: "spawn"
+  test: null
+
+# Training overrides
+lr: 0.00025
+num_epochs: 2000
+validation_interval: 200
+batch_size: 2
+gradient_accumulation_steps: 12
+clip_grad_norm: 1.0
+
+dtype:
+  _target_: hydra.utils.get_object
+  _args_:
+    - torch.bfloat16
+
+# Override callbacks
+callbacks:
+  wandb:
+    logging_interval: 500
+  checkpoint:
+    save_every_n_epochs: 10
+  metrics:
+    pred_key: "pred/pred_x0"
+
+# DenoisingDiffusionModel returns a dict; point loss at the x0 prediction
+loss:
+  losses:
+    main:
+      pred_key: "pred/pred_x0"
+
+to_log:
+  - input/input
+  - input/cond
+  - target
+  - pred/pred_x0
+
+model_input_args:
+  - "t"
+  - "cond"
+
+model:
+  _target_: model.diffusion.DenoisingDiffusionModel
+  timestep_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: torch.nn.Embedding
+        num_embeddings: 1000
+        embedding_dim: 64
+  prediction_type: "x0"
+  conditional_model:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.patcher_unpatcher.Patcher
+        image_size: [3, 640, 960]
+        patch_size: [16, 16]
+        embed_dim: 192
+        overlap: 4  # Overlapping patch extraction for more context
+      - _target_: model.transformer.Transformer
+        embed_dim: 192
+        num_heads: 6
+        num_layers: 6
+        ff_embed_dim: 192
+  model:
+    _target_: model.autoencoder.ConditionalAutoencoder
+    encoder:
+      _target_: model.combiner.DiffusionCombiner
+      model:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: model.patcher_unpatcher.Patcher
+            image_size: [3, 640, 960]
+            patch_size: [16, 16]
+            embed_dim: 192
+            overlap: 4  # Overlapping patch extraction for more context
+          - _target_: model.transformer.Transformer
+            embed_dim: 192
+            num_heads: 6
+            num_layers: 4
+            ff_embed_dim: 192
+      time_mlp: null
+      aux_features_combiner: null
+    decoder:
+      _target_: model.combiner.DiffusionCombiner
+      model:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: model.transformer.Transformer
+            embed_dim: 192
+            num_heads: 6
+            num_layers: 6
+            ff_embed_dim: 192
+          - _target_: model.patcher_unpatcher.Unpatcher
+            image_size: [64, 640, 960]
+            patch_size: [16, 16]
+            embed_dim: 192
+            decoder_projection_dim: 192
+            model_downsample_factor: 1
+            overlap: 4  # Overlapping patches with Hann window blending to reduce grid artifacts
+            conv_decoder:
+              _target_: torch.nn.Sequential
+              _args_:
+                # Stage 1: Feature extraction
+                - _target_: model.blocks.resnet_block.ResNetStage
+                  block_type:
+                    _target_: hydra.utils.get_class
+                    _args_:
+                      - model.blocks.resnet_block.BasicResNetBlock
+                  in_channels: 192
+                  out_channels: 32
+                  num_blocks: 2
+                  stride: 1
+                  groups: 1
+                  dilation: 1
+                - _target_: model.blocks.resnet_block.ResNetStage
+                  block_type:
+                    _target_: hydra.utils.get_class
+                    _args_:
+                      - model.blocks.resnet_block.BasicResNetBlock
+                  in_channels: 32
+                  out_channels: 16
+                  num_blocks: 2
+                  stride: 1
+                  groups: 1
+                  dilation: 1
+                # Stage 2: Patch boundary smoothing with depthwise separable
+                - _target_: torch.nn.Conv2d
+                  in_channels: 16
+                  out_channels: 16
+                  kernel_size: 7
+                  stride: 1
+                  padding: 3
+                  groups: 16  # Depthwise - each channel processed independently
+                - _target_: torch.nn.BatchNorm2d
+                  num_features: 16
+                - _target_: torch.nn.ReLU
+                - _target_: torch.nn.Conv2d
+                  in_channels: 16
+                  out_channels: 16
+                  kernel_size: 1  # Pointwise - mix channels
+                  stride: 1
+                  padding: 0
+                - _target_: torch.nn.BatchNorm2d
+                  num_features: 16
+                - _target_: torch.nn.ReLU
+                # Stage 4: Final projection with large kernel
+                - _target_: torch.nn.Conv2d
+                  in_channels: 16
+                  out_channels: 3
+                  kernel_size: 7 # Larger kernel for final smoothing
+                  stride: 1
+                  padding: 3
+      time_mlp:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.SiLU
+          - _target_: torch.nn.Linear
+            in_features: 64
+            out_features: 384
+      time_modulation_type: "feature_wise"
+      aux_features_combiner:
+        _target_: model.combiner.CrossAttentionBlock
+        embed_dim: 192
+        num_heads: 6

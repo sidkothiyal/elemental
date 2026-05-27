@@ -1,0 +1,58 @@
+# Search space for compression autoencoder hyperparameters.
+#
+# Objective: maximise best.val/PSNR (proxy for reconstruction quality).
+# Base experiment: configs/experiment/autoencoder/compression_ae.yaml
+#
+# The agent receives this file + previous trial summaries as context when
+# proposing the next set of Hydra overrides.
+
+name: compression_ae_hparams
+objective: maximise
+metric: "best.val/PSNR.value"
+constraint: "status == 'ok'"
+
+# Fixed overrides for every trial — keeps runs short for fast search.
+fixed_overrides:
+  - max_steps=500
+  - num_epochs=9999
+  - validation_interval=50
+  - --no-remote-logging
+
+parameters:
+  # Learning rate (log-uniform)
+  lr:
+    type: float_log
+    low: 1.0e-5
+    high: 3.0e-3
+
+  # Effective batch size is batch_size * grad_accum_steps.
+  # Keep product <= 32 to avoid OOM on a single 80GB GPU.
+  batch_size:
+    type: categorical
+    values: [2, 4, 8]
+
+  gradient_accumulation_steps:
+    type: categorical
+    values: [1, 2, 4, 8]
+
+  # Optimizer
+  optimizer_params.weight_decay:
+    type: float
+    low: 0.0
+    high: 0.1
+
+  # Scheduler: cosine T_max is already tied to num_epochs via ${num_epochs},
+  # so only warmup steps are a meaningful knob here.
+  # (Add lr_scheduler_params.warmup_steps if a warmup scheduler is introduced.)
+
+  # Loss weights (only relevant when loss supports them; compression_ae uses l1_perceptual)
+  # loss.perceptual_weight:
+  #   type: float_log
+  #   low: 0.01
+  #   high: 1.0
+
+# Hydra override format:
+#   lr=0.0003
+#   batch_size=4
+#   gradient_accumulation_steps=4
+#   optimizer_params.weight_decay=0.01

@@ -1,0 +1,16 @@
+# @package _global_
+# Feature-distillation loss. Exposes `loss.distillation` directly (dict-style,
+# matching configs/loss/gan_compression.yaml) so the distillation graph can
+# resolve it via `node:loss_fn.distillation`.
+#
+# Default prefix-token count is 5 (1 CLS + 4 register tokens) to match
+# DINOv3-s16. For other teachers:
+#   DINOv2        → drop_teacher_prefix_tokens: 1   (CLS only)
+#   SAM/MAE       → drop_teacher_prefix_tokens: 0
+loss:
+  distillation:
+    _target_: loss.distillation.DistillationFeatureLoss
+    drop_teacher_prefix_tokens: 5
+    drop_student_prefix_tokens: 0
+    base_loss:
+      _target_: torch.nn.MSELoss

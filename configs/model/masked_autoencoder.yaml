@@ -1,0 +1,37 @@
+# @package _global_
+# Masked autoencoder configuration for image reconstruction
+model:
+  _target_: model.masked_autoencoder.MaskedAutoencoder
+  dropout_percentage: 0.5
+  image_size: [3, 128, 256]
+  patch_size: [16, 16]
+  embed_dim: 768
+  encoder:
+    _target_: model.transformer.Transformer
+    embed_dim: 768
+    num_heads: 8
+    num_layers: 8
+    ff_embed_dim: 768
+  decoder:
+    _target_: model.transformer.Transformer
+    embed_dim: 768
+    num_heads: 8
+    num_layers: 6
+    ff_embed_dim: 768
+  decoder_projection_dim: 96
+  conv_decoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: model.blocks.conv_block.ConvBlock
+        in_channels: 96
+        channels: [48, 16]
+        kernel_sizes: [3, 3]
+        strides: [1, 1]
+        paddings: [1, 1]
+      - _target_: torch.nn.Conv2d
+        in_channels: 16
+        out_channels: 3
+        kernel_size: 3
+        stride: 1
+        padding: 1
+  return_image: true

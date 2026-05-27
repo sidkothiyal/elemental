@@ -1,0 +1,11 @@
+# @package env
+# SIMPLER (ManiSkill2) Google Robot tabletop env matching the Open-X-Embodiment
+# fractal dataset. Requires `simpler-env` + `mani_skill2` packages — see
+# https://github.com/simpler-env/SimplerEnv.
+
+_target_: env.simpler_env.SimplerEnv
+task_name: google_robot_pick_coke_can
+num_envs: 8
+image_size: [224, 224]
+max_episode_steps: 80
+prompt_template: "{task_description}"

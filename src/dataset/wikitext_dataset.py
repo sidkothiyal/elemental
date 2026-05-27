@@ -6,10 +6,11 @@ import torch
 from torch.utils import data
 from transformers import AutoTokenizer
 
+from dataset.base_dataset import BaseDataset
 from dataset.cache_decorator import cache_getitem
 
 
-class WikiTextDataset(data.Dataset):
+class WikiTextDataset(BaseDataset):
     """WikiText paragraphs dataset."""
 
     def __init__(
@@ -20,6 +21,7 @@ class WikiTextDataset(data.Dataset):
         max_length: int = 512,
         pretrained_tokenizer: str = "gpt2",
         num_samples: int | None = None,
+        remote_config: dict | None = None,
     ):
         """WikiText dataset constructor.
 
@@ -30,20 +32,27 @@ class WikiTextDataset(data.Dataset):
             max_length: Maximum sequence length for tokenization.
             pretrained_tokenizer: Pretrained tokenizer to use.
             num_samples: Number of samples to use. If None, use all samples.
+            remote_config: Optional remote storage configuration.
         """
+        super().__init__(remote_config=remote_config)
         self.dataset_dir = pathlib.Path(dataset_dir)
         self.split = split
         self.seed = seed
         self.max_length = max_length
         self.num_samples = num_samples
+        self.pretrained_tokenizer = pretrained_tokenizer
+
+        # For sync mode, point dataset_dir at the local cache
+        if self.is_remote and self.remote_mode == "sync":
+            self.dataset_dir = self.remote_root_as_local()
 
         # Initialize GPT-2 tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained_tokenizer)
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Collect all paragraph files
-        self.paragraph_files = list(self.dataset_dir.glob("paragraph_*.txt"))
-        self.paragraph_files.sort()  # Ensure consistent ordering
+        self.paragraph_files = self.list_files(self.dataset_dir, "paragraph_*.txt")
+        self.paragraph_files.sort(key=str)  # Ensure consistent ordering
 
         # Split data into train/val with fixed seed
         random.seed(self.seed)
@@ -56,6 +65,9 @@ class WikiTextDataset(data.Dataset):
             self.paragraph_files = self.paragraph_files[split_idx:]
         else:
             raise ValueError(f"Split must be 'train' or 'val', got {self.split}")
+
+        # Prefetch paragraph files for remote stream mode
+        self.start_prefetch(self.paragraph_files)
 
         print(f"WikiText {self.split} dataset: {len(self.paragraph_files)} paragraphs")
 
@@ -75,7 +87,7 @@ class WikiTextDataset(data.Dataset):
         Returns:
             Dictionary containing tokenized input_ids and attention_mask.
         """
-        paragraph_file = self.paragraph_files[idx]
+        paragraph_file = self.resolve_path(self.paragraph_files[idx])
 
         # Read paragraph text
         with open(paragraph_file, "r", encoding="utf-8") as f:
@@ -101,15 +113,15 @@ if __name__ == "__main__":
     from tqdm import tqdm
 
     # Test the dataset
-    dataset_dir = "data/wikitext/paragraphs"
+    DATASET_DIR = "data/wikitext/paragraphs"
 
     print("Creating train dataset...")
     train_dataset = WikiTextDataset(
-        dataset_dir=dataset_dir, split="train", seed=42, max_length=4096
+        dataset_dir=DATASET_DIR, split="train", seed=42, max_length=4096
     )
 
     print("Creating val dataset...")
-    val_dataset = WikiTextDataset(dataset_dir=dataset_dir, split="val", seed=42, max_length=4096)
+    val_dataset = WikiTextDataset(dataset_dir=DATASET_DIR, split="val", seed=42, max_length=4096)
 
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Val dataset size: {len(val_dataset)}")

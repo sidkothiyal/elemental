@@ -1,0 +1,40 @@
+# @package _global_
+# SmolTalk-style chat SFT dataset.
+# Conversations are tokenized with the nanochat chat template; non-assistant
+# target positions are set to -100 (ignore_index), so pair this with the
+# lm_sft loss (ShiftedTeacherForcing(shift=0, ignore_index=-100)).
+dataset_name: smoltalk_sft
+channels_last: false
+sft_max_length: 2048
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+dataloader:
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.smoltalk_sft_dataset.SmolTalkSFTDataset
+      tokenizer_path: ${tokenizer_path}
+      max_length: ${sft_max_length}
+      dataset: HuggingFaceTB/smoltalk
+      split: train
+      name: all
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: dataset.smoltalk_sft_dataset.SmolTalkSFTDataset
+      tokenizer_path: ${tokenizer_path}
+      max_length: ${sft_max_length}
+      dataset: HuggingFaceTB/smoltalk
+      split: test
+      name: all
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 1
+    pin_memory: true
+    persistent_workers: true
+  test: null

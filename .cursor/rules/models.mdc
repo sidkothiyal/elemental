@@ -1,0 +1,19 @@
+---
+description: Rules for models and experiment configs
+globs: ["src/model/**", "configs/model/**", "configs/experiment/**"]
+alwaysApply: false
+---
+
+# Model & Config Rules
+
+## Adding a Model
+1. `src/model/my_model.py` — `nn.Module` subclass
+2. `configs/model/my_model.yaml` — `_target_: model.my_model.MyModel`
+3. `configs/experiment/<task>/my_experiment.yaml` — reference model in `defaults:`
+4. Update `src/model/README.md` and `src/model/ARCHITECTURE.md`
+
+## GAN Mode
+Model must be `ModuleDict({"generator": ..., "discriminator": ...})`. Trainer auto-switches to `batch_loop_gan()` when `mode: "gan"`.
+
+## Building Blocks
+Prefer reusing `src/model/blocks/` over custom implementations.

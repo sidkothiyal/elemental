@@ -1,0 +1,14 @@
+# @package env
+# Prompt-iterator "environment" for GRPO. Yields chat-formatted prompts from
+# GSM8K to the rollout collector. ``step()`` is a no-op — GRPO doesn't simulate.
+
+_target_: env.prompt_iterator_env.PromptIteratorEnv
+tokenizer_path: ${tokenizer_path}
+batch_size: ${grpo_prompts_per_batch}
+max_prompt_length: ${grpo_prompt_max_length}
+
+dataset:
+  _target_: dataset.gsm8k_dataset.GSM8KDataset
+  dataset: openai/gsm8k
+  split: train
+  name: main

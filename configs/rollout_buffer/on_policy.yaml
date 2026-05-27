@@ -1,0 +1,12 @@
+# @package rollout_buffer
+# On-policy buffer for PPO / A2C / GRPO. Reset + filled each RL iteration.
+# Flat minibatch iteration feeds ``iter_minibatches(minibatch_size)`` batches
+# whose keys match elemental's data-container namespace (input/*, rl/*, action_info/*).
+
+_target_: rl.rollout_buffer.OnPolicyRolloutBuffer
+num_steps: ${rl.steps_per_rollout}
+num_envs: ${env.num_envs}
+action_shape:
+  - ${num_action_chunks}
+  - ${action_dim}
+obs_keys: ["image", "text"]

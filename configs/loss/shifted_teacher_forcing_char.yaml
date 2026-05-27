@@ -1,0 +1,12 @@
+# @package _global_
+# Shifted Teacher Forcing loss for character-level models (shift=0)
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    main:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.shifted_teacher_forcing.ShiftedTeacherForcing
+        shift: 0
+        loss_fn:
+          _target_: torch.nn.CrossEntropyLoss
