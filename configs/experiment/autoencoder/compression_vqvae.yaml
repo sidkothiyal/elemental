@@ -38,3 +38,9 @@ dtype:
 callbacks:
   wandb:
     logging_interval: 100
+
+# Log reconstructions/targets as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

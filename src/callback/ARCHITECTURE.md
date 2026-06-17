@@ -29,14 +29,18 @@ class Callback:
 | `periodic_checkpoints` | `deque` of saved periodic checkpoint paths |
 | `model/optimizer/scheduler/criterion` | Set via `update_config()` from trainer |
 | `remote_backup` | `RemoteBackupStrategy` instance (SSH or W&B) |
+| `train_loader` | Train dataloader (for streaming resume); set via `update_config()` |
+| `current_global_step` | Latest optimizer-step count (from `data["global_optim_step"]`) |
 
 ### Key Methods
 
-- `_save_checkpoint(name, epoch, step, is_periodic)` — saves via `ckpt_utils.save_checkpoint()`, manages rolling window, triggers remote upload
+- `_save_checkpoint(name, epoch, step, is_periodic)` — saves via `ckpt_utils.save_checkpoint()`; also persists `global_optim_step=current_global_step` and `dataloader_state` (when `train_loader` has `state_dict`), manages rolling window, triggers remote upload
 - `on_epoch_start(epoch, "train")` — saves periodic epoch checkpoint (skips epoch 0)
-- `on_batch_end(step, "train", data)` — saves periodic step checkpoint
+- `on_batch_end(step, "train", data)` — tracks `current_global_step` from `data["global_optim_step"]`; saves periodic step checkpoint
 - `log_metrics(step, "val", metrics)` — checks if monitored metric improved, saves "best"
 - `on_phase_end("train")` — saves "last" checkpoint
+
+`ckpt_utils.load_checkpoint` returns all non-state metadata (epoch, step, `global_optim_step`, `dataloader_state`, …); the trainer prefers `global_optim_step` for resume (the legacy `step` is a micro-batch count that over-advances the schedule under accumulation).
 
 Best/last checkpoints are never counted towards `max_checkpoints_saved` (only periodic ones are rotated).
 
@@ -102,13 +106,14 @@ def finalize(self, exc: BaseException | None = None) -> None: ...
 2. `wandb.init(...)` — creates/resumes W&B run
 3. `_save_wandb_run_id()` — writes run ID to `<results_dir>/<exp_name>/.wandb_run_id`
 
-### on_batch_end Dispatch Chain
+### on_batch_end Dispatch (modality map)
 
-For each key in `_to_log` (or default keys):
-1. `_dispatch_field_logger()` — custom logger for point3d / line3d
-2. `_log_dict_scalars()` — dict of scalars → wandb.log()
-3. `_log_text()` — tokenizer.decode → wandb table (if log_text_data)
-4. `_log_image()` — auto-routes 5-D tensors to `_log_video()`; otherwise numpy conversion → wandb.Image
+`update_config()` normalizes the top-level `to_log` into `self._to_log`, a `{key: modality}` dict:
+- `None` → `{input/input, target, pred}` as `image` (plus any `input/cond/*` images discovered per-batch).
+- `list[str]` → each key as `image` (legacy behaviour).
+- `dict` → explicit `{key: modality}`, modality ∈ `text | image | video | point3d | line3d | scalars`.
+
+Deprecated `field_loggers` (key→point3d/line3d) and `log_text_data` (force default keys to text) are folded into this map for back-compat. `on_batch_end()` iterates the map and dispatches each present key via `_MODALITY_DISPATCH` to `_log_image` / `_log_video` / `_log_text` / `_log_point3d` / `_log_line3d` / `_log_dict_scalars`. In `classification` mode the `image` logger for `input/input` also receives target/pred labels for the caption.
 
 ### Image Handling
 
@@ -118,9 +123,13 @@ Tensors are moved to numpy via `torch_np_utils.to_numpy()`, transposed NCHW→NH
 
 5-D `(B, T, C, H, W)` tensors are auto-detected at the top of `_log_image()` and forwarded to `_log_video()`. The first `max_videos_per_log` clips are denormalised from `video_value_range` (e.g. `(-1, 1)` for BVI-AOM) to `uint8 [0, 255]` via `_denormalize_to_uint8()`, then passed to `wandb.Video(arr, fps=video_fps)` in NTCHW layout. bf16 inputs are upcast to fp32 before the numpy hop.
 
+### Text Handling
+
+For `text` keys, `update_config()` builds a tokenizer once via `_setup_text_logging()`: `tokenizer_type` (`bpe`/`char`/`hf`; `bpe`/`char` inferred from the path's `.json` extension when unset, `hf` explicit only) selects `data_processor.bpe_tokenizer.BPETokenizer`, `data_processor.tokenizer.Tokenizer`, or a transformers `AutoTokenizer`, and stores a `_decode_ids(ids_tensor) -> str` adapter normalizing their incompatible `decode` signatures. `_log_text()` reduces the value to the first sample's 1-D ids (`(B, T, vocab)` logits → `argmax(-1)`; `(B, T)` ids → `[0]`), decodes it, and **appends** a `[step, tag, text]` row to a per-interval buffer `self._text_rows`. After the dispatch loop, `on_batch_end()` calls `_flush_text_rows()`, which logs the buffer as **one fresh** `wandb.Table` under `{phase}/text_samples` and the buffer resets next interval. This deliberately avoids re-logging a *growing* accumulated table — that balloons run media into the tens of GB (1772 tables ≈ 14 GB observed).
+
 ### Unsupported Shapes
 
-Anything that lands in `_log_image()` with `ndim ∉ {2, 3, 4, 5}` triggers `_warn_unsupported_shape(tag)` — one log line per key per run, then a silent skip. Replaces the older silent-drop behaviour.
+Anything that lands in `_log_image()` with `ndim ∉ {2, 3, 4, 5}` — or a 2-D tensor whose largest side exceeds `_MAX_IMAGE_SIDE` (8192), e.g. a `(seq_len, vocab)` logits matrix mistakenly routed to the image logger — triggers `_warn_unsupported_shape(tag)` (one log line per key per run) then a silent skip.
 
 ### 3D Logging
 
@@ -129,5 +138,5 @@ Anything that lands in `_log_image()` with `ndim ∉ {2, 3, 4, 5}` triggers `_wa
 ### Cross-references
 
 - Reads `WANDB_RUN_ID_FILENAME` from `utils/wandb_utils.py`
-- Uses `data_processor.tokenizer.Tokenizer` for text decode
+- Uses `data_processor.bpe_tokenizer.BPETokenizer` / `data_processor.tokenizer.Tokenizer` for text decode
 - Uses `utils.torch_np_utils.to_numpy()` for tensor conversion

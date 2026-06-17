@@ -32,12 +32,19 @@ lr_scheduler_params:
   step_size: 500
   gamma: 0.9
 
+# Decode token tensors to text in W&B (char-level tokenizer).
+to_log:
+  input/input: text
+  target: text
+  pred: text
+  post_processed/generated: text
+
 # Override callbacks for language modeling
 callbacks:
   wandb:
     logging_interval: 100
-    log_text_data: true
     tokenizer: ${pretrained_tokenizer}
+    tokenizer_type: char
   checkpoint:
     save_every_n_epochs: 100
 

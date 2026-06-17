@@ -20,6 +20,7 @@ Saves model, optimizer, scheduler, and loss state to disk.
 - Periodic saves every N epochs or N steps
 - Rolling window (delete old periodic checkpoints beyond `max_checkpoints_saved`)
 - Remote backup upload (SSH or W&B) after each save
+- Persists resume bookkeeping: `global_optim_step` (the true optimizer-step count, for a correct LR-schedule resume under gradient accumulation) and, when a `StatefulDataLoader` train loader is wired, its `dataloader_state` (streaming position). Both are restored by `Trainer` on resume.
 
 **When to use**: Include in `callbacks` config for all training runs.
 
@@ -44,6 +45,8 @@ Computes metrics (IoU, PSNR, SSIM, accuracy, etc.) using [TorchMetrics](https://
 - Configurable `pred_key` and `target_key` for data-container access
 - Optional `transform_pred` / `transform_target` callables
 - Injects computed metrics into `log_metrics()` so they reach `WandbCallback`
+
+**Ordering**: `MetricsCallback` mutates the shared metrics dict, and `WandbCallback.log_metrics` commits immediately — so the metrics callback must come **before** `WandbCallback` in the broadcast. Place it ahead of `/callback: default` in the experiment `defaults` list (e.g. `- /callback/lm_eval_metrics@callbacks.metrics` before `- /callback: default`). See `configs/callback/lm_eval_metrics.yaml` (next-token accuracy + bits-per-byte for the LM stages).
 
 **When to use**: Add when you need quantitative metrics beyond loss values.
 
@@ -125,13 +128,41 @@ Logs scalars, images, video clips, text, and 3D point clouds to W&B.
 - Auto-routes 5-D `(B, T, C, H, W)` tensors to `wandb.Video` (denormalises
   `video_value_range` → uint8 `[0, 255]`, configurable `video_fps`)
 - Configurable `image_value_range` for images normalised outside `[0, 1]`
-- Selective logging via `to_log` list (logs all keys by default)
-- `field_loggers` dict to override per-key logging method
-- Warns once per key (instead of silently dropping) on unsupported tensor shapes
+- Per-key modality via the top-level `to_log` (see below)
+- Token tensors decoded to an accumulating `wandb.Table` (`{phase}/text_samples`)
+- Warns once per key (and refuses oversized 2-D tensors such as `(seq_len, vocab)`
+  logits) instead of logging a junk image
 - Auto-resume: saves run ID to file, resumes W&B run on `resume_training: true`
 
-**When to use**: Include in all runs. Configure `log_text_data: true` for
-language models. For video AEs the defaults
+**Choosing what to log (`to_log`)**: the top-level `to_log` controls *which*
+data-container keys are logged and *how*:
+- `null` (default) → `input/input`, `target`, `pred` as images.
+- `list[str]` → each listed key as an image (legacy).
+- `dict[str, str]` → explicit `{key: modality}`, where modality is one of
+  `text | image | video | point3d | line3d | scalars`.
+
+For `text`, set `tokenizer` (path/name) and optionally `tokenizer_type`
+(`bpe`/`char`/`hf`; `bpe`/`char` inferred from a `.json` extension when unset,
+`hf` — a transformers `AutoTokenizer`, e.g. `"gpt2"` — must be set explicitly).
+Decoded samples are written one fresh `wandb.Table` per interval under
+`{phase}/text_samples` (stepped media, no accumulation). Example
+(autoregressive LM):
+
+```yaml
+to_log:
+  input/input: text
+  target: text
+  pred: text       # logits → argmax → decode
+callbacks:
+  wandb:
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
+```
+
+(`log_text_data` and `field_loggers` are deprecated aliases, still folded into
+`to_log` for back-compat.)
+
+**When to use**: Include in all runs. For video AEs the defaults
 (`video_value_range: [-1, 1]`, `video_fps: 8`) match BVI-AOM and
 `clip_length: 8`, so no overrides are required.
 

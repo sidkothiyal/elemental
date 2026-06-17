@@ -1,5 +1,6 @@
 """Integration tests for Trainer batch loops with real tiny models."""
-# pylint: disable=missing-class-docstring,missing-function-docstring,too-few-public-methods
+# pylint: disable=missing-class-docstring,missing-function-docstring
+# pylint: disable=too-few-public-methods,protected-access
 
 from unittest.mock import MagicMock
 
@@ -236,8 +237,11 @@ class TestBatchLoop:
         assert call_types[1] == "on_batch_end"
         assert "on_epoch_end" in call_types
         assert "log_metrics" in call_types
-        # epoch_end before log_metrics
-        assert call_types.index("on_epoch_end") < call_types.index("log_metrics")
+        # epoch_end precedes the epoch-end *aggregate* log_metrics. Per-batch loss
+        # curves are also logged earlier in the epoch (every log_interval steps),
+        # so compare against the LAST log_metrics, not the first.
+        last_log_idx = len(call_types) - 1 - call_types[::-1].index("log_metrics")
+        assert call_types.index("on_epoch_end") < last_log_idx
 
     def test_postprocessor_called(self, simple_train_setup):  # pylint: disable=redefined-outer-name
         mock_pp = MagicMock(side_effect=lambda data: data)
@@ -368,3 +372,65 @@ class TestBatchLoopGan:
         assert "on_batch_end" in call_types
         assert "on_epoch_end" in call_types
         assert "log_metrics" in call_types
+
+
+# =========================================================================
+# Mid-training step validation (Trainer._validate / max_batches / trigger)
+# =========================================================================
+
+
+@pytest.mark.integration
+class TestStepValidation:
+    def test_max_batches_caps_the_loop(
+        self, simple_train_setup
+    ):  # pylint: disable=redefined-outer-name
+        # 8 samples / batch_size 4 = 2 batches; cap at 1.
+        tracker = TrackingCallback()
+        trainer = _make_trainer(simple_train_setup, callbacks=CallbackList([tracker]))
+        trainer._run_batch_loop(
+            "train", epoch=0, loader=simple_train_setup["dataloader"], max_batches=1
+        )
+        batch_ends = [c for c in tracker.calls if c[0] == "on_batch_end"]
+        assert len(batch_ends) == 1
+
+    def test_validate_restores_training_state(
+        self, simple_train_setup
+    ):  # pylint: disable=redefined-outer-name
+        setup = simple_train_setup
+        trainer = _make_trainer(
+            setup,
+            loaders={"train": setup["dataloader"], "val": setup["dataloader"]},
+        )
+        trainer.model.train()
+        # Prime the transient state the training loop would have set.
+        trainer._total_batches = 2
+        trainer._current_loader = setup["dataloader"]
+        trainer._current_phase = "train"
+
+        trainer._validate(epoch=0, log_step=7, max_batches=1)
+
+        assert trainer.model.training is True
+        assert trainer._current_phase == "train"
+        assert trainer._total_batches == 2
+
+    def test_step_trigger_runs_validation_and_logs(
+        self, simple_train_setup
+    ):  # pylint: disable=redefined-outer-name
+        setup = simple_train_setup
+        tracker = TrackingCallback()
+        config = {
+            "validation_interval_steps": 1,  # every optimizer step
+            "validation_max_batches": 1,
+            "log_interval": 0,
+        }
+        trainer = _make_trainer(
+            setup,
+            config=config,
+            callbacks=CallbackList([tracker]),
+            loaders={"train": setup["dataloader"], "val": setup["dataloader"]},
+        )
+        trainer._run_batch_loop("train", epoch=0, loader=setup["dataloader"])
+
+        val_logs = [c for c in tracker.calls if c[0] == "log_metrics" and c[2] == "val"]
+        assert val_logs, "step-based validation did not log val metrics"
+        assert trainer.model.training is True, "training mode not restored after eval"

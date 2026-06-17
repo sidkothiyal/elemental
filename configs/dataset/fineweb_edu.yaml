@@ -9,7 +9,11 @@ tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
 
 dataloader:
   train:
-    _target_: torch.utils.data.DataLoader
+    # StatefulDataLoader (drop-in for torch DataLoader) round-trips its iteration
+    # state via state_dict()/load_state_dict(), so resume continues the stream
+    # past consumed docs instead of restarting. The checkpoint callback persists
+    # this; Trainer._restore_dataloader_state replays it. Val stays a plain loader.
+    _target_: torchdata.stateful_dataloader.StatefulDataLoader
     dataset:
       _target_: dataset.fineweb_edu_dataset.FineWebEduDataset
       tokenizer_path: ${tokenizer_path}
@@ -17,7 +21,17 @@ dataloader:
       dataset: HuggingFaceFW/fineweb-edu
       split: train
       text_key: text
-      name: null
+      # Curated 10BT-token subset — the default (``null``) config has an
+      # unstable schema that intermittently fails parquet ``CastError``
+      # (``dump`` vs ``date`` column mismatch). Override on the command line
+      # if you want a different subset (e.g. ``name=sample-100BT``).
+      name: sample-10BT
+      # Reserve a deterministic ~0.1% of documents (bucket 0 of 1000) for the
+      # held-out val split below; train *excludes* them. Same (mod, residue) on
+      # train+val ⇒ guaranteed-disjoint, sharding-safe (hash of doc id).
+      holdout_mod: 1000
+      holdout_residue: 0
+      holdout_mode: exclude
     batch_size: ${batch_size}
     num_workers: 4
     pin_memory: true
@@ -31,10 +45,18 @@ dataloader:
       dataset: HuggingFaceFW/fineweb-edu
       split: train
       text_key: text
-      name: null
+      name: sample-10BT
+      # Keep only the held-out bucket the train stream drops → true held-out eval.
+      holdout_mod: 1000
+      holdout_residue: 0
+      holdout_mode: keep
       max_docs: 256
     batch_size: ${batch_size}
-    num_workers: 1
+    # num_workers=0: mid-training step validation iterates this loader while the
+    # main process already holds a CUDA context + live train workers. Forking a
+    # val worker there triggers a CUDA re-init crash, and a bounded eval doesn't
+    # need async loading anyway. Must pair with persistent_workers=false.
+    num_workers: 0
     pin_memory: true
-    persistent_workers: true
+    persistent_workers: false
   test: null

@@ -1,5 +1,6 @@
 """Unit tests for BPETokenizer + train_bpe."""
 # pylint: disable=missing-class-docstring,missing-function-docstring,too-few-public-methods
+# pylint: disable=redefined-outer-name
 
 import pytest
 
@@ -7,6 +8,7 @@ from data_processor.bpe_tokenizer import (
     ASSISTANT,
     BOS,
     EOT,
+    MASK,
     USER,
     BPETokenizer,
     ChatMessage,
@@ -111,3 +113,26 @@ class TestEncodeChat:
     def test_unknown_role_raises(self, trained_tokenizer):
         with pytest.raises(ValueError, match="unknown role"):
             trained_tokenizer.encode_chat([{"role": "system", "content": "x"}])
+
+
+@pytest.mark.unit
+class TestMaskTokenRegistration:
+    def test_default_no_mask_registered(self, trained_tokenizer):
+        assert MASK not in trained_tokenizer.special_token_ids
+        with pytest.raises(RuntimeError, match="mask token not registered"):
+            _ = trained_tokenizer.mask_token_id
+
+    def test_register_mask_appends_sentinel_id(self, tmp_path_factory):
+        # Build a fresh tokenizer because the shared fixture is module-scoped.
+        save_path = str(tmp_path_factory.mktemp("tok_mask") / "bpe.json")
+        train_bpe(iter(_CORPUS), vocab_size=400, save_path=save_path, min_frequency=1)
+        plain = BPETokenizer(save_path)
+        masked = BPETokenizer(save_path, register_mask=True)
+        assert masked.mask_token_id == plain.vocab_size
+        assert masked.vocab_size == plain.vocab_size + 1
+        # Mask id is past the real vocabulary — never produced by encode().
+        for ids in [
+            masked.encode("the quick brown fox"),
+            masked.encode(BOS, add_special_tokens=True),
+        ]:
+            assert masked.mask_token_id not in ids

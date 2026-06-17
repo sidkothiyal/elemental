@@ -73,12 +73,11 @@ Trainer.train()
       (per-epoch scheduler step if scheduler_step_per == "epoch")
       callbacks.on_phase_end("train")
       if (epoch + 1) % validation_interval == 0:
-        model.eval()
-        callbacks.on_phase_start("val")
-        _run_batch_loop("val", epoch, loaders["val"])
-        callbacks.on_phase_end("val")
+        _validate(epoch)            # epoch-boundary eval (shared helper)
   (finally) stop profiler + cleanup distributed
 ```
+
+`_validate(epoch, *, log_step=None, max_batches=None)` is the single eval path: it snapshots/restores transient loop state (`_total_batches`/`_current_loader`/`_current_phase`) and the model's train/eval mode, runs `_run_batch_loop("val", ..., max_batches, log_step)`, and restores `model.train()`. Mid-training **step** validation calls the same helper from inside the training loop (see below).
 
 ## Batch loop (`_run_batch_loop`)
 
@@ -92,15 +91,26 @@ for batch_idx, batch in enumerate(tqdm(loader)):
     losses = self.eval_batch(batch, batch_idx, epoch, step, data)    # → train_batch(..., training=False)
   for k, v in losses.items():
     _accumulate_loss(running, k, v)
+  if phase == "train" and should_step_optimizer(...):
+    self._global_optim_step += 1
+    if validation_interval_steps and step % validation_interval_steps == 0:
+      self._validate(epoch, log_step=self._global_optim_step, max_batches=validation_max_batches)
+  if max_batches is not None and batch_idx >= max_batches: break   # bounded eval
   callbacks.on_batch_end(step, phase, data)
+  if phase == "train" and log_interval > 0 and step % log_interval == 0:
+    # live curves + diagnostics: loss_*, perplexity, grad_norm, throughput/*,
+    # gpu_mem_*, skipped_steps
+    callbacks.log_metrics(step, phase, batch_metrics)
   if profiler and profiler_step_per == "batch":
     profiler.step()
 callbacks.on_epoch_end(epoch, phase)
 metrics = materialize_and_average_losses(running, total_batches)
-callbacks.log_metrics(step, phase, metrics)
+callbacks.log_metrics(log_step or step, phase, metrics)  # epoch-end average (log_step aligns mid-train eval)
 if profiler and profiler_step_per == "epoch":
   profiler.step()
 ```
+
+**`log_interval`** (default 50; 0 disables) controls the per-batch `log_metrics` call. The epoch-end average alone never reaches W&B for never-completing streaming epochs (`validation_interval: 0`, a single unbounded `IterableDataset` epoch), so the live batch losses are pushed every `log_interval` training steps under the same `train/loss_*` keys.
 
 ## Single-batch step (`train_batch`, supervised)
 

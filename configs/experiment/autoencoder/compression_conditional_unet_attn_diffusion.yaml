@@ -110,10 +110,10 @@ loss:
       pred_key: "pred/pred_x0"
 
 to_log:
-  - input/input
-  - input/cond
-  - target
-  - pred/pred_x0
+  input/input: image
+  input/cond: image
+  target: image
+  pred/pred_x0: image
 
 model_input_args:
   - "t"

@@ -3,9 +3,10 @@
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from torch import nn
 
-from utils.initializer import get_num_parameters, move_to_device
+from utils.initializer import get_num_parameters, initialize_dtype, move_to_device
 
 
 @pytest.mark.unit
@@ -54,3 +55,41 @@ class TestGetNumParameters:
         model = nn.Identity()
         total, _trainable, _frozen = get_num_parameters(model)
         assert total == 0
+
+
+@pytest.mark.unit
+class TestInitializeDtype:
+    def test_none_defaults_to_bfloat16_or_float32_fallback(self):
+        # On CPU bf16 may not be supported; the function silently falls back.
+        result = initialize_dtype(None)
+        assert result in (torch.bfloat16, torch.float32)
+
+    def test_torch_dtype_passthrough(self):
+        assert initialize_dtype(torch.float32) is torch.float32
+        assert initialize_dtype(torch.float16) is torch.float16
+
+    def test_string_bfloat16_resolves(self):
+        # The exact value depends on bf16 support; should be a torch.dtype either way.
+        result = initialize_dtype("bfloat16")
+        assert isinstance(result, torch.dtype)
+        assert result in (torch.bfloat16, torch.float32)
+
+    def test_string_float32_resolves(self):
+        assert initialize_dtype("float32") is torch.float32
+
+    def test_string_float16_resolves(self):
+        assert initialize_dtype("float16") is torch.float16
+
+    def test_invalid_string_raises(self):
+        with pytest.raises(ValueError, match="does not resolve to a torch.dtype"):
+            initialize_dtype("not_a_real_dtype")
+
+    def test_invalid_string_pointing_to_non_dtype_raises(self):
+        # ``torch.nn`` exists but is not a torch.dtype.
+        with pytest.raises(ValueError, match="does not resolve to a torch.dtype"):
+            initialize_dtype("nn")
+
+    def test_hydra_dictconfig_get_object(self):
+        # The escape hatch used by configs/experiment/gan/customizable_gan.yaml.
+        cfg = OmegaConf.create({"_target_": "hydra.utils.get_object", "_args_": ["torch.float32"]})
+        assert initialize_dtype(cfg) is torch.float32

@@ -33,9 +33,9 @@ Hydra entry point that streams a corpus iterator (FineWeb-EDU by default) into
 `tokenizer.save_path`.
 
 ```bash
-uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+uv run python src/tools/train_tokenizer.py +tokenizer=nanochat_bpe
 # Override corpus to a local file:
-uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe \
+uv run python src/tools/train_tokenizer.py +tokenizer=nanochat_bpe \
     tokenizer.corpus._target_=data_processor.corpus_iterators.FileLineIterator \
     tokenizer.corpus.path=corpus.txt
 ```

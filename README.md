@@ -52,7 +52,7 @@ uv run python src/trainer.py experiment/gan/cityscapes_seg
 uv run python src/trainer.py experiment/vla/vla_rl_ppo
 
 # Nanochat full pipeline (BPE → pretrain → SFT → GRPO on GSM8K)
-uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+uv run python src/tools/train_tokenizer.py +tokenizer=nanochat_bpe
 uv run python src/trainer.py experiment/nanochat/pretrain
 uv run python src/trainer.py experiment/nanochat/sft \
     load_checkpoint_path=results/nanochat/<pretrain-run>/last.pt

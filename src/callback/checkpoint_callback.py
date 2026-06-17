@@ -14,10 +14,10 @@ from utils import checkpoint as ckpt_utils
 logger = logging.getLogger(__name__)
 
 
-class CheckpointCallback(callback.Callback):
+class CheckpointCallback(callback.Callback):  # pylint: disable=too-many-instance-attributes
     """Checkpoint callback for saving model, optimizer, scheduler, and loss states."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         save_dir: str,
         save_every_n_epochs: int | None = 10,
@@ -58,6 +58,11 @@ class CheckpointCallback(callback.Callback):
         self.scheduler: Any | None = None
         self.criterion: nn.Module | None = None
         self.training_mode: str | None = None
+        # Train dataloader (for streaming resume) + the latest optimizer-step
+        # count, both persisted so resume restores the LR schedule and stream
+        # position correctly. See Trainer._restore_dataloader_state.
+        self.train_loader: Any | None = None
+        self.current_global_step: int = 0
 
         # Track best metric value
         self.best_metric = float("inf") if mode == "min" else float("-inf")
@@ -96,6 +101,7 @@ class CheckpointCallback(callback.Callback):
         self.criterion = config.get("criterion", self.criterion)
         self.training_mode = config.get("mode", self.training_mode)
         self.remote_backup = config.get("remote_backup", self.remote_backup)
+        self.train_loader = config.get("train_loader", self.train_loader)
 
         logger.info("CheckpointCallback config updated")
 
@@ -119,7 +125,15 @@ class CheckpointCallback(callback.Callback):
             logger.warning("Model not set, skipping checkpoint save")
             return
 
-        # Save checkpoint using utility function
+        # Save checkpoint using utility function. ``global_optim_step`` and the
+        # streaming dataloader state are saved as extra metadata so resume can
+        # restore the LR schedule and the stream position exactly.
+        dataloader_state = None
+        if self.train_loader is not None and hasattr(self.train_loader, "state_dict"):
+            try:
+                dataloader_state = self.train_loader.state_dict()
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to capture dataloader state for checkpoint", exc_info=True)
         checkpoint_path = os.path.join(self.save_dir, f"{name}.pt")
         ckpt_utils.save_checkpoint(
             checkpoint_path=checkpoint_path,
@@ -129,6 +143,8 @@ class CheckpointCallback(callback.Callback):
             criterion=self.criterion,
             epoch=epoch,
             step=step,
+            global_optim_step=self.current_global_step,
+            dataloader_state=dataloader_state,
         )
         self.total_checkpoints_saved += 1
         logger.info(
@@ -190,6 +206,13 @@ class CheckpointCallback(callback.Callback):
             phase: Current phase (train/val/test).
             data: Unified data container (unused by this callback).
         """
+        # Track the latest optimizer-step count so any checkpoint (periodic,
+        # best, last) records the correct resume position.
+        if phase == "train":
+            gs = data.get("global_optim_step")
+            if gs is not None:
+                self.current_global_step = int(gs)
+
         # Save periodic checkpoints by step during training
         if phase == "train" and self.save_every_n_steps is not None:
             if step > 0 and step % self.save_every_n_steps == 0:
@@ -243,7 +266,7 @@ class CheckpointCallback(callback.Callback):
             self._save_checkpoint("last", epoch=self.current_epoch, is_periodic=False)
 
     @staticmethod
-    def load_checkpoint(
+    def load_checkpoint(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         checkpoint_path: str,
         model: nn.Module | nn.ModuleDict,
         optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,

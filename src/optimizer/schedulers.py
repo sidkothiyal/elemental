@@ -15,13 +15,36 @@ from torch.optim.optimizer import Optimizer
 class WarmupCosineLR(LambdaLR):
     """Linear warmup → cosine decay → flat minimum.
 
-    Args:
-        optimizer: any ``torch.optim.Optimizer`` (including ``MultiOptimizer``).
-        warmup_steps: number of steps of linear warmup from 0 to base lr.
-        total_steps: total scheduled steps; cosine decay runs from
-            ``warmup_steps`` to ``total_steps``.
-        min_lr_ratio: floor as a fraction of base lr (cosine decays to this).
-        last_epoch: standard LambdaLR resume index.
+    De-facto standard for large-scale model pretraining (GPT-3, LLaMA, Mistral, etc.).
+
+    Why warmup: Adam's second-moment estimates start at zero, making the effective LR
+    artificially large in early steps. Warmup gives the optimizer time to calibrate
+    before taking large steps, preventing destructive early updates that are hard to
+    recover from at scale.
+
+    Why cosine decay: decays slowly at first (exploration), faster through the middle,
+    then slowly again near convergence — smoother than step decay and avoids sharp LR
+    jumps. The flat floor keeps updates alive at the end rather than decaying to zero.
+
+    Alternative: WSD (Warmup-Stable-Decay) decouples the schedule from total_steps,
+    useful when the training budget is not known in advance.
+
+    LR (as fraction of base_lr)
+    ^
+    1.0 |          *
+        |        *   *
+        |       *       *
+        |      *           *
+        |     *               *
+        |    *                   *
+    min |   *                       * * * * * * * * (flat at min_lr_ratio)
+        |  *
+        | *
+    0.0 |*
+        +--+----------+--------------------------+---> steps
+           0    warmup_steps              total_steps
+           |<--warmup-->|<----cosine decay------->|
+           | (linear)   |
     """
 
     def __init__(
@@ -33,6 +56,15 @@ class WarmupCosineLR(LambdaLR):
         min_lr_ratio: float = 0.1,
         last_epoch: int = -1,
     ) -> None:
+        """
+        Args:
+            optimizer: any ``torch.optim.Optimizer`` (including ``MultiOptimizer``).
+            warmup_steps: number of steps of linear warmup from 0 to base lr.
+            total_steps: total scheduled steps; cosine decay runs from
+                ``warmup_steps`` to ``total_steps``.
+            min_lr_ratio: floor as a fraction of base lr (cosine decays to this).
+            last_epoch: standard LambdaLR resume index.
+        """
         if warmup_steps < 0 or total_steps <= 0:
             raise ValueError(
                 f"need warmup_steps >= 0 and total_steps > 0, got {warmup_steps}/{total_steps}"

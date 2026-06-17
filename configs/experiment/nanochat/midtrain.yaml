@@ -16,7 +16,10 @@ defaults:
   - /loss: lm_pretrain
   - /optimizer: muon_adamw
   - /scheduler: nanochat_warmup_cosine
+  # LM eval metrics BEFORE /callback: default (ordering — see lm_eval_metrics.yaml).
+  - /callback/lm_eval_metrics@callbacks.metrics
   - /callback: default
+  - /postprocessor/lm_generate
   - /torch_compile
   - /remote_backup: wandb
   - _self_
@@ -33,13 +36,26 @@ batch_size: 32
 gradient_accumulation_steps: 4
 num_epochs: 1
 validation_interval: 0
+# Step-based held-out eval (shorter horizon than pretrain).
+validation_interval_steps: 2000
+validation_max_batches: 50
 clip_grad_norm: 1.0
+skip_nonfinite_steps: true
 
 # Smaller LRs and shorter horizon than pretraining.
 warmup_steps: 100
 total_steps: 10000
+min_lr_ratio: 0.0  # decay to 0 (override the shared scheduler's 0.1 floor)
 
 tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+# Decode token tensors to text in W&B (input/target context + argmax of pred,
+# plus the validation generation sample).
+to_log:
+  input/input: text
+  target: text
+  pred: text
+  post_processed/generated: text
 
 optimizer_groups:
   muon:
@@ -65,6 +81,8 @@ resume_training: false
 callbacks:
   wandb:
     logging_interval: 25
-    log_text_data: false
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
   checkpoint:
     save_every_n_epochs: 1
+    save_every_n_steps: 1000

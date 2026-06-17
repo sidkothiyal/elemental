@@ -145,20 +145,36 @@ def initialize_device(
     return torch.device(device)
 
 
-def initialize_dtype(dtype: str | None = None) -> torch.dtype:
-    """Initialize the dtype.
+def initialize_dtype(dtype: str | torch.dtype | DictConfig | None = None) -> torch.dtype:
+    """Resolve a dtype spec from a config to a concrete ``torch.dtype``.
 
-    Args:
-        dtype: The dtype to initialize.
+    Accepts:
+      - ``None`` — defaults to ``torch.bfloat16``.
+      - ``torch.dtype`` — passed through.
+      - ``str`` — e.g. ``"bfloat16"``, ``"float16"``, ``"float32"``; resolved
+        via ``getattr(torch, ...)``.
+      - Hydra config (``DictConfig`` with ``_target_``) — instantiated, e.g.
+        ``{_target_: hydra.utils.get_object, _args_: [torch.bfloat16]}``.
+
+    Falls back to ``float32`` when bfloat16 is selected on hardware that
+    doesn't support it.
     """
-    dtype = dtype or torch.bfloat16
-    if not isinstance(dtype, torch.dtype):
+    if dtype is None:
+        dtype = torch.bfloat16
+    elif isinstance(dtype, str):
+        resolved = getattr(torch, dtype, None)
+        if not isinstance(resolved, torch.dtype):
+            raise ValueError(
+                f"dtype string {dtype!r} does not resolve to a torch.dtype "
+                f"(e.g. 'bfloat16', 'float16', 'float32')."
+            )
+        dtype = resolved
+    elif not isinstance(dtype, torch.dtype):
         dtype = hy_utils.instantiate(dtype)
 
-    if dtype is torch.bfloat16:
-        if not torch.cuda.is_bf16_supported():
-            logger.warning("BFloat16 is not supported on this device. Using float32 instead.")
-            dtype = torch.float32
+    if dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        logger.warning("BFloat16 is not supported on this device. Using float32 instead.")
+        dtype = torch.float32
 
     logger.info("Using dtype: %s", dtype)
     return dtype

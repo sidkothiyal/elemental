@@ -25,7 +25,7 @@ def _unwrap_compiled(obj: Any) -> Any:
     save/load keeps checkpoint keys stable regardless of compilation state.
     """
     while hasattr(obj, "_orig_mod"):
-        obj = obj._orig_mod
+        obj = obj._orig_mod  # pylint: disable=protected-access
     return obj
 
 
@@ -105,7 +105,7 @@ def load_state_from_checkpoint(
         obj.load_state_dict(state_dict, **load_state_dict_kwargs)
 
 
-def save_checkpoint(
+def save_checkpoint(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     checkpoint_path: str,
     model: nn.Module | nn.ModuleDict,
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
@@ -149,7 +149,7 @@ def save_checkpoint(
     logger.info("Saved checkpoint: %s", checkpoint_path)
 
 
-def load_checkpoint(
+def load_checkpoint(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     checkpoint_path: str,
     model: nn.Module | nn.ModuleDict | None = None,
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
@@ -202,10 +202,10 @@ def load_checkpoint(
         checkpoint.get("step"),
     )
 
-    return {
-        "epoch": checkpoint.get("epoch"),
-        "step": checkpoint.get("step"),
-    }
+    # Return all non-state metadata (epoch, step, global_optim_step,
+    # dataloader_state, …) so callers can restore resume bookkeeping. The large
+    # ``*_state_dict`` blobs are already loaded into the passed objects above.
+    return {key: value for key, value in checkpoint.items() if not key.endswith("_state_dict")}
 
 
 def _find_latest_numbered_checkpoint(run_dir: str, prefix: str) -> str | None:
@@ -240,7 +240,7 @@ def _find_latest_numbered_checkpoint(run_dir: str, prefix: str) -> str | None:
     return best_path
 
 
-def find_latest_checkpoint(
+def find_latest_checkpoint(  # pylint: disable=too-many-locals
     results_dir: str,
     experiment_name: str,
     checkpoint_preference: list[str] | None = None,

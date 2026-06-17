@@ -27,8 +27,8 @@ defaults:
 experiment_name: compression_ae_8x_l1_perceptual_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
-# resume_training: true
-# load_checkpoint_path: latest
+resume_training: true
+load_checkpoint_path: latest
 
 # torch.compile — static shapes, simple ops → safe to compile aggressively.
 torch_compile:
@@ -45,8 +45,8 @@ mode: "autoencoder"
 lr: 0.0003
 num_epochs: 1000
 validation_interval: 200
-batch_size: 4
-grad_accum_steps: 4   # effective batch = 16
+batch_size: 12
+grad_accum_steps: 2   # effective batch = 24
 
 dtype:
   _target_: hydra.utils.get_object
@@ -59,3 +59,9 @@ callbacks:
     logging_interval: 200
   checkpoint:
     save_every_n_epochs: 10
+
+# Log reconstructions/targets as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

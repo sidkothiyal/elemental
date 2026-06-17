@@ -22,8 +22,25 @@ cudnn_benchmark: true
 # 0 = disabled (recommended for most runs); n = runs every n epochs.
 cuda_empty_cache_interval: 0
 validation_interval: 5
+# Mid-training held-out eval every N optimizer steps (independent of the
+# epoch-based validation_interval above). null/0 disables; pair with
+# validation_max_batches to keep each eval short. Useful for streaming
+# IterableDatasets whose epoch never ends.
+validation_interval_steps: null
+validation_max_batches: null
+# Steps between per-batch metric logs to callbacks (e.g. W&B loss curves).
+# 0 disables; the epoch-end average is always logged regardless.
+log_interval: 50
 gradient_accumulation_steps: 1
 clip_grad_norm: null
+# When true, a non-finite (NaN/Inf) training loss drops the current
+# accumulation window and continues (counted as train/skipped_steps) instead of
+# raising NaNLossError. Off by default (fail-fast).
+skip_nonfinite_steps: false
+# Device peak FLOP/s for the MFU estimate (throughput/mfu). null → MFU not
+# logged (only throughput/tokens_per_sec and achieved_tflops). E.g. ~9.9e14 for
+# an H100 bf16 (no sparsity).
+peak_flops_per_sec: null
 dtype: null
 
 # Default optimizer and scheduler (trainer.py uses these strings with getattr)
@@ -51,7 +68,11 @@ profiler: null
 remote_backup: null
 
 # Trial budget (autoresearch / hyperparameter search). Both null = no limit.
-# max_steps: hard cap on global step count; short-circuits the epoch loop.
+# max_steps: hard cap on OPTIMIZER steps (accumulation boundaries, not
+#   micro-batches) — same unit as the LR scheduler's total_steps, so setting
+#   max_steps == total_steps ends the run exactly when the schedule does.
+#   Short-circuits the epoch loop; essential for streaming IterableDatasets
+#   whose epoch length is undefined.
 # max_wall_time_sec: wall-clock cap in seconds from train() entry.
 max_steps: null
 max_wall_time_sec: null

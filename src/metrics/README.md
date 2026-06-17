@@ -20,6 +20,18 @@ Image quality metric. Higher is better. Common threshold: >30 dB is good compres
 
 Perceptual image quality metric. Range [0, 1]; higher is better.
 
+### `next_token_accuracy.py` — NextTokenAccuracy (LM)
+
+Top-1 next-token accuracy from `(B, T, vocab)` logits vs `(B, T)` target ids, masking
+`ignore_index`. A `BaseMetric` (per-sample accuracy over valid positions). Wire via the
+LM metrics callback on the `val` phase.
+
+### `bits_per_byte.py` — BitsPerByte (LM)
+
+Tokenizer-independent bits-per-byte = `(Σ cross_entropy_bits) / (Σ decoded UTF-8 bytes)`.
+A sum-based `torchmetrics.Metric` (a ratio of sums, not a mean of per-sample ratios), so it
+takes a `tokenizer_path` to count bytes. Lets follow-up experiments be compared across tokenizers.
+
 ## Usage
 
 Metrics are instantiated in `MetricsCallback` via Hydra:

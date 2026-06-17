@@ -10,11 +10,16 @@
 defaults:
   - /default
   - /dataset: fineweb_edu
-  - /model: nanochat_gpt_d20
+  - /model: nanochat_gpt_d12
   - /loss: lm_pretrain
   - /optimizer: muon_adamw
   - /scheduler: nanochat_warmup_cosine
+  # LM eval metrics (next-token acc + bpb) BEFORE /callback: default so this
+  # callback precedes WandbCallback in the broadcast and its metrics get logged.
+  - /callback/lm_eval_metrics@callbacks.metrics
   - /callback: default
+  # Free-running generation samples during validation (phases: [val]).
+  - /postprocessor/lm_generate
   - /torch_compile
   - /remote_backup: wandb
   - _self_
@@ -28,22 +33,49 @@ channels_last: false
 cudnn_benchmark: false  # token shape is constant; benchmark not useful
 
 # Pretraining knobs (override on the command line for smoke runs).
-batch_size: 32
-gradient_accumulation_steps: 4
+batch_size: 4
+gradient_accumulation_steps: 8
 num_epochs: 1
-validation_interval: 0  # streaming dataset; eval handled by SFT/GRPO stages
+validation_interval: 0  # epoch-based eval off; use step-based eval below instead
+# Run a short held-out eval every 10k optimizer steps (≈655M tokens apart),
+# capped at 50 batches so each eval stays cheap. Reports val/loss_total,
+# val/perplexity, val/next_token_acc, val/bits_per_byte + a generation sample.
+validation_interval_steps: 10000
+validation_max_batches: 50
 clip_grad_norm: 1.0
+# Resilience: drop a non-finite accumulation window instead of crashing.
+skip_nonfinite_steps: true
 
 # Scheduler horizon (used by warmup-cosine).
 warmup_steps: 1000
 total_steps: 100000
 
+min_lr_ratio: 0.001
+
+# Drive run length by optimizer steps, not dataset exhaustion: a streaming
+# IterableDataset has no well-defined epoch, so num_epochs=1 alone would stop
+# whenever the stream runs dry. Capping at total_steps ends the run exactly
+# when the cosine schedule reaches min_lr.
+max_steps: ${total_steps}
+
 # Hand the tokenizer artifact through to dataset + model overrides.
 tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
 
+# Decode token tensors to text in W&B (input/target context + argmax of pred,
+# plus the free-running generation sample produced during validation).
+to_log:
+  input/input: text
+  target: text
+  pred: text
+  post_processed/generated: text
+
 callbacks:
   wandb:
-    logging_interval: 50
-    log_text_data: false  # custom BPE — wikitext logging path uses HF tokenizer
+    logging_interval: 250
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
   checkpoint:
     save_every_n_epochs: 1
+    # Step-level checkpoints for the long single-epoch streaming run, so resume
+    # restores the LR schedule + stream position (see Trainer resume logic).
+    save_every_n_steps: 2000

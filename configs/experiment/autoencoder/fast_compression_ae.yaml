@@ -23,8 +23,8 @@ defaults:
 experiment_name: fast_compression_ae_8x_l1_perceptual_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
-# resume_training: true
-# load_checkpoint_path: latest
+resume_training: true
+load_checkpoint_path: latest
 
 # torch.compile - static shapes, simple ops -> safe to compile aggressively.
 torch_compile:
@@ -43,7 +43,7 @@ num_epochs: 1000
 validation_interval: 200
 # Smaller model fits at higher per-step batch; effective batch = 16 matches
 # `compression_ae` (4 * 4) for fair comparison.
-batch_size: 8
+batch_size: 24
 grad_accum_steps: 2
 
 dtype:
@@ -57,3 +57,9 @@ callbacks:
     logging_interval: 200
   checkpoint:
     save_every_n_epochs: 10
+
+# Log reconstructions/targets as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

@@ -21,6 +21,8 @@ import typer
 
 from training.builder import build_trainer
 
+logger = logging.getLogger(__name__)
+
 
 def _classify_exit_code(exc: BaseException) -> int:
     if isinstance(exc, torch.cuda.OutOfMemoryError):
@@ -64,9 +66,16 @@ def _main(
             trainer.test()
         else:
             trainer.train()
+    except KeyboardInterrupt as exc:
+        # Clean message, no scary traceback for a deliberate Ctrl-C.
+        logger.warning("Run interrupted by user (KeyboardInterrupt).")
+        sys.exit(_classify_exit_code(exc))
     except BaseException as exc:  # pylint: disable=broad-exception-caught
         # _finalize() (incl. TrialSummaryCallback.finalize) already ran inside
-        # train()/test() via their try/finally. We only need the exit code here.
+        # train()/test() via their try/finally. Log the traceback HERE before
+        # collapsing it into an exit code — otherwise the failure reason is lost
+        # entirely (this is how a disk-full OSError once died without a trace).
+        logger.critical("Run failed with %s: %s", type(exc).__name__, exc, exc_info=exc)
         sys.exit(_classify_exit_code(exc))
 
 

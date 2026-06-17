@@ -7,9 +7,12 @@ model, optimizer, scheduler, loss, and scaler. Finally it loads any checkpoint,
 compiles the model, wires post-processor and profiler, and returns a ready-to-run
 ``Trainer`` instance.
 """
+# build_trainer's job is to call the Trainer subclasses' internal _build_* hooks.
+# pylint: disable=protected-access
 
 import logging
 import os
+import shutil
 from typing import Type
 
 import hydra
@@ -26,6 +29,36 @@ from training.trainer import Trainer
 from utils import distributed, initializer
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_file_logging(results_dir: str) -> None:
+    """Mirror all logs to ``<results_dir>/run.log`` and log free disk space.
+
+    Long unattended runs lose their console scrollback, and wandb's stdout/stderr
+    redirect can mangle a late traceback — so a crash (disk full, CUDA OOM, ...)
+    can vanish without a record. A root-level FileHandler guarantees the final
+    traceback (logged by the entrypoint) lands on disk. Also surfaces free space
+    up front, since a near-full disk is a common silent killer.
+    """
+    log_path = os.path.abspath(os.path.join(results_dir, "run.log"))
+    root = logging.getLogger()
+    # Idempotent: don't double-attach if build_trainer runs twice in a process.
+    already = any(
+        isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == log_path
+        for h in root.handlers
+    )
+    if not already:
+        handler = logging.FileHandler(log_path)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        root.addHandler(handler)
+        logger.info("Mirroring logs to: %s", log_path)
+
+    usage = shutil.disk_usage(results_dir)
+    free_gb, total_gb = usage.free / 1e9, usage.total / 1e9
+    log = logger.warning if free_gb < 20 else logger.info
+    log("Disk space at %s: %.1f GB free / %.1f GB total", results_dir, free_gb, total_gb)
 
 
 def _trainer_class_for(mode: str) -> Type[Trainer]:
@@ -70,6 +103,7 @@ def _init_env(config: DictConfig, local_rank: int) -> tuple:
     if distributed.is_main_process():
         os.makedirs(results_dir, exist_ok=True)
         logger.info("Results will be saved to: %s", results_dir)
+        _attach_file_logging(results_dir)
 
     return (
         device,
@@ -92,7 +126,7 @@ def _build_profiler(config: DictConfig, results_dir: str) -> tuple:
     return profiler, profiler_step_per
 
 
-def _maybe_load_checkpoint(
+def _maybe_load_checkpoint(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     config: DictConfig,
     model,
     optim,
@@ -125,7 +159,7 @@ def _maybe_load_checkpoint(
     )
 
 
-def build_trainer(
+def build_trainer(  # pylint: disable=too-many-locals
     config_file: str,
     local_rank: int = -1,
     overrides: list[str] | None = None,
@@ -230,6 +264,7 @@ def build_trainer(
             "mode": config.mode,
             "remote_backup": remote_backup,
             "to_log": config.get("to_log", None),
+            "train_loader": loaders.get("train"),
         }
     )
 

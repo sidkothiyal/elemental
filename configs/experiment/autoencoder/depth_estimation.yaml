@@ -19,3 +19,9 @@ experiment_name: autoencoder_depth_cityscapes_${now:%Y-%m-%d}_${now:%H-%M-%S}
 results_dir: results/autoencoder/
 
 mode: "autoencoder"
+
+# Log reconstructions/targets as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

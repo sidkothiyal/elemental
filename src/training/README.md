@@ -28,6 +28,15 @@ Supervised base. Drives the full training/validation/test lifecycle.
 - `run_epoch(epoch)` — one training epoch plus optional validation.
 - `train_batch(batch, ..., *, training=True) -> dict[str, Tensor]` — the single override point. Runs forward + loss inside `torch.autocast` and `torch.set_grad_enabled(training)`. Backward / optimizer.step / grad-clip / per-batch scheduler step are gated on `training=True`.
 - `eval_batch(...)` — one-liner: `return self.train_batch(..., training=False)`.
+- `_validate(epoch, *, log_step=None, max_batches=None)` — one validation pass, shared by epoch-boundary validation and mid-training step validation. Snapshots/restores transient loop state + the model's train/eval mode.
+
+**Mid-training step validation & production logging:**
+- `validation_interval_steps` (config) runs a short held-out eval every N optimizer steps (independent of the epoch-based `validation_interval`); `validation_max_batches` bounds it. Essential for streaming `IterableDataset`s whose epoch never ends. Logs `val/loss_*`, `val/perplexity`, and (with the LM metrics callback) `val/next_token_acc`, `val/bits_per_byte`.
+- `_run_batch_loop(..., max_batches=None, log_step=None)` — `max_batches` caps the loop (bounded eval); `log_step` aligns the final metrics to the global optimizer step.
+- Every `log_interval` steps the trainer also emits `train/grad_norm`, `throughput/tokens_per_sec`, `throughput/achieved_tflops`, `throughput/mfu` (when `peak_flops_per_sec` is set), `gpu_mem_allocated_gb`/`gpu_mem_reserved_gb`, and `perplexity`. Per-group LRs are logged as `learning_rate/<sub-optimizer>` (e.g. `learning_rate/muon`, `learning_rate/adamw`).
+- `skip_nonfinite_steps` (config): a NaN/Inf loss drops the accumulation window (counted as `train/skipped_steps`) instead of raising `NaNLossError`.
+
+**Resume:** `_global_optim_step` is saved into the checkpoint and restored on resume (the legacy `step` field is the micro-batch counter and over-advances the LR schedule under gradient accumulation). `_restore_dataloader_state()` replays a `StatefulDataLoader`'s saved stream position so a streaming dataset continues past consumed docs.
 
 **`_build_*` classmethod hooks (override points):**
 - `_build_model(config, device, use_distributed) -> nn.Module`

@@ -27,7 +27,7 @@ def extract_value(source: Any, key: str | None) -> Any:
     return getattr(source, key)
 
 
-class PostProcessorStep:
+class PostProcessorStep:  # pylint: disable=too-few-public-methods
     """A single step in a post-processor pipeline.
 
     Each step wraps a :class:`BasePostProcessor` together with metadata that
@@ -45,22 +45,28 @@ class PostProcessorStep:
         unfurl_output: If ``True`` **and** the processor returns a ``dict``,
             each key-value pair is merged directly into the data container
             instead of nesting the whole dict under *output_key*.
+        phases: Optional list of phases (``"train"``/``"val"``/``"test"``) the
+            step runs in. ``None`` (default) runs every phase. Use ``["val"]`` to
+            confine an expensive step (e.g. autoregressive generation) to
+            validation instead of every training micro-batch.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         processor: BasePostProcessor,
         input_mapping: dict[str, str],
         output_key: str = "post_processed/output",
         unfurl_output: bool = False,
+        phases: list[str] | None = None,
     ):
         self.processor = processor
         self.input_mapping = input_mapping
         self.output_key = output_key
         self.unfurl_output = unfurl_output
+        self.phases = list(phases) if phases is not None else None
 
 
-class PostProcessorPipeline:
+class PostProcessorPipeline:  # pylint: disable=too-few-public-methods
     """Ordered sequence of :class:`PostProcessorStep` instances.
 
     The pipeline runs each step in order against a shared *data* dict,
@@ -125,7 +131,12 @@ class PostProcessorPipeline:
         Returns:
             The same *data* dict, now augmented with post-processor outputs.
         """
+        phase = data.get("phase")
         for step in self.steps:
+            # Phase gate: skip steps not enabled for the current phase (e.g.
+            # generation confined to ``["val"]`` so it never runs per train batch).
+            if step.phases is not None and phase is not None and phase not in step.phases:
+                continue
             kwargs: dict[str, Any] = {}
             for path, kwarg_name in step.input_mapping.items():
                 resolved = self._resolve_input(path, data)

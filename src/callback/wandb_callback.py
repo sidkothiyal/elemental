@@ -3,15 +3,16 @@
 import logging
 import os
 import random
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import numpy as np
 import plotly.graph_objects as go
 import torch
-from torch.nn import functional as F
+from omegaconf import OmegaConf
 
 import wandb
 from callback import callback
+from data_processor.bpe_tokenizer import BPETokenizer
 from data_processor.tokenizer import Tokenizer
 from utils import torch_np_utils
 from utils.wandb_utils import (  # noqa: F401 — re-export for backward compat
@@ -22,6 +23,14 @@ from utils.wandb_utils import (  # noqa: F401 — re-export for backward compat
 logger = logging.getLogger(__name__)
 
 os.environ["WANDB_SILENT"] = "True"
+
+# Default data-container keys logged (as images) when ``to_log`` is ``None``.
+_DEFAULT_LOG_KEYS = ("input/input", "target", "pred")
+# Modality strings accepted by ``to_log`` dict values.
+_SUPPORTED_MODALITIES = frozenset({"text", "image", "video", "point3d", "line3d", "scalars"})
+# Largest plausible side length for a 2-D tensor logged as a grayscale image;
+# anything bigger (e.g. a (seq_len, vocab) logits matrix) is rejected.
+_MAX_IMAGE_SIDE = 8192
 
 
 class WandbCallback(callback.Callback):
@@ -38,6 +47,7 @@ class WandbCallback(callback.Callback):
         mode: str | None = None,
         log_text_data: bool = False,
         tokenizer: str | None = None,
+        tokenizer_type: str | None = None,
         results_dir: str | None = None,
         resume_training: bool = False,
         load_checkpoint_path: str | None = None,
@@ -57,8 +67,13 @@ class WandbCallback(callback.Callback):
             class_colors: The colors for each class for segmentation images.
             num_classes: The number of classes for segmentation images.
             mode: The mode of training (e.g. ``"classification"``).
-            log_text_data: Whether to log text data.
-            tokenizer: The tokenizer path to use for text logging.
+            log_text_data: Deprecated. When True, the default keys are logged
+                as ``"text"``. Prefer a ``to_log`` dict ``{key: "text"}``.
+            tokenizer: The tokenizer path/dir to use for text logging.
+            tokenizer_type: ``"bpe"``, ``"char"``, or ``"hf"`` (HuggingFace
+                ``AutoTokenizer``). When ``None`` it is inferred from
+                ``tokenizer`` (``.json`` → ``"bpe"``, else ``"char"``); ``"hf"``
+                must be set explicitly (a bare name like ``"gpt2"`` is ambiguous).
             results_dir: Directory where results and checkpoints are saved.
                 Required for resume_training to find previous wandb run ID.
             resume_training: Whether to resume training from a checkpoint.
@@ -87,8 +102,16 @@ class WandbCallback(callback.Callback):
         )
         self._logging_interval = logging_interval
         self._mode = mode
+        # Deprecated flag + tokenizer config, retained for text-logging setup
+        # which now happens lazily in ``update_config`` (once ``to_log`` is
+        # known). ``_to_log`` is the normalized ``{key: modality}`` map.
         self._log_text_data = log_text_data
-        self._to_log: list[str] | None = None
+        self._tokenizer_path = tokenizer
+        self._tokenizer_type = tokenizer_type
+        self._to_log: dict[str, str] = {}
+        self._to_log_was_none = True
+        self._decode_ids: Callable[[torch.Tensor], str] | None = None
+        self._text_rows: list[list] = []
         self._results_dir = results_dir
         self._exp_name = exp_name
 
@@ -106,9 +129,6 @@ class WandbCallback(callback.Callback):
 
         if self._num_classes and self._class_colors is None:
             self._class_colors = self._generate_class_colors(self._num_classes)
-
-        if log_text_data:
-            self._setup_text_logging(tokenizer)
 
         wandb_init_kwargs = self._build_wandb_init_kwargs(
             project=project,
@@ -135,12 +155,39 @@ class WandbCallback(callback.Callback):
             for i in range(num_classes)
         }
 
-    def _setup_text_logging(self, tokenizer: str | None) -> None:
-        """Initialise the tokenizer and wandb table for text logging."""
-        if tokenizer is None:
-            raise ValueError("tokenizer path is required when log_text_data is True")
-        self._log_table = wandb.Table(columns=["step", "phase", "tag", "text"])
-        self._tokenizer = Tokenizer(tokenizer)
+    def _setup_text_logging(self) -> None:
+        """Build the tokenizer + decode adapter used for ``"text"`` keys.
+
+        Idempotent: a second call (e.g. across train/val phases) is a no-op.
+        The tokenizer flavour is taken from ``tokenizer_type`` or inferred from
+        the path extension (``.json`` → BPE, otherwise the char-level tokenizer).
+        """
+        if self._decode_ids is not None:
+            return
+        path = self._tokenizer_path
+        if path is None:
+            raise ValueError("tokenizer path is required for text logging (to_log: text)")
+
+        tok_type = self._tokenizer_type
+        if tok_type is None:
+            tok_type = "bpe" if str(path).endswith(".json") else "char"
+
+        if tok_type == "bpe":
+            bpe = BPETokenizer(path)
+            self._decode_ids = lambda ids: bpe.decode(ids.tolist())
+        elif tok_type == "char":
+            # char Tokenizer.decode expects an iterable of id tensors.
+            self._decode_ids = Tokenizer(path).decode
+        elif tok_type == "hf":
+            from transformers import AutoTokenizer  # noqa: PLC0415
+
+            hf = AutoTokenizer.from_pretrained(path)
+            self._decode_ids = lambda ids: hf.decode(ids.tolist())
+        else:
+            raise ValueError(
+                f"unknown tokenizer_type {tok_type!r}; expected 'bpe', 'char', or 'hf'"
+            )
+        self._text_rows = []
 
     @staticmethod
     def _build_wandb_init_kwargs(
@@ -209,17 +256,62 @@ class WandbCallback(callback.Callback):
 
         Args:
             config: The config to update.  Recognised keys:
-                - ``to_log``: optional list of data-container keys that
-                  should be logged by :meth:`on_batch_end`.  ``None``
-                  (the default) means log everything.
+                - ``to_log``: how :meth:`on_batch_end` logs data-container keys.
+                  Accepts three shapes:
+                    * ``None`` — log the default keys as images.
+                    * ``list[str]`` — log each key as an image (legacy).
+                    * ``dict[str, str]`` — explicit ``{key: modality}`` where
+                      modality is one of ``text``/``image``/``video``/
+                      ``point3d``/``line3d``/``scalars``.
         """
-        to_log = config.get("to_log")
-        if to_log is not None:
-            self._to_log = list(to_log)
+        # Track the null default so on_batch_end can dynamically include
+        # conditioning images (e.g. VLA observation) discovered in the batch.
+        self._to_log_was_none = config.get("to_log") is None
+        self._to_log = self._normalize_to_log(config.get("to_log"))
+        if "text" in self._to_log.values():
+            self._setup_text_logging()
 
         # allow_val_change=True is needed when resuming a run, as the config
         # may already be set from the previous run
         self._wandb_logger.config.update(config, allow_val_change=True)
+
+    def _normalize_to_log(self, to_log) -> dict[str, str]:
+        """Coerce ``to_log`` (None / list / dict) into a ``{key: modality}`` map.
+
+        Legacy ``field_loggers`` and ``log_text_data`` are folded in so
+        un-migrated configs keep working.
+        """
+        # Hydra delivers DictConfig/ListConfig; normalize to native containers
+        # so the isinstance checks below behave (a DictConfig is not a dict).
+        if OmegaConf.is_config(to_log):
+            to_log = OmegaConf.to_container(to_log, resolve=True)
+
+        if to_log is None:
+            mapping = {key: "image" for key in _DEFAULT_LOG_KEYS}
+        elif isinstance(to_log, dict):
+            mapping = {str(k): str(v) for k, v in to_log.items()}
+        else:  # list / sequence of keys → image (legacy behaviour)
+            mapping = {str(key): "image" for key in to_log}
+
+        # field_loggers (deprecated) override the modality for their keys.
+        if self._field_loggers:
+            mapping.update({str(k): str(v) for k, v in self._field_loggers.items()})
+
+        # log_text_data (deprecated) forces the default keys to text.
+        if self._log_text_data:
+            for key in _DEFAULT_LOG_KEYS:
+                mapping.setdefault(key, "text")
+                if mapping[key] == "image":
+                    mapping[key] = "text"
+
+        for key, modality in mapping.items():
+            if modality not in _SUPPORTED_MODALITIES:
+                logger.warning(
+                    "WandbCallback: unknown modality %r for key %r — skipping",
+                    modality,
+                    key,
+                )
+        return mapping
 
     # ------------------------------------------------------------------
     # Logging helpers
@@ -320,6 +412,12 @@ class WandbCallback(callback.Callback):
             self._warn_unsupported_shape(tag, image.shape)
             return
 
+        # Reject implausibly large 2-D tensors (e.g. a (seq_len, vocab) logits
+        # matrix mistakenly routed here) before they become a huge image.
+        if image.ndim == 2 and max(image.shape) > _MAX_IMAGE_SIDE:
+            self._warn_unsupported_shape(tag, image.shape)
+            return
+
         if image.ndim == 3 and image.shape[2] not in [1, 3] and self._num_classes:
             image = np.argmax(image, axis=2)
             # Convert class index to class color
@@ -369,27 +467,54 @@ class WandbCallback(callback.Callback):
     def _log_text(
         self, step: int, phase: str, tag: str, text: torch.Tensor | dict[str, torch.Tensor]
     ):
-        """Log text data to wandb.
+        """Decode token tensors into the current interval's text buffer.
 
-        Tensor inputs are decoded via the configured tokenizer.  Dicts are
-        handled recursively.
+        Accepts token-id tensors (``(B, T)`` or ``(T,)``) or logits
+        (``(B, T, vocab)``, reduced via ``argmax``). The first batch element is
+        decoded with the configured tokenizer. Dicts are handled recursively.
+        Rows are buffered in ``self._text_rows`` and flushed once per interval by
+        :meth:`_flush_text_rows` — a single small table, never an accumulating one.
         """
         if isinstance(text, dict):
             for key, text_value in text.items():
                 self._log_text(step, phase, f"{tag}/{key}", text_value)
             return
 
-        if isinstance(text, torch.Tensor):
-            if text.ndim in [1, 2]:
-                text = self._tokenizer.decode(text[0, ...])
-            elif text.ndim == 3:
-                text = F.softmax(text, dim=-1)
-                text = torch.argmax(text, dim=-1)
-                text = self._tokenizer.decode(text[0, ...])
-            else:
-                raise ValueError(f"Text tensor has invalid dimensions: {text.ndim}")
+        ids = self._first_token_ids(text)
+        if ids is None:
+            self._warn_unsupported_shape(tag, getattr(text, "shape", ()))
+            return
 
-        logger.info("Logging step: %d, phase: %s, tag: %s, text: %s", step, phase, tag, text)
+        assert self._decode_ids is not None  # set by _setup_text_logging for text keys
+        self._text_rows.append([step, tag, self._decode_ids(ids)])
+
+    def _flush_text_rows(self, step: int, phase: str) -> None:
+        """Log the interval's buffered text rows as one fresh ``wandb.Table``.
+
+        A new table per call (stepped media) keeps each artifact tiny — re-logging
+        a growing accumulated table balloons run media into the tens of GB.
+        """
+        if not self._text_rows:
+            return
+        table = wandb.Table(columns=["step", "tag", "text"], data=self._text_rows)
+        self._wandb_logger.log({f"{phase}/text_samples": table, f"{phase}/step": step})
+
+    @staticmethod
+    def _first_token_ids(text: torch.Tensor) -> torch.Tensor | None:
+        """Reduce *text* to the first sample's 1-D token-id tensor, or ``None``.
+
+        ``(B, T, vocab)`` logits → ``argmax(-1)`` then first sample;
+        ``(B, T)`` ids → first sample; ``(T,)`` ids → as-is.
+        """
+        if not isinstance(text, torch.Tensor):
+            return None
+        if text.ndim == 3:
+            text = torch.argmax(text, dim=-1)
+        if text.ndim == 2:
+            text = text[0]
+        if text.ndim != 1:
+            return None
+        return text
 
     # -- 3D scatter / line logging -------------------------------------
 
@@ -479,24 +604,15 @@ class WandbCallback(callback.Callback):
 
     # -- Dispatch helpers ----------------------------------------------
 
-    _FIELD_LOGGER_DISPATCH: dict[str, str] = {
+    # Maps a ``to_log`` modality string to the method that logs it.
+    _MODALITY_DISPATCH: dict[str, str] = {
+        "image": "_log_image",
+        "video": "_log_video",
+        "text": "_log_text",
         "point3d": "_log_point3d",
         "line3d": "_log_line3d",
+        "scalars": "_log_dict_scalars",
     }
-
-    def _dispatch_field_logger(
-        self, step: int, phase: str, key: str, value: torch.Tensor | np.ndarray
-    ) -> bool:
-        """Call the configured logger for *key* if present. Returns ``True`` if dispatched."""
-        if self._field_loggers is None or key not in self._field_loggers:
-            return False
-        logger_type = self._field_loggers[key]
-        method_name = self._FIELD_LOGGER_DISPATCH.get(logger_type)
-        if method_name is None:
-            logger.warning("Unknown field logger type %r for key %s", logger_type, key)
-            return False
-        getattr(self, method_name)(step, phase, key, value)
-        return True
 
     def _log_dict_scalars(self, step: int, phase: str, key: str, value: dict) -> bool:
         """If *value* is a dict of scalars, log each to wandb and return ``True``."""
@@ -517,36 +633,37 @@ class WandbCallback(callback.Callback):
         phase: str,
         key: str,
         value,
+        modality: str,
         target_label=None,
         pred_label=None,
     ) -> None:
-        """Log a single data-container value through the dispatch chain.
-
-        Order: field_loggers → dict-of-scalars → text → image.
-        """
+        """Dispatch a single data-container value to its modality logger."""
         if value is None:
             return
-        if self._dispatch_field_logger(step, phase, key, value):
-            return
-        if self._log_dict_scalars(step, phase, key, value):
-            return
-        if self._log_text_data:
-            self._log_text(step, phase, key, value)
-        else:
+        if modality == "image":
             self._log_image(
                 step, phase, key, value, target_label=target_label, pred_label=pred_label
             )
+            return
+        method_name = self._MODALITY_DISPATCH.get(modality)
+        if method_name is None:
+            return  # unknown modality already warned during normalization
+        getattr(self, method_name)(step, phase, key, value)
 
-    def _resolve_default_keys(self, data: dict) -> list[str]:
-        """Build the default list of keys to log when ``_to_log`` is ``None``."""
-        keys = ["input/input", "target", "pred"]
-        # Include conditioning images (e.g. observation image in VLA diffusion)
+    def _discover_cond_keys(self, data: dict) -> list[str]:
+        """Dynamic conditioning-image keys to log under the ``None`` default.
+
+        Includes ``input/cond/<key>`` for tensors with ndim >= 3 (e.g. the
+        observation image in VLA diffusion).
+        """
         cond_data = data.get("input/cond")
-        if isinstance(cond_data, dict):
-            for cond_key, value in cond_data.items():
-                if isinstance(value, torch.Tensor) and value.ndim >= 3:
-                    keys.append(f"input/cond/{cond_key}")
-        return keys
+        if not isinstance(cond_data, dict):
+            return []
+        return [
+            f"input/cond/{cond_key}"
+            for cond_key, value in cond_data.items()
+            if isinstance(value, torch.Tensor) and value.ndim >= 3
+        ]
 
     # ------------------------------------------------------------------
     # Callback hooks
@@ -564,26 +681,34 @@ class WandbCallback(callback.Callback):
         if step % self._logging_interval != 0:
             return
 
-        keys = self._to_log if self._to_log is not None else self._resolve_default_keys(data)
+        effective = dict(self._to_log)
+        if self._to_log_was_none:
+            for cond_key in self._discover_cond_keys(data):
+                effective.setdefault(cond_key, "image")
 
-        for key in keys:
+        # Text rows for all keys this interval go into one fresh table (below).
+        self._text_rows = []
+        for key, modality in effective.items():
             value = data.get(key)
             if value is None:
                 continue
 
             # In classification mode, pass target/pred labels alongside the
             # input image so they appear in the caption.
-            if self._mode == "classification" and key == "input/input":
+            if self._mode == "classification" and modality == "image" and key == "input/input":
                 self._log_value(
                     step,
                     phase,
                     key,
                     value,
+                    modality,
                     target_label=data.get("target"),
                     pred_label=data.get("pred"),
                 )
             else:
-                self._log_value(step, phase, key, value)
+                self._log_value(step, phase, key, value, modality)
+
+        self._flush_text_rows(step, phase)
 
     def log_metrics(self, step: int, phase: str, metrics: dict[str, float]):
         """Log scalar metrics to wandb.

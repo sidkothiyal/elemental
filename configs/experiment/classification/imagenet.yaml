@@ -41,3 +41,7 @@ postprocessors:
       input_mapping:
         "pred": "pred"
       output_key: "post_processed/formatted_pred"
+
+# Log the input image in W&B (pred/target shown as caption labels / are features).
+to_log:
+  input/input: image

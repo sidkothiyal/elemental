@@ -16,6 +16,11 @@ tokenizer:
   corpus:
     _target_: data_processor.corpus_iterators.HFStreamIterator
     dataset: HuggingFaceFW/fineweb-edu
+    # Use the curated 10BT-token subset — it has a stable parquet schema.
+    # The default (``null``) config spans many CC-MAIN dumps whose schemas
+    # disagree with the cached ``dataset_infos.json`` (``dump`` vs ``date``
+    # column mismatch), which trips a hard CastError on ``streaming=True``.
+    name: sample-10BT
     split: train
     text_key: text
     max_docs: 200000

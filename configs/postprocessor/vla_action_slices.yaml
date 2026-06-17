@@ -4,26 +4,31 @@
 # and running statistics. Assumes actions are laid out as:
 #   [0:3] world_vector, [3:6] rotation_delta, [6:7] gripper_closedness_action
 
+# Per-key logging modality. The observation image is logged as an image; the
+# world_vector / rotation_delta trajectories as 3-D lines (the experiment's
+# field_loggers adds the matching *_input keys via back-compat); running stats
+# are dicts of scalars. The raw action tensors (input/input, target, pred/pred_x0)
+# are kept as image for parity (warn-skipped if not image-shaped).
 to_log:
-  - input/input
-  - input/cond/image
-  - target
-  - pred/pred_x0
+  input/input: image
+  input/cond/image: image
+  target: image
+  pred/pred_x0: image
   # x0 (clean action) slices — target vs predicted
-  - post_processed/world_vector_target
-  - post_processed/world_vector_pred
-  - post_processed/rotation_delta_target
-  - post_processed/rotation_delta_pred
-  - post_processed/gripper_closedness_action_target
-  - post_processed/gripper_closedness_action_pred
+  post_processed/world_vector_target: line3d
+  post_processed/world_vector_pred: line3d
+  post_processed/rotation_delta_target: line3d
+  post_processed/rotation_delta_pred: line3d
+  post_processed/gripper_closedness_action_target: scalars
+  post_processed/gripper_closedness_action_pred: scalars
   # Running stats for target x0
-  - post_processed/stats/world_vector_target
-  - post_processed/stats/rotation_delta_target
-  - post_processed/stats/gripper_closedness_action_target
+  post_processed/stats/world_vector_target: scalars
+  post_processed/stats/rotation_delta_target: scalars
+  post_processed/stats/gripper_closedness_action_target: scalars
   # Running stats for predicted x0
-  - post_processed/stats/world_vector_pred
-  - post_processed/stats/rotation_delta_pred
-  - post_processed/stats/gripper_closedness_action_pred
+  post_processed/stats/world_vector_pred: scalars
+  post_processed/stats/rotation_delta_pred: scalars
+  post_processed/stats/gripper_closedness_action_pred: scalars
 
 postprocessors:
   _target_: postprocessor.pipeline.PostProcessorPipeline
