@@ -1,0 +1,77 @@
+# @package _global_
+# hierarchical-thinking V0: hierarchical multi-scale masked-diffusion LM with 3 compressor
+# streams + a LLaDA-style decoder.
+#
+# Streams (finest-to-coarsest, capturing roughly word / phrase / sentence
+# granularity per the original hierarchical-thinking idea):
+#   - N=3   ("word"-ish):     4 layers,  d=512, h=8,  ff=2048
+#   - N=10  ("phrase"-ish):   6 layers,  d=640, h=8,  ff=2560
+#   - N=30  ("sentence"-ish): 8 layers,  d=768, h=12, ff=3072
+#
+# Decoder: 6 layers, d=384, h=6, ff=1536 — operates on the masked input at
+# full token resolution, takes gated cross-attention from all 3 compressor
+# streams.
+#
+# vocab_size MUST account for the virtual ``<|mask|>`` sentinel — i.e.
+# tokenizer.vocab_size with ``register_mask=True`` already adds 1.
+
+vocab_size: 65537                         # nanochat BPE (65536) + 1 for <|mask|>
+mask_token_id: 65536
+token_embed_dim: 768
+max_length: 2048
+cross_attn_every: 2
+mask_ratio_min: 0.05
+mask_ratio_max: 0.95
+
+model:
+  _target_: model.multi_scale_lm.MultiScaleLM
+  vocab_size: ${vocab_size}
+  mask_token_id: ${mask_token_id}
+  token_embed_dim: ${token_embed_dim}
+  max_length: ${max_length}
+  cross_attn_every: ${cross_attn_every}
+  mask_ratio_min: ${mask_ratio_min}
+  mask_ratio_max: ${mask_ratio_max}
+
+  decoder_cfg:
+    num_layers: 6
+    embed_dim: 384
+    num_heads: 6
+    ff_embed_dim: 1536
+
+  stream_cfgs:
+    # Word-scale compressor.
+    - compressor:
+        window_size: 3
+        num_layers: 4
+        num_heads: 8
+        ff_embed_dim: 2048
+      tower:
+        num_layers: 4
+        embed_dim: 512
+        num_heads: 8
+        ff_embed_dim: 2048
+
+    # Phrase-scale compressor.
+    - compressor:
+        window_size: 10
+        num_layers: 4
+        num_heads: 8
+        ff_embed_dim: 2560
+      tower:
+        num_layers: 6
+        embed_dim: 640
+        num_heads: 8
+        ff_embed_dim: 2560
+
+    # Sentence-scale compressor.
+    - compressor:
+        window_size: 30
+        num_layers: 4
+        num_heads: 12
+        ff_embed_dim: 3072
+      tower:
+        num_layers: 8
+        embed_dim: 768
+        num_heads: 12
+        ff_embed_dim: 3072

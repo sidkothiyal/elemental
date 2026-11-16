@@ -15,6 +15,7 @@ A modular PyTorch ML training library supporting image compression, classificati
 - **Flexible loss system**: composable `LossContainer`, phased, weighted, moving-weighted losses
 - **W&B integration**: images, text, 3D point clouds, auto-resume
 - **Checkpoint management**: best/last/periodic saves, remote SSH/W&B backup, auto-discovery of latest
+- **GPU benchmarking**: measure real training throughput on a candidate node and rank hardware by cost-to-train (`configs/benchmark/`, `src/tools/benchmark_value.py`)
 
 ## Installation
 
@@ -70,6 +71,57 @@ torchrun --nproc_per_node=2 src/trainer.py experiment/autoencoder/compression_un
 
 ```bash
 uv run python src/trainer.py experiment/node/node_train_autoencoder   # mode: graph dispatches to GraphTrainer
+```
+
+## Benchmarking GPUs (value-for-money)
+
+Before committing a long pretraining run to a rented node, measure how fast that GPU
+*actually* trains your model and compare cost-to-train across candidates. The benchmark
+runs the **real** training loop for a short warmup + measurement window (via an observer
+`BenchmarkCallback`) and writes `results/<mode>/<experiment>/benchmark.json` — plus a
+`benchmark/*` block in the W&B run summary. There's no separate benchmark trainer, so the
+numbers reflect the true training path.
+
+**1. Run a benchmark on each candidate node.** Thin wrappers exist for the three LM
+pretrain arms; each composes the real pretrain config + the `/benchmark: default` bundle:
+
+```bash
+# on each GPU node you're evaluating (heaviest arm shown):
+uv run python src/trainer.py experiment/recursive_memory/pretrain_benchmark
+uv run python src/trainer.py experiment/nanochat/pretrain_benchmark
+uv run python src/trainer.py experiment/memory_bank/pretrain_benchmark
+
+# tune the window if needed (max_steps must be >= warmup + measure + 1):
+uv run python src/trainer.py experiment/nanochat/pretrain_benchmark \
+    callbacks.benchmark.warmup_steps=30 callbacks.benchmark.measure_steps=100 max_steps=131
+```
+
+Benchmark on the **actual N-GPU node** you'll rent so multi-GPU scaling is *measured*, not
+assumed — this matters most for PCIe-only cards with no NVLink/InfiniBand (e.g. RTX PRO
+6000 Blackwell).
+
+**2. Rank candidates by cost-to-train.** Plug in each node's per-hour price:
+
+```bash
+uv run python src/tools/benchmark_value.py \
+    --records "results/**/benchmark.json" \
+    --price "rtx6000=9.25,a100=9.25,h100=18.5"
+```
+
+This prints a table ranked cheapest-to-train first, with estimated wall-clock hours,
+tokens/sec, MFU, and $/1M-tokens. It can also read from W&B (`--wandb_runs`), retarget the
+token budget (`--target_tokens`, default ≈3.9B), and project one node's per-GPU rate to a
+different GPU count (`--num_gpus`, assumes linear scaling — warns accordingly).
+
+To benchmark a different experiment, add a 3-line wrapper next to its config (see
+[`configs/benchmark/README.md`](configs/benchmark/README.md)):
+
+```yaml
+# @package _global_
+defaults:
+  - /experiment/<your>/<experiment>
+  - /benchmark: default
+  - _self_
 ```
 
 ## Exporting Models
@@ -140,7 +192,7 @@ elemental/
 │   ├── nodes/                # Computation graph nodes (graph_trainer)
 │   ├── postprocessor/        # Output post-processing pipeline
 │   ├── rl/                   # RL algorithms, policy wrappers, rollout buffer, GAE
-│   ├── tools/                # Utilities (checkpoint_surgeon)
+│   ├── tools/                # Utilities (checkpoint_surgeon, train_tokenizer, benchmark_value)
 │   └── utils/                # Shared utilities (checkpoint, distributed, etc.)
 │       └── remote_backup/    # Remote backup strategies (SSH, W&B)
 ├── configs/
@@ -159,6 +211,7 @@ elemental/
 │   ├── optimizer/            # Optimizer configs
 │   ├── scheduler/            # LR scheduler configs
 │   ├── profiler/             # Profiler presets
+│   ├── benchmark/            # GPU throughput benchmark bundle
 │   └── remote_backup/        # Remote backup configs
 ├── data/wikitext/            # WikiText data + processing script
 ├── scripts/                  # Helper scripts

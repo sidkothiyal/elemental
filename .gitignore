@@ -44,3 +44,10 @@ deploy/logs/
 # Run script artifacts
 .deps_hash
 .heavy-deps-hash
+
+# Generated test coverage
+.coverage*
+htmlcov/
+
+# Local planning documents
+/.plans/

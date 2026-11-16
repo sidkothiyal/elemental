@@ -24,6 +24,12 @@ def setup_distributed(rank: int, world_size: int, backend: str = "nccl") -> None
     os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "localhost")
     os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "12355")
 
+    # Bind this process to its own GPU BEFORE initializing the process group.
+    # NCCL otherwise defaults every rank to cuda:0, which trips the
+    # "Duplicate GPU detected" check when DDP runs its first collective.
+    if backend == "nccl" and torch.cuda.is_available():
+        torch.cuda.set_device(rank)
+
     dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
     logger.info("Initialized distributed training: rank %d/%d", rank, world_size)
 
@@ -108,3 +114,10 @@ def is_main_process() -> bool:
     if not dist.is_initialized():
         return True
     return dist.get_rank() == 0
+
+
+def get_world_size() -> int:
+    """Number of distributed processes (1 when not distributed)."""
+    if not dist.is_initialized():
+        return 1
+    return dist.get_world_size()

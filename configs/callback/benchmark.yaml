@@ -1,0 +1,14 @@
+# GPU benchmark callback — opt-in via the `/benchmark: default` bundle, composed into an
+# experiment by a thin wrapper (configs/experiment/<arm>/pretrain_benchmark.yaml). Do NOT
+# add to default.yaml. Times a steady-state window of the REAL training loop and writes
+# results/<mode>/<experiment>/benchmark.json (+ wandb.run.summary when W&B is on).
+# Analyze value-for-money offline with src/tools/benchmark_value.py.
+#
+# max_steps for the run must equal warmup_steps + measure_steps (the +benchmark group
+# keeps these in sync) so the run ends right after the measurement window closes.
+
+_target_: callback.benchmark_callback.BenchmarkCallback
+warmup_steps: 20 # optimizer steps discarded to absorb torch.compile / cuDNN warmup
+measure_steps: 50 # optimizer steps timed for the throughput figure
+price_per_hour: null # optional node $/hr recorded for provenance; ranking is done by the analyzer
+peak_flops_per_sec: null # optional MFU override; else config.peak_flops_per_sec, else device lookup

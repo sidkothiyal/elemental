@@ -85,4 +85,6 @@ callbacks:
     tokenizer_type: bpe
   checkpoint:
     save_every_n_epochs: 1
+    # Counts OPTIMIZER steps (grad-accum-invariant); 1k over a 10k-step run gives
+    # ~10 resume points.
     save_every_n_steps: 1000

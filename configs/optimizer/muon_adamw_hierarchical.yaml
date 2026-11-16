@@ -1,0 +1,25 @@
+# @package _global_
+# Muon + AdamW recipe for HierarchicalLM / MultiScaleLM. Same sub-optimizers as
+# muon_adamw, but the partition additionally routes the Perceiver compressors'
+# learnable latent arrays (2-D lookup tables) and any positional-embedding /
+# gate params to AdamW — Newton-Schulz belongs on reasoning matrices, not
+# lookup tables. See optimizer.param_groups.hierarchical_default.
+optimizer_groups:
+  muon:
+    _target_: optimizer.muon.Muon
+    lr: 0.02
+    momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    weight_decay: 0.0
+  adamw:
+    _target_: torch.optim.AdamW
+    lr: 0.0008
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.0
+
+optimizer_partition:
+  _target_: optimizer.param_groups.hierarchical_default
+
+lr: 0.02

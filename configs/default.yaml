@@ -9,6 +9,11 @@ seed: 42
 
 # Device configuration
 device: "gpu"
+# Multi-GPU DistributedDataParallel. Declared here (not just read via
+# config.get) so `distributed=true` works as a plain Hydra override under
+# struct mode. Only takes effect when launched with torchrun (LOCAL_RANK set);
+# see utils/distributed and training/builder._init_env.
+distributed: false
 # Use channels_last (NHWC) memory format on CUDA for image workloads.
 # Eliminates NCHW↔NHWC layout conversions inside cuDNN.
 # Only applies to 4D tensors after batching; no effect on CPU or non-image tasks.

@@ -1,0 +1,59 @@
+# @package _global_
+# Shared-memory-bank ablation of nanochat_gpt_d12 — isolates the PEER memory bank
+# from the recursion. Same RecursiveMemoryGPT code, but FLAT: 12 distinct trunk
+# blocks looped ONCE (num_loops=1, no recursion), so attention depth and attention
+# params are identical to nanochat_gpt_d12 (12 independent attention layers). Each
+# block's MLP is replaced by a query-projection into one shared PEER bank.
+#
+# This makes a clean one-variable comparison:
+#   memory_bank_gpt_d12 vs nanochat_gpt_d12     -> the shared-memory-bank effect
+#   recursive_memory_gpt_d12eq vs memory_bank   -> the recursion effect
+#
+# Param budget (156^2 experts): embeddings 100.66M + attention 28.32M (== nanochat)
+# + query projs 18.87M + PEER bank 37.70M = ~185.6M, matching nanochat_gpt_d12 on
+# both total params AND the attention/FF split.
+vocab_size: 65536
+embed_dim: 768
+num_heads: 6
+n_trunk_layers: 12        # 12 distinct blocks (no weight sharing) — matches nanochat depth
+num_loops: 1              # FLAT: no recursion
+max_length: 2048
+rope_base: 10000.0
+
+# PEER memory bank (shared across all 12 layers).
+num_experts: 24336        # 156^2; param-matches nanochat_gpt_d12 (~186M). Must be a perfect square.
+peer_heads: 8
+peer_top_k: 16            # active experts/token = peer_heads * peer_top_k = 128
+sub_key_dim: 128
+peer_query_norm: batchnorm  # batchnorm (PEER recipe) | rmsnorm (DDP-safe) | none
+peer_activation: relu
+
+# Recursion controls (lean V0: full backprop, fixed loops, no deep supervision).
+grad_mode: full
+deep_supervision: false
+tie_embeddings: false
+
+# No 3-loop activation blowup here (num_loops=1), so memory sits between nanochat
+# and the recursive trunk. Try gradient_checkpointing=false on an 80GB card for
+# ~30% more throughput; leave true if you OOM at the chosen batch_size.
+gradient_checkpointing: true
+
+model:
+  _target_: model.recursive_memory_gpt.RecursiveMemoryGPT
+  vocab_size: ${vocab_size}
+  embed_dim: ${embed_dim}
+  num_heads: ${num_heads}
+  n_trunk_layers: ${n_trunk_layers}
+  num_loops: ${num_loops}
+  max_length: ${max_length}
+  rope_base: ${rope_base}
+  num_experts: ${num_experts}
+  peer_heads: ${peer_heads}
+  peer_top_k: ${peer_top_k}
+  sub_key_dim: ${sub_key_dim}
+  peer_query_norm: ${peer_query_norm}
+  peer_activation: ${peer_activation}
+  grad_mode: ${grad_mode}
+  deep_supervision: ${deep_supervision}
+  tie_embeddings: ${tie_embeddings}
+  gradient_checkpointing: ${gradient_checkpointing}

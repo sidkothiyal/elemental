@@ -78,6 +78,22 @@ class CUDAPrefetcher:
     def __len__(self):
         return len(self.loader)
 
+    def __getattr__(self, name):
+        """Delegate unknown attributes to the wrapped loader.
+
+        Makes the prefetcher a transparent stand-in for the underlying
+        ``DataLoader``, so callers reach ``sampler`` (for
+        ``DistributedSampler.set_epoch``), ``state_dict`` / ``load_state_dict``
+        (StatefulDataLoader streaming-resume), ``batch_size``, etc. without
+        knowing a prefetcher is in the way. Only invoked when normal lookup
+        fails; guarded so it doesn't recurse before ``loader`` is set (e.g.
+        during unpickling).
+        """
+        loader = self.__dict__.get("loader")
+        if loader is None:
+            raise AttributeError(name)
+        return getattr(loader, name)
+
     @property
     def dataset(self):
         """Get the dataset."""
@@ -197,6 +213,7 @@ def set_seeds(seed: int) -> None:
 
 
 def initialize_dataset(
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     dataloader_config: DictConfig,
     local_rank: int = -1,
     world_size: int = 1,
@@ -252,7 +269,18 @@ def initialize_dataset(
 
 
 def initialize_callbacks(config: DictConfig) -> callback_mod.CallbackList:
-    """Instantiate callbacks from config and seed initial config values."""
+    """Instantiate callbacks from config and seed initial config values.
+
+    Under DDP, callbacks run on the main process ONLY. Every callback here has
+    rank-0-scoped side effects — ``WandbCallback`` calls ``wandb.init`` (one run
+    per rank would spawn N duplicate runs), ``CheckpointCallback`` writes files,
+    ``MetricsCallback`` results are only ever logged by the (rank-0) W&B run.
+    None of them perform cross-rank collectives, so skipping them on non-main
+    ranks is both correct and avoids wasted compute. Non-main ranks get an empty
+    ``CallbackList`` whose methods no-op.
+    """
+    if not distributed.is_main_process():
+        return callback_mod.CallbackList([])
     callbacks = hy_utils.instantiate(config.callbacks)
     if isinstance(callbacks, (dict, DictConfig)):
         callbacks = list(callbacks.values())
@@ -429,7 +457,17 @@ def compile_model_and_optimizer_step(  # pylint: disable=too-many-locals
         logger.info("Merged mode=%s preset with explicit options; final options=%s", mode, merged)
 
     logger.info("Compiling model with torch.compile kwargs=%s", compile_kwargs)
-    compiled_model = torch.compile(model, **compile_kwargs)
+    # When the model is DDP-wrapped, compile the INNER module in place rather than the
+    # wrapper. torch.compile(DDP(model)) makes Dynamo trace DDP's Python-side
+    # _pre_forward, which calls the C++-bound Logger.set_runtime_stats_and_log() —
+    # untraceable, so it graph-breaks (and hard-errors under fullgraph=True). Compiling
+    # the submodule yields DDP(compile(model)), PyTorch's recommended order: DDPOptimizer
+    # drives the compiled submodule while DDP's own forward stays in eager.
+    if isinstance(model, nn.parallel.DistributedDataParallel):
+        model.module = torch.compile(model.module, **compile_kwargs)
+        compiled_model = model
+    else:
+        compiled_model = torch.compile(model, **compile_kwargs)
     logger.info("Model compiled successfully")
 
     # Compile optimizer.step in-place if requested.
@@ -483,6 +521,12 @@ def initialize_remote_backup(
     if not config.get("remote_backup"):
         return None
 
+    # Remote backup is rank-0-only: uploads are driven by the (main-process)
+    # CheckpointCallback and the resume download below is already main-gated.
+    # Non-main ranks never touch it, so don't instantiate it there.
+    if not distributed.is_main_process():
+        return None
+
     remote_backup: RemoteBackupStrategy = hy_utils.instantiate(config.remote_backup)
     logger.info("Remote backup strategy: %s", type(remote_backup).__name__)
 
@@ -507,11 +551,13 @@ def initialize_remote_backup(
 
 
 def load_from_checkpoint(
+    # pylint: disable=too-many-locals,too-many-arguments,too-many-positional-arguments
     checkpoint_path: str,
     model: nn.Module | nn.ModuleDict,
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
     scheduler: Any | None = None,
     criterion: nn.Module | None = None,
+    scaler: Any | None = None,
     device: torch.device = torch.device("cpu"),
     load_keys: list[str] | None = None,
     resume_training: bool = False,
@@ -530,6 +576,7 @@ def load_from_checkpoint(
         optimizer: Optimizer to load state into (optional).
         scheduler: Scheduler to load state into (optional).
         criterion: Loss function to load state into (optional).
+        scaler: GradScaler to load state into (optional; only restored on resume).
         device: Device to map tensors to.
         load_keys: List of keys to load from checkpoint (e.g., ["model", "optimizer"]).
             If None and resume_training is False, only model will be loaded.
@@ -572,16 +619,19 @@ def load_from_checkpoint(
     if resume_training:
         # Load everything when resuming training - need weights_only=False for optimizer state
         logger.info("Resuming training from checkpoint: %s", checkpoint_path)
+        # pylint: disable=duplicate-code
         checkpoint_data = checkpoint.load_checkpoint(
             checkpoint_path=checkpoint_path,
             model=model,
             optimizer=optimizer,
             scheduler=scheduler,
             criterion=criterion,
+            scaler=scaler,
             map_location=device,
             strict=strict,
             weights_only=False,  # Optimizer/scheduler state may contain non-tensor data
         )
+        # pylint: enable=duplicate-code
         logger.info(
             "Resumed from epoch %s, step %s",
             checkpoint_data.get("epoch"),

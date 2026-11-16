@@ -1,0 +1,10 @@
+checkpoint_surgery:
+  rename_rules:
+    - old: "to_patch_embedding"
+      new: "patcher.to_patch_embedding"
+    - old: "pos_embeddings"
+      new: "patcher.pos_embedding.pos_embeddings"
+    - old: "embedding_to_patch_projection"
+      new: "unpatcher.embedding_to_patch_projection"
+    - old: "conv_decoder"
+      new: "unpatcher.conv_decoder"

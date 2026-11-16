@@ -38,6 +38,8 @@ Everything else — epoch loop, callback wiring, dataloader iteration, profiler 
 build_trainer(config_file, local_rank, overrides) -> Trainer
   1. hydra.compose → DictConfig
   2. _init_env(config, local_rank) → device, dtype, seeds, DDP setup
+     (DDP is active iff `config.distributed` is true AND local_rank >= 0, i.e.
+     launched under torchrun; `distributed` defaults to false in default.yaml)
   3. initializer.initialize_dataset(config.dataloader, ...) → {"train": DataLoader, "val": DataLoader, "test": DataLoader}
   4. remote_backup = initializer.initialize_remote_backup(config, results_dir)
   5. callbacks = initializer.initialize_callbacks(config)
@@ -91,15 +93,20 @@ for batch_idx, batch in enumerate(tqdm(loader)):
     losses = self.eval_batch(batch, batch_idx, epoch, step, data)    # → train_batch(..., training=False)
   for k, v in losses.items():
     _accumulate_loss(running, k, v)
+  if phase == "train":
+    self._total_tokens += batch["input"].numel() * world_size  # cumulative GLOBAL tokens
   if phase == "train" and should_step_optimizer(...):
     self._global_optim_step += 1
     if validation_interval_steps and step % validation_interval_steps == 0:
       self._validate(epoch, log_step=self._global_optim_step, max_batches=validation_max_batches)
   if max_batches is not None and batch_idx >= max_batches: break   # bounded eval
+  if phase == "train":                                  # post-step stamp for on_batch_end consumers
+    data["global_optim_step"] = self._global_optim_step  # checkpoint resume position (== scheduler step)
+    data["total_tokens"] = self._total_tokens
   callbacks.on_batch_end(step, phase, data)
   if phase == "train" and log_interval > 0 and step % log_interval == 0:
     # live curves + diagnostics: loss_*, perplexity, grad_norm, throughput/*,
-    # gpu_mem_*, skipped_steps
+    # gpu_mem_*, skipped_steps, optim_step (= _global_optim_step), tokens_consumed
     callbacks.log_metrics(step, phase, batch_metrics)
   if profiler and profiler_step_per == "batch":
     profiler.step()

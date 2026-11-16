@@ -42,6 +42,11 @@ On each `yield`:
 
 CPU/MPS fallback: `stream=None`, acts as a plain passthrough iterator.
 
+Transparent wrapper: unknown attributes delegate to the wrapped loader via
+`__getattr__`, so `sampler` (needed for `DistributedSampler.set_epoch` under
+DDP) and `state_dict`/`load_state_dict` (StatefulDataLoader streaming-resume)
+reach the real loader instead of raising `AttributeError`.
+
 ## initialize_dataset (initializer.py)
 
 1. Instantiates `dataset` (train/val/test) via `hy_utils.instantiate(config)`
@@ -53,7 +58,7 @@ CPU/MPS fallback: `stream=None`, acts as a plain passthrough iterator.
 
 When `torch_compile` config present with `enabled: true`:
 - Installs `S3RemoteCacheBackend` if `remote_cache.enabled: true` OR `TORCH_COMPILE_S3_REMOTE_CACHE=1` (must happen before `torch.compile`)
-- Wraps model with `torch.compile(model, **compile_kwargs)`
+- Wraps model with `torch.compile(model, **compile_kwargs)`. **DDP handling:** when the model is a `DistributedDataParallel`, compiles the inner `.module` in place (`model.module = torch.compile(model.module, ...)`) and returns the wrapper — i.e. `DDP(compile(model))`, not `compile(DDP(model))`. The latter makes Dynamo trace DDP's Python `_pre_forward`, whose C++-bound `Logger.set_runtime_stats_and_log()` is untraceable → a graph break that hard-errors under `fullgraph: true`. Compiling the submodule lets DDPOptimizer drive it while DDP's own forward stays eager.
 - Optionally compiles `optimizer.step` if `compile_optimizer_step: true`
 
 ## S3RemoteCacheBackend (s3_cache_backend.py)
@@ -100,7 +105,8 @@ Both must be true for remote caching to work:
     "optimizer_state_dict": state_dict,
     "scheduler_state_dict": state_dict,
     "criterion_state_dict": state_dict,
-    # + any extra kwargs
+    "scaler_state_dict": state_dict,  # only when a GradScaler is passed (fp16 AMP)
+    # + any extra kwargs (global_optim_step, total_tokens, best_metric, dataloader_state, …)
 }
 ```
 

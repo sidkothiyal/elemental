@@ -94,6 +94,10 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
         # micro-batch). This is the unit `max_steps` and the LR scheduler share,
         # so `max_steps == total_steps` ends the run exactly as the schedule does.
         self._global_optim_step: int = 0
+        # Cumulative GLOBAL training tokens seen so far (summed across all DDP
+        # ranks). Logged as `train/tokens_consumed` so LM runs can be compared on
+        # tokens-seen rather than steps; persisted in checkpoints for resume.
+        self._total_tokens: int = 0
         # Diagnostics surfaced into periodic train logs (§ production logging).
         self._n_params: int | None = None
         self._last_grad_norm: float | None = None
@@ -115,26 +119,7 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
         """Run the full training loop (all epochs + validation)."""
         self.callbacks.on_phase_start("train")
 
-        start_epoch = 0
-        saved_epoch = self.checkpoint_data.get("epoch")
-        if self.resume_training and saved_epoch is not None:
-            start_epoch = saved_epoch + 1
-            # Prefer the explicit optimizer-step count; the legacy ``step`` field
-            # is the micro-batch counter, which over-advances the LR schedule by
-            # ``grad_accum_steps`` when used as the optimizer step.
-            saved_global = self.checkpoint_data.get("global_optim_step")
-            if saved_global is not None:
-                self._global_optim_step = int(saved_global)
-            else:
-                saved_step = self.checkpoint_data.get("step")
-                if saved_step is not None:
-                    self._global_optim_step = int(saved_step)
-            self._restore_dataloader_state()
-            logger.info(
-                "Resuming training from epoch %d (optimizer step %d)",
-                start_epoch,
-                self._global_optim_step,
-            )
+        start_epoch = self._restore_resume_state()
 
         max_wall_time = self.config.get("max_wall_time_sec", None)
         self._train_start_time = time.perf_counter()
@@ -195,6 +180,66 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
             distributed.cleanup_distributed()
             self.use_distributed = False
 
+    def _restore_resume_state(self) -> int:
+        """Restore resume bookkeeping from the checkpoint and return ``start_epoch``.
+
+        No-ops (returns 0) unless resuming from a checkpoint carrying an ``epoch``.
+        Restores the optimizer-step count, cumulative token count, the checkpoint
+        callback's best-metric tracker, and the dataloader stream position.
+        """
+        saved_epoch = self.checkpoint_data.get("epoch")
+        if not (self.resume_training and saved_epoch is not None):
+            return 0
+
+        # Distinguish a mid-epoch (step-level) checkpoint from an epoch-boundary
+        # one. A step checkpoint stores the IN-PROGRESS epoch plus a non-None
+        # ``step``, so resume must RE-ENTER that same epoch and let the restored
+        # dataloader position + optimizer-step count + the ``max_steps`` cap carry
+        # it to completion. An epoch-boundary checkpoint
+        # (``last``/``best``/``checkpoint-epoch-N``: ``step`` is None, ``epoch``
+        # already finished) resumes at the NEXT epoch. Without this split a
+        # single-epoch streaming run (num_epochs=1, driven by max_steps) would
+        # resume into range(1, 1) and train nothing.
+        saved_step = self.checkpoint_data.get("step")
+        start_epoch = saved_epoch if saved_step is not None else saved_epoch + 1
+
+        # Prefer the explicit optimizer-step count; the legacy ``step`` field is the
+        # micro-batch counter, which over-advances the LR schedule by
+        # ``grad_accum_steps`` when used as the optimizer step.
+        saved_global = self.checkpoint_data.get("global_optim_step")
+        if saved_global is not None:
+            self._global_optim_step = int(saved_global)
+        elif saved_step is not None:
+            self._global_optim_step = int(saved_step)
+
+        # Cumulative token count, so `train/tokens_consumed` stays continuous across
+        # resume. Checkpoints predating this field leave it at 0.
+        saved_tokens = self.checkpoint_data.get("total_tokens")
+        if saved_tokens is not None:
+            self._total_tokens = int(saved_tokens)
+
+        # Restore checkpoint-callback resume state (duck-typed; only the
+        # CheckpointCallback carries these attributes):
+        #  - best_metric: so a post-resume validation cannot overwrite ``best.pt``
+        #    with a model worse than the pre-crash best (absent in old checkpoints).
+        #  - last_step_checkpoint: realign the step-save watermark to the resumed
+        #    optimizer step so the first post-resume batch doesn't immediately
+        #    re-trigger a step checkpoint.
+        saved_best = self.checkpoint_data.get("best_metric")
+        for cb in self.callbacks.callbacks:
+            if saved_best is not None and hasattr(cb, "best_metric"):
+                cb.best_metric = float(saved_best)
+            if hasattr(cb, "last_step_checkpoint"):
+                cb.last_step_checkpoint = self._global_optim_step
+
+        self._restore_dataloader_state()
+        logger.info(
+            "Resuming training from epoch %d (optimizer step %d)",
+            start_epoch,
+            self._global_optim_step,
+        )
+        return start_epoch
+
     def _restore_dataloader_state(self) -> None:
         """Restore the train dataloader's streaming position on resume.
 
@@ -237,12 +282,14 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
         )
 
         train_loader = self.loaders.get("train")
-        if (
-            self.use_distributed
-            and train_loader is not None
-            and hasattr(train_loader.sampler, "set_epoch")
-        ):
-            train_loader.sampler.set_epoch(epoch)
+        # DistributedSampler needs set_epoch each epoch to reshuffle shards.
+        # Use getattr: streaming/IterableDataset loaders (and any loader lacking
+        # a sampler) have no ``sampler`` attribute — skip rather than crash.
+        train_sampler = getattr(train_loader, "sampler", None)
+        if self.use_distributed and train_sampler is not None:
+            set_epoch = getattr(train_sampler, "set_epoch", None)
+            if callable(set_epoch):
+                set_epoch(epoch)
 
         self.callbacks.on_epoch_start(epoch, "train")
         if distributed.is_main_process():
@@ -456,7 +503,11 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
                 _accumulate_loss(running_loss_gpu, key, value)
 
             if training:
-                tokens_since_log += int(batch["input"].numel())
+                # `numel()` is this rank's local tokens; scale by world_size for
+                # the global token count (each DDP rank streams a disjoint shard).
+                micro_tokens = int(batch["input"].numel())
+                tokens_since_log += micro_tokens
+                self._total_tokens += micro_tokens * distributed.get_world_size()
 
             # Count completed optimizer steps using the same gate train_batch
             # uses, so the counter stays in lockstep regardless of subclass.
@@ -475,6 +526,17 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
             if batch_idx % tqdm_update_interval == 0 and "total" in batch_losses:
                 progress_bar.set_postfix({"loss": f"{batch_losses['total'].item():.4f}"})
 
+            # Refresh the container's resume-bookkeeping keys to their POST-step
+            # values so callbacks reading them in on_batch_end — the checkpoint
+            # callback (persisted resume position) and BenchmarkCallback
+            # (measurement window) — observe the optimizer step just completed, not
+            # the pre-increment value stamped at train_batch entry. This keeps a
+            # persisted ``global_optim_step`` in lockstep with the LR scheduler's
+            # step count across resume (they would otherwise drift by one).
+            if training:
+                data["global_optim_step"] = self._global_optim_step
+                data["total_tokens"] = self._total_tokens
+
             self.callbacks.on_batch_end(step, phase, data=data)
 
             # Real-time loss curves + production diagnostics, logged periodically.
@@ -484,6 +546,11 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
                 now = time.perf_counter()
                 self._add_throughput_metrics(batch_metrics, tokens_since_log, now - last_log_time)
                 self._add_gpu_mem_metrics(batch_metrics)
+                # Optimizer-step count and cumulative tokens, so dashboards can
+                # x-axis on these (comparable across runs) instead of the raw
+                # micro-batch `step` (which differs by grad_accum between runs).
+                batch_metrics["optim_step"] = self._global_optim_step
+                batch_metrics["tokens_consumed"] = self._total_tokens
                 if self._last_grad_norm is not None:
                     batch_metrics["grad_norm"] = self._last_grad_norm
                 if self._skipped_steps:
@@ -603,9 +670,13 @@ class Trainer:  # pylint: disable=too-many-instance-attributes
         scheduler_step_per = config.get("scheduler_step_per", "epoch")
 
         build_data_container(batch, data=data, model=self.model, epoch=epoch)
-        # Phase + global step for phase-gated components and resume bookkeeping.
+        # Phase + a provisional step/token stamp for phase-gated components that
+        # read them mid-batch. The batch loop refreshes global_optim_step /
+        # total_tokens to their post-step values before on_batch_end, so any
+        # callback persisting resume state sees the just-completed optimizer step.
         data["phase"] = self._current_phase
         data["global_optim_step"] = self._global_optim_step
+        data["total_tokens"] = self._total_tokens
 
         with (
             torch.set_grad_enabled(training),

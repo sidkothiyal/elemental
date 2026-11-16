@@ -1,0 +1,8 @@
+# @package _global_
+# "Mixture of a Million Experts" variant: 1024^2 = 1,048,576-expert bank
+# (~1.74B params; FLOP-matched, not param-matched, to d12). Phase-3 bank-size sweep.
+defaults:
+  - recursive_memory_gpt_d12eq
+  - _self_
+
+num_experts: 1048576  # 1024^2

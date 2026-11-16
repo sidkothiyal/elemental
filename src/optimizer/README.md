@@ -51,6 +51,13 @@ params raise — silent drops would waste GPU memory.
 | `muon` | 2-D weights NOT named `*embedding*`, `*embed*`, `*lm_head*`, `*wte*`, `*wpe*` |
 | `adamw` | catch-all (norm scales, embeddings, lm_head, scalars) |
 
+Model-specific variants extend the Muon exclusion list with 2-D tables that must
+stay off Newton-Schulz:
+- `recursive_memory_default()` — also excludes the PEER bank / sub-keys / loop-emb.
+- `hierarchical_default()` — also excludes Perceiver compressor latents and any
+  positional-embedding / gate / null-context tables (used by `HierarchicalLM` and
+  `MultiScaleLM`).
+
 ### `schedulers.py` — WarmupCosineLR
 
 Linear warmup → cosine decay → flat `min_lr_ratio` floor. Built on `LambdaLR`
@@ -66,6 +73,8 @@ WarmupCosineLR(optimizer, warmup_steps=1000, total_steps=100000, min_lr_ratio=0.
 | File | Purpose |
 |---|---|
 | [`muon_adamw.yaml`](../../configs/optimizer/muon_adamw.yaml) | Muon + AdamW pair (nanochat default) |
+| [`muon_adamw_peer.yaml`](../../configs/optimizer/muon_adamw_peer.yaml) | Muon + AdamW with `recursive_memory_default` partition |
+| [`muon_adamw_hierarchical.yaml`](../../configs/optimizer/muon_adamw_hierarchical.yaml) | Muon + AdamW with `hierarchical_default` partition |
 | [`nanochat_warmup_cosine.yaml`](../../configs/scheduler/nanochat_warmup_cosine.yaml) | warmup-cosine scheduler with `_target_:` |
 
 The trainer's optimizer builder branches on `config.optimizer_groups`:

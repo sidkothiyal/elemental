@@ -95,7 +95,7 @@ def _init_env(config: DictConfig, local_rank: int) -> tuple:
     if distributed.is_main_process():
         logger.info("Configuration: %s", config)
 
-    device = initializer.initialize_device(config.device)
+    device = initializer.initialize_device(config.device, local_rank, use_distributed)
     dtype = initializer.initialize_dtype(config.get("dtype"))
     cuda_empty_cache_interval = config.get("cuda_empty_cache_interval", 0)
 
@@ -132,6 +132,7 @@ def _maybe_load_checkpoint(  # pylint: disable=too-many-arguments,too-many-posit
     optim,
     scheduler,
     loss,
+    scaler,
     device,
 ) -> dict:
     """Load from checkpoint if configured, returning epoch/step metadata."""
@@ -150,6 +151,7 @@ def _maybe_load_checkpoint(  # pylint: disable=too-many-arguments,too-many-posit
         optimizer=optim,
         scheduler=scheduler,
         criterion=loss,
+        scaler=scaler,
         device=device,
         load_keys=load_keys,
         resume_training=resume_training,
@@ -238,7 +240,7 @@ def build_trainer(  # pylint: disable=too-many-locals
     loss = cls._build_loss(config, device)
     scaler = cls._build_scaler(config, device, dtype)
 
-    checkpoint_data = _maybe_load_checkpoint(config, model, optim, scheduler, loss, device)
+    checkpoint_data = _maybe_load_checkpoint(config, model, optim, scheduler, loss, scaler, device)
 
     # Compile after checkpoint load so compiled graph is built against loaded weights.
     compile_config = config.get("torch_compile", None)
@@ -260,6 +262,7 @@ def build_trainer(  # pylint: disable=too-many-locals
             "criterion": loss,
             "model": model,
             "optimizer": optim,
+            "scaler": scaler,
             "device": device,
             "mode": config.mode,
             "remote_backup": remote_backup,

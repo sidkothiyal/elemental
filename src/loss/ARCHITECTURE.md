@@ -97,6 +97,44 @@ Easing functions in `EASING_FUNCTIONS` dict:
 
 Transposes predictions `(B, T, vocab) → (B, vocab, T)` for CrossEntropyLoss, then slices: `pred = pred[:,:,:-shift]`, `target = target[:,shift:]`.
 
+## MaskedCrossEntropy (masked_cross_entropy.py)
+
+```python
+class MaskedCrossEntropy(nn.Module):
+    ignore_index: int = -100  # default matches F.cross_entropy
+    def forward(self, pred: (B, T, V), target: (B, T), mask: (B, T)) -> Tensor
+```
+
+- Validates shapes (3-D pred, matching prefix on target, mask same shape as target).
+- If no positions are masked, returns `pred.sum() * 0.0` so the loss stays
+  graph-connected with zero gradient.
+- Otherwise rewrites unmasked target positions to `ignore_index` and calls
+  `F.cross_entropy(pred.transpose(1, 2), target_masked, ignore_index=ignore_index)`.
+
+The mask threading goes through `LossComponent.context_mapping`, e.g.
+`{"pred/loss_mask": "mask"}`, so the model can return whatever boolean
+selector it wants and the loss config decides which to use. hierarchical-thinking uses
+this for both the per-scale compressor MAE pretraining and the joint
+masked-discrete-diffusion objective.
+
+## DeepSupervisionCE (deep_supervision_ce.py)
+
+```python
+class DeepSupervisionCE(nn.Module):
+    ignore_index: int = -100
+    def forward(self, pred: (K, B, T, V), target: (B, T)) -> Tensor
+```
+
+- Reshapes the per-loop stack `(K, B, T, V) → (K·B, V, T)` and tile-expands the
+  target to `(K·B, T)`, then a single `CrossEntropyLoss` averages over all
+  `K·B·T` positions (`shift=0`; the dataset already shifts).
+- Wired as a second `LossComponent` (`pred_key: pred/deep_logits`) alongside the
+  final-loop CE (`pred_key: pred/pred`) in
+  `configs/loss/lm_pretrain_deep_supervision.yaml`. The model namespacing is
+  done by `populate_predictions`, which mirrors each dict key to `pred/<key>`.
+- Phase-4 recursion ablation only; incompatible with `grad_mode="last_loop"`
+  (the model constructor rejects that combination).
+
 ## utils.py
 
 ```python

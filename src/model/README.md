@@ -97,6 +97,39 @@ with `shift=0` (the dataset handles the shift); GRPO uses `GRPOLoss` via the
 [d20](../../configs/model/nanochat_gpt_d20.yaml),
 [d26](../../configs/model/nanochat_gpt_d26.yaml).
 
+### `peer_memory.py` — PEER "Mixture of a Million Experts" memory
+
+`PEERBank` + `PEERMemory`: a sparse FFN replacement (He, *Mixture of A Million
+Experts*, arXiv:2407.04153). `PEERBank` holds `N` single-neuron experts
+(`e_i(x) = σ(uᵢ·x)·vᵢ`, expert tables `(N, d)`) plus per-head product sub-keys
+`(heads, 2, √N, sub_key_dim)`; it is constructed **once** and shared across every
+transformer layer / recursion loop. `PEERMemory` is the per-(layer, loop) front
+end holding only the loop-conditioned query projections (one per loop). Routing
+is product-key: split the query in two halves, top-k each against `√N` sub-keys,
+re-rank the `k²` Cartesian candidates (`O(√N)` not `O(N)`), softmax-gate and sum
+the `heads·top_k` retrieved experts. Drop-in for a transformer MLP:
+`PEERMemory(bank, embed_dim, num_loops, query_norm="batchnorm")(x, loop_idx)`.
+
+### `recursive_memory_gpt.py` — Recursive-trunk + PEER LM ("Track B")
+
+`RecursiveMemoryGPT`: nanochat decoder with two changes — (1) a small trunk of
+`n_trunk_layers` blocks applied recursively `num_loops` times (weights shared
+across loops; effective depth `n_trunk_layers·num_loops`), with a learned
+per-loop embedding for loop-conditioning; (2) each block's MLP replaced by a
+`PEERMemory` into one shared `PEERBank`. Reuses `RMSNorm`/`RotaryEmbedding`/
+`CausalSelfAttention` verbatim and keeps nanochat's `forward(input_ids, training)`
++ `generate()` contract (plain logits tensor; a dict only in training when
+`deep_supervision=True`). `grad_mode="last_loop"` runs all but the final loop
+under `no_grad` (the TRM/HRM gradient trick); `gradient_checkpointing=True`
+recomputes the PEER expert gather in backward (~3× less activation memory, ~30%
+slower) and is on by default in the `d12eq`/`1m` configs so the parity run fits a
+24 GB card without changing batch size, sequence length, or step budget. Configs:
+[d12eq](../../configs/model/recursive_memory_gpt_d12eq.yaml) (~230M, param-matched
+to d12), [1m](../../configs/model/recursive_memory_gpt_1m.yaml) (1,048,576-expert
+bank). Optimizer routing needs `optimizer.param_groups.recursive_memory_default`
+(see [muon_adamw_peer](../../configs/optimizer/muon_adamw_peer.yaml)) so the bank
+tables land on AdamW, not Muon.
+
 ### `autoencoder.py` — Autoencoder Class Hierarchy
 
 Base `Autoencoder` class with `encode -> bottleneck -> decode` pipeline, plus concrete subclasses:
@@ -204,6 +237,139 @@ PerceiverResampler(
 )
 # forward(inputs: [B, N, D_in]) -> [B, num_latents, D_out]
 ```
+
+### `sliding_perceiver_compressor.py` — Sliding Perceiver Compressor
+
+Causal sliding-window wrapper around `PerceiverResampler` that emits one
+latent per fixed window of input tokens. V0 supports stride == window_size
+(non-overlapping); causality is by-construction since the output at window
+`k` depends only on input positions `[k*N, k*N + N - 1]`.
+
+```python
+SlidingPerceiverCompressor(window_size=16, stride=16, in_dim=768, latent_dim=768,
+                           num_layers=4, num_heads=12, ff_embed_dim=3072)
+# forward(x: [B, T, in_dim]) -> [B, ceil(T / stride), latent_dim]
+```
+
+Used as the per-scale compressor inside the hierarchical-thinking hierarchical multi-scale LM.
+
+### `compressor_mae.py` — Compressor Masked-Autoencoder
+
+Stage-1 standalone MAE pretrain wrapper around a `SlidingPerceiverCompressor`.
+Masks a fraction of input tokens, encodes the windowed token stream into
+compressed latents, decodes them bidirectionally, and upsamples (tile +
+per-window position embedding) back to the original token length so a
+shared `lm_head` can predict every token id. Returns
+`{"pred", "loss_mask", "masked_input_ids"}` — wired through
+`MaskedCrossEntropy` + `LossContainer` declaratively. Stage-1 of the hierarchical-thinking
+training pipeline; weights are loaded into the joint `MultiScaleLM` via
+checkpoint surgery before the joint pretraining run.
+
+```python
+CompressorMAE(vocab_size=65537, mask_token_id=65536, embed_dim=768,
+              compressor=SlidingPerceiverCompressor(...),
+              decoder_num_layers=6, decoder_num_heads=12, decoder_ff_embed_dim=3072,
+              max_length=2048, mask_ratio=0.5)
+```
+
+### `multi_scale_lm.py` — hierarchical-thinking `MultiScaleLM`
+
+Hierarchical multi-scale masked-diffusion LM. A LLaDA-style decoder tower
+is conditioned on `M` parallel compressor streams (per the original hierarchical-thinking
+idea: e.g. word / phrase / sentence granularity at `N=3, 10, 30`). The
+decoder operates on the masked input at full token resolution; each
+compressor stream is a `SlidingPerceiverCompressor` followed by its own
+bidirectional tower.
+
+Cross-attention topology (top-down, Flamingo-style `tanh`-gated, init to
+zero so the model warm-starts to a decoder-only baseline):
+- Coarsest compressor tower receives no incoming context.
+- Each non-coarsest compressor tower at index `i` receives gated
+  cross-attention from every coarser stream `j > i`.
+- The decoder receives gated cross-attention from all `M` streams.
+
+The model masks a fraction of its own input (replacing positions with
+`mask_token_id`), every stream operates on the masked input, and the
+decoder predicts the *clean* tokens at masked positions. Returns
+`{"pred", "loss_mask", "aux_coarse_logits", "masked_input_ids"}`. The
+auxiliary `aux_coarse_logits` head decodes the *coarsest* stream alone
+(small weight in the loss config) — forces the coarsest stream to carry
+content.
+
+```python
+MultiScaleLM(
+    vocab_size=65537, mask_token_id=65536, token_embed_dim=768,
+    decoder_cfg={"num_layers": 6, "embed_dim": 384, "num_heads": 6, "ff_embed_dim": 1536},
+    stream_cfgs=[          # finest → coarsest by window_size
+        {"compressor": {"window_size": 3,  "num_layers": 4, "num_heads": 8,  "ff_embed_dim": 2048},
+         "tower":      {"num_layers": 4,   "embed_dim": 512, "num_heads": 8,  "ff_embed_dim": 2048}},
+        {"compressor": {"window_size": 10, "num_layers": 4, "num_heads": 8,  "ff_embed_dim": 2560},
+         "tower":      {"num_layers": 6,   "embed_dim": 640, "num_heads": 8,  "ff_embed_dim": 2560}},
+        {"compressor": {"window_size": 30, "num_layers": 4, "num_heads": 12, "ff_embed_dim": 3072},
+         "tower":      {"num_layers": 8,   "embed_dim": 768, "num_heads": 12, "ff_embed_dim": 3072}},
+    ],
+    cross_attn_every=2,
+)
+```
+
+`M` is arbitrary — pass any non-empty list of `StreamConfig`s ordered
+finest-to-coarsest by `window_size`. See
+[`configs/experiment/hierarchical_thinking/README.md`](../../configs/experiment/hierarchical_thinking/README.md)
+for the full step-by-step training guide (tokenizer → per-scale MAE pretraining →
+checkpoint surgery → joint V0 pretraining + diagnostics + troubleshooting).
+
+### `hierarchical_lm.py` — causal-AR `HierarchicalLM`
+
+The **clean A/B** counterpart to `MultiScaleLM`: the *same* multi-scale
+hierarchical architecture (parallel `SlidingPerceiverCompressor` streams +
+top-down `tanh`-gated cross-attention), but **causal autoregressive** instead of
+masked-diffusion. It reuses the nanochat causal `Block` for every tower/decoder
+and trains with the identical `lm_pretrain` next-token cross-entropy as the
+nanochat baseline — so the hierarchy is the *only* variable in a head-to-head vs
+`experiment/nanochat/pretrain`. `forward(input_ids, training=True)` returns a
+plain logits tensor `(B, T, V)` (drops straight into the default `Trainer`) and a
+naïve `generate()` mirrors `NanochatGPT`.
+
+Causality across scales is enforced by a single rule: compressor latent `p` at
+window `N` covers tokens `[p*N, p*N+N-1]` (end index `p*N+N-1`), and every
+cross-attention (`GatedCausalCrossAttention`) masks a query at token-end-index
+`e` to keys whose end index is `<= e`. A perturbation at any position `t' > t`
+can therefore only change latents hidden from the token-`t` prediction — the
+model is strictly causal (verified bit-exactly in the tests). A learned zero-init
+null key/value keeps early query rows (no visible coarse latent yet) from
+softmax-ing over an all-masked row.
+
+Towers are tiered inversely to sequence length (coarsest deepest/widest). The V0
+config [`configs/model/hierarchical_thinking/causal_lm_v0.yaml`](../../configs/model/hierarchical_thinking/causal_lm_v0.yaml)
+is sized to ~188M params (≈ nanochat_gpt_d12's 185.6M) and trained via
+[`configs/experiment/hierarchical_thinking/causal_pretrain.yaml`](../../configs/experiment/hierarchical_thinking/causal_pretrain.yaml)
+(a clone of the nanochat arm, swapping only the model + the
+`muon_adamw_hierarchical` optimizer partition).
+
+```python
+HierarchicalLM(
+    vocab_size=65536, token_embed_dim=768,
+    decoder_cfg={"num_layers": 5, "embed_dim": 768, "num_heads": 12, "ff_embed_dim": 3072},
+    stream_cfgs=[          # finest → coarsest by window_size (N=3 / 10 / 30)
+        {"compressor": {"window_size": 3,  "num_layers": 2, "num_heads": 6, "ff_embed_dim": 768},
+         "tower":      {"num_layers": 2,   "embed_dim": 384, "num_heads": 6, "ff_embed_dim": 1152}},
+        {"compressor": {"window_size": 10, "num_layers": 2, "num_heads": 8, "ff_embed_dim": 768},
+         "tower":      {"num_layers": 3,   "embed_dim": 512, "num_heads": 8, "ff_embed_dim": 1536}},
+        {"compressor": {"window_size": 30, "num_layers": 2, "num_heads": 8, "ff_embed_dim": 768},
+         "tower":      {"num_layers": 4,   "embed_dim": 640, "num_heads": 8, "ff_embed_dim": 1920}},
+    ],
+    cross_attn_every=4,
+)
+```
+
+### `transformer_blocks.py` — Bidirectional Transformer Blocks
+
+`BidirectionalSelfAttention` + `BidirectionalBlock`: nanochat-style
+primitives (RMSNorm pre-norm, RoPE, QK-norm, squared-ReLU MLP) with
+`is_causal=False`. Used by `CompressorMAE` and `MultiScaleLM` where every
+position must attend in both directions (LLaDA-style decoder, MAE
+reconstruction). Shares `RMSNorm`, `RotaryEmbedding`, `MLP`, `apply_rotary`
+with `nanochat_gpt.py`.
 
 ### `video_perceiver_ae.py` — Perceiver Resampler Video Autoencoder
 

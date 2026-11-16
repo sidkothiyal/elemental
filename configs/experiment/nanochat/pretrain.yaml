@@ -32,23 +32,45 @@ dtype: bfloat16
 channels_last: false
 cudnn_benchmark: false  # token shape is constant; benchmark not useful
 
+# torch.compile — tuned for this clean dense GPT on a long (7500-step) 8×H100 run.
+#   mode=max-autotune-no-cudagraphs: autotuned Triton matmuls (compile cost amortizes
+#     over thousands of steps) WITHOUT CUDA graphs, which conflict with DDP allreduce
+#     hooks + gradient accumulation. reduce-overhead/cudagraphs would be fragile here.
+#   fullgraph=true: NanochatGPT's training forward is a clean unrolled block loop with
+#     no data-dependent control flow (the .all() early-stop is inference-only), so it
+#     traces to a single graph — catch any regression that introduces a break.
+#   dynamic=false: token shape is constant (batch × max_length), so specialise on it.
+torch_compile:
+  enabled: true
+  mode: max-autotune-no-cudagraphs
+  fullgraph: true
+  dynamic: false
+
 # Pretraining knobs (override on the command line for smoke runs).
-batch_size: 4
-gradient_accumulation_steps: 8
+# Sized for an 8×H100 run: per-GPU batch_size × grad_accum × 8 GPUs = global batch
+# 256 (= 0.524M tokens/optimizer-step). batch_size 32 fits an 80GB card for this
+# 185M model; if it OOMs, halve to 16 and set gradient_accumulation_steps=2 (keep
+# the product batch_size×grad_accum = 32 per GPU so the global batch stays 256 and
+# stays matched to the recursive_memory / memory_bank arms).
+batch_size: 16
+gradient_accumulation_steps: 2
 num_epochs: 1
 validation_interval: 0  # epoch-based eval off; use step-based eval below instead
-# Run a short held-out eval every 10k optimizer steps (≈655M tokens apart),
+# Held-out eval every 1k optimizer steps (≈524M tokens apart at global batch 256),
 # capped at 50 batches so each eval stays cheap. Reports val/loss_total,
 # val/perplexity, val/next_token_acc, val/bits_per_byte + a generation sample.
-validation_interval_steps: 10000
+# (10k would never fire in this ~7.5k-step compute-optimal run.)
+validation_interval_steps: 1000
 validation_max_batches: 50
 clip_grad_norm: 1.0
 # Resilience: drop a non-finite accumulation window instead of crashing.
 skip_nonfinite_steps: true
 
-# Scheduler horizon (used by warmup-cosine).
-warmup_steps: 1000
-total_steps: 100000
+# Scheduler horizon (used by warmup-cosine). Compute-optimal (~Chinchilla 20×) for
+# this ~186M model: 7500 optimizer steps × 0.524M tokens ≈ 3.9B tokens (~21×/param).
+# warmup is 10% of the horizon. Multiply both for a longer (over-trained) run.
+warmup_steps: 750
+total_steps: 7500
 
 min_lr_ratio: 0.001
 
@@ -71,11 +93,12 @@ to_log:
 
 callbacks:
   wandb:
-    logging_interval: 250
+    logging_interval: 1000
     tokenizer: ${tokenizer_path}
     tokenizer_type: bpe
   checkpoint:
     save_every_n_epochs: 1
-    # Step-level checkpoints for the long single-epoch streaming run, so resume
-    # restores the LR schedule + stream position (see Trainer resume logic).
-    save_every_n_steps: 2000
+    # Step-level checkpoints for the single-epoch streaming run, so resume restores
+    # the LR schedule + stream position (see Trainer resume logic). Counts OPTIMIZER
+    # steps; 1k (not 2k) so a ~7.5k-step run still produces several resume points.
+    save_every_n_steps: 1000

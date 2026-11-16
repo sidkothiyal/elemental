@@ -31,16 +31,17 @@ class Callback:
 | `remote_backup` | `RemoteBackupStrategy` instance (SSH or W&B) |
 | `train_loader` | Train dataloader (for streaming resume); set via `update_config()` |
 | `current_global_step` | Latest optimizer-step count (from `data["global_optim_step"]`) |
+| `current_total_tokens` | Latest cumulative global token count (from `data["total_tokens"]`) |
 
 ### Key Methods
 
-- `_save_checkpoint(name, epoch, step, is_periodic)` — saves via `ckpt_utils.save_checkpoint()`; also persists `global_optim_step=current_global_step` and `dataloader_state` (when `train_loader` has `state_dict`), manages rolling window, triggers remote upload
+- `_save_checkpoint(name, epoch, step, is_periodic)` — saves via `ckpt_utils.save_checkpoint()`; also persists `global_optim_step=current_global_step`, `total_tokens=current_total_tokens`, `best_metric` (so resume doesn't reset best-tracking), the `scaler` state (only when the GradScaler is enabled, i.e. fp16), and `dataloader_state` (when `train_loader` has `state_dict`), manages rolling window, triggers remote upload
 - `on_epoch_start(epoch, "train")` — saves periodic epoch checkpoint (skips epoch 0)
-- `on_batch_end(step, "train", data)` — tracks `current_global_step` from `data["global_optim_step"]`; saves periodic step checkpoint
-- `log_metrics(step, "val", metrics)` — checks if monitored metric improved, saves "best"
+- `on_batch_end(step, "train", data)` — tracks `current_global_step` and `current_total_tokens` from the data container; saves a periodic step checkpoint every `save_every_n_steps` **optimizer** steps. Gated on the optimizer-step count (not the micro-batch `step`) via a threshold watermark (`current_global_step - last_step_checkpoint >= N`), so cadence is invariant to `gradient_accumulation_steps`, fires exactly once per N (even if a step is skipped), and always lands right after an optimizer step — never mid-accumulation-window. The checkpoint is named `checkpoint-step-<optimizer_step>.pt`.
+- `log_metrics(step, "val", metrics)` — checks if the monitored metric improved, saves "best". `monitor_metric` must match an emitted key: the trainer emits losses as `loss_<name>` (so `loss_total`, **not** a bare `total`), so a mismatched key silently disables best-tracking.
 - `on_phase_end("train")` — saves "last" checkpoint
 
-`ckpt_utils.load_checkpoint` returns all non-state metadata (epoch, step, `global_optim_step`, `dataloader_state`, …); the trainer prefers `global_optim_step` for resume (the legacy `step` is a micro-batch count that over-advances the schedule under accumulation).
+`ckpt_utils.load_checkpoint` returns all non-state metadata (epoch, step, `global_optim_step`, `total_tokens`, `best_metric`, `dataloader_state`, …) and loads any `scaler_state_dict` into the passed GradScaler; the trainer prefers `global_optim_step` for resume (the legacy `step` is a micro-batch count that over-advances the schedule under accumulation), restores `total_tokens` so `train/tokens_consumed` stays continuous, reloads `best_metric` into the checkpoint callback so a post-resume validation can't overwrite `best.pt` with a worse model, and realigns its `last_step_checkpoint` watermark to the resumed step so the first post-resume batch doesn't immediately re-save. The GradScaler itself is restored in the builder's load path (symmetric with model/optimizer), not via the callback.
 
 Best/last checkpoints are never counted towards `max_checkpoints_saved` (only periodic ones are rotated).
 
@@ -98,13 +99,30 @@ def finalize(self, exc: BaseException | None = None) -> None: ...
 
 `classify_exception(exc)` in this module is also imported by `src/trainer.py` to map exceptions to subprocess exit codes (0, 10–13). Both consumers share the same logic.
 
+## BenchmarkCallback (benchmark_callback.py)
+
+Opt-in callback that measures steady-state training throughput and writes `benchmark.json` for value-for-money analysis. Reuses `classify_exception` / `_git_sha` and the same duck-typed `finalize(exc)` protocol as `TrialSummaryCallback`. Makes **zero** changes to the training loop — a pure observer.
+
+### Measurement window
+
+- The window is keyed on `data["global_optim_step"]` in `on_batch_end` — an *optimizer*-step counter that increments once per optimizer step regardless of `gradient_accumulation_steps`. This makes the window span a whole number of optimizer steps for any grad-accum.
+- Open: first `on_batch_end` where `global_optim_step >= warmup_steps`. Close: first where `>= warmup_steps + measure_steps`. Both boundaries call `torch.cuda.synchronize(device)` (CUDA only) before reading `time.perf_counter()`, so wall-time is accurate.
+- **max_steps sizing:** the batch loop stamps `data["global_optim_step"]` with the *just-completed* optimizer step (post-increment) before `on_batch_end`, and breaks at `global_optim_step >= max_steps` on the *next* iteration. So the max value observable in `on_batch_end` is `max_steps` itself; the run must reach `max_steps >= warmup_steps + measure_steps` for the window to close, else `status="incomplete"`.
+- Tokens are computed **analytically** (`measure_steps × batch_size × seq_len × grad_accum × world_size`) rather than from counters — exact, and correct under grad-accum because the two syncs bracket exactly `measure_steps × grad_accum` micro-batches.
+- Per-optimizer-step deltas (no sync) feed `median_step_ms` / `p90_step_ms`; a large p90/median gap flags a mid-window recompile.
+
+### Metric sourcing
+
+`log_metrics` is read-only: it captures the trainer's already-computed `gpu_mem_allocated_gb` (taking the **max** across `log_interval` windows, since the trainer resets peak stats each interval), cross-checks `throughput/tokens_per_sec`, and snapshots cumulative `skipped_steps` at the window edges. `finalize` writes `benchmark.json` and, when `wandb.run` is live, flattens the record into `wandb.run.summary` under `benchmark/*`. Throughput is reported per-GPU and aggregate; MFU (per-GPU, scale-invariant) uses `peak_flops_per_sec` (config override) or a `torch.cuda.get_device_name()` lookup. Consumed offline by `src/tools/benchmark_value.py`.
+
 ## WandbCallback (wandb_callback.py)
 
 ### Initialization Flow
 
 1. `_build_wandb_init_kwargs()` — optionally finds previous run ID for resume
 2. `wandb.init(...)` — creates/resumes W&B run
-3. `_save_wandb_run_id()` — writes run ID to `<results_dir>/<exp_name>/.wandb_run_id`
+3. `_define_step_metrics()` — `define_metric("train/*", step_metric="train/tokens_consumed")` so `train/*` panels default to a tokens-consumed x-axis (also declares `train/optim_step`). Lets runs with different `gradient_accumulation_steps` overlay correctly; the raw micro-batch `train/step` is NOT comparable across runs. Best-effort (skipped on older wandb).
+4. `_save_wandb_run_id()` — writes run ID to `<results_dir>/<exp_name>/.wandb_run_id`
 
 ### on_batch_end Dispatch (modality map)
 

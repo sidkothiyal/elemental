@@ -1,0 +1,17 @@
+# @package _global_
+# Stage-1 compressor MAE loss: masked CE on reconstructed token logits.
+# ``target_key: input/input`` because the model masks its own input and
+# predicts the original clean ids — we never use the dataset's shifted
+# ``target`` field here.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    masked_ce:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.masked_cross_entropy.MaskedCrossEntropy
+      pred_key: pred/pred
+      target_key: input/input
+      context_mapping:
+        pred/loss_mask: mask
+      weight: 1.0

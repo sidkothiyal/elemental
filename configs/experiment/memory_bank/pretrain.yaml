@@ -1,0 +1,102 @@
+# @package _global_
+# Shared-memory-bank ablation pretraining on FineWeb-EDU. Isolates the PEER memory
+# bank from the recursion: a FLAT 12-layer transformer (num_loops=1) whose per-layer
+# MLP is replaced by one shared PEER bank, param-matched to nanochat_gpt_d12.
+# Mirrors experiment/recursive_memory/pretrain.yaml (same optimizer partition, same
+# 8×H100 sizing, same horizon) so all three arms are token- and compute-comparable.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/memory_bank/pretrain
+#
+# Prereq: BPE tokenizer trained first via
+#   uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+
+defaults:
+  - /default
+  - /dataset: fineweb_edu
+  - /model: memory_bank_gpt_d12
+  - /loss: lm_pretrain
+  - /optimizer: muon_adamw_peer
+  - /scheduler: nanochat_warmup_cosine
+  # LM eval metrics (next-token acc + bpb) BEFORE /callback: default so this
+  # callback precedes WandbCallback in the broadcast and its metrics get logged.
+  - /callback/lm_eval_metrics@callbacks.metrics
+  - /callback: default
+  # Free-running generation samples during validation (phases: [val]).
+  - /postprocessor/lm_generate
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: memory_bank_pretrain_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/memory_bank/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false  # token shape is constant; benchmark not useful
+
+# torch.compile — tuned for the flat (num_loops=1) shared PEER-bank ablation on a
+# long (7500-step) 8×H100 run.
+#   mode=max-autotune-no-cudagraphs: autotuned Triton kernels (compile cost amortizes
+#     over thousands of steps) WITHOUT CUDA graphs, which conflict with DDP allreduce
+#     hooks, gradient accumulation, and this model's gradient_checkpointing recompute.
+#   fullgraph=false: gradient_checkpointing (recompute-in-backward) and the PEER
+#     per-token expert gather introduce graph breaks — allow them rather than crash.
+#   dynamic=false: token shape is constant (batch × max_length), so specialise on it.
+torch_compile:
+  enabled: true
+  mode: max-autotune-no-cudagraphs
+  fullgraph: false
+  dynamic: false
+
+# Pretraining knobs (override on the command line for smoke runs).
+# Sized for an 8×H100 run at global batch 256 (= per-GPU batch_size × grad_accum ×
+# 8 GPUs = 0.524M tokens/optimizer-step), MATCHED to the nanochat / recursive arms.
+# No recursion (num_loops=1) so this is lighter on memory than the recursive trunk:
+# batch_size 16 should fit an 80GB H100. If it OOMs, drop to 8 and set grad_accum=4
+# (keep the product = 32 per GPU so the global batch stays 256). On headroom, try
+# model.gradient_checkpointing=false for ~30% more throughput.
+batch_size: 16
+gradient_accumulation_steps: 2
+num_epochs: 1
+validation_interval: 0  # epoch-based eval off; use step-based eval below instead
+# Held-out eval every 1k optimizer steps, capped at 50 batches.
+validation_interval_steps: 1000
+validation_max_batches: 50
+clip_grad_norm: 1.0
+# Resilience: drop a non-finite accumulation window instead of crashing.
+skip_nonfinite_steps: true
+
+# Scheduler horizon (used by warmup-cosine). Compute-optimal (~Chinchilla 20×) for
+# this ~186M model: 7500 optimizer steps × 0.524M tokens ≈ 3.9B tokens (~21×/param).
+# Identical to the nanochat / recursive_memory arms so all three are token-comparable.
+warmup_steps: 750
+total_steps: 7500
+min_lr_ratio: 0.001
+
+# Drive run length by optimizer steps, not dataset exhaustion (streaming dataset).
+max_steps: ${total_steps}
+
+# Hand the tokenizer artifact through to dataset + model overrides.
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+# Decode token tensors to text in W&B. The model returns a plain logits tensor in
+# this lean V0 (no deep supervision), so pred is a tensor as the loggers expect.
+to_log:
+  input/input: text
+  target: text
+  pred: text
+  post_processed/generated: text
+
+callbacks:
+  wandb:
+    logging_interval: 1000
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
+  checkpoint:
+    save_every_n_epochs: 1
+    # Step-level checkpoints for the single-epoch streaming run. Counts OPTIMIZER
+    # steps (grad-accum-invariant), so with grad_accum=2 this is every 1k optimizer
+    # steps; a ~7.5k-step run still produces several resume points.
+    save_every_n_steps: 1000

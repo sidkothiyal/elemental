@@ -63,6 +63,17 @@ class CheckpointCallback(callback.Callback):  # pylint: disable=too-many-instanc
         # position correctly. See Trainer._restore_dataloader_state.
         self.train_loader: Any | None = None
         self.current_global_step: int = 0
+        # Optimizer step at which the last periodic step checkpoint was saved.
+        # The step-save trigger is a threshold crossing off this watermark, so the
+        # cadence is grad-accum-invariant. Trainer realigns it to the resumed step
+        # on resume so the first post-resume batch doesn't immediately re-save.
+        self.last_step_checkpoint: int = 0
+        # Cumulative global training tokens, persisted so `train/tokens_consumed`
+        # stays continuous across resume.
+        self.current_total_tokens: int = 0
+        # GradScaler (fp16 AMP). Persisted so a resumed fp16 run continues with the
+        # calibrated loss-scale instead of restarting from the initial scale.
+        self.scaler: Any = None
 
         # Track best metric value
         self.best_metric = float("inf") if mode == "min" else float("-inf")
@@ -102,6 +113,7 @@ class CheckpointCallback(callback.Callback):  # pylint: disable=too-many-instanc
         self.training_mode = config.get("mode", self.training_mode)
         self.remote_backup = config.get("remote_backup", self.remote_backup)
         self.train_loader = config.get("train_loader", self.train_loader)
+        self.scaler = config.get("scaler", self.scaler)
 
         logger.info("CheckpointCallback config updated")
 
@@ -134,6 +146,10 @@ class CheckpointCallback(callback.Callback):  # pylint: disable=too-many-instanc
                 dataloader_state = self.train_loader.state_dict()
             except Exception:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to capture dataloader state for checkpoint", exc_info=True)
+        # Only persist the scaler when it is actually enabled (fp16). A disabled
+        # bf16/fp32 scaler has empty state; skipping it keeps checkpoints clean and
+        # avoids an empty-state_dict load if the run is later resumed.
+        scaler = self.scaler if (self.scaler is not None and self.scaler.is_enabled()) else None
         checkpoint_path = os.path.join(self.save_dir, f"{name}.pt")
         ckpt_utils.save_checkpoint(
             checkpoint_path=checkpoint_path,
@@ -141,10 +157,15 @@ class CheckpointCallback(callback.Callback):  # pylint: disable=too-many-instanc
             optimizer=self.optimizer,
             scheduler=self.scheduler,
             criterion=self.criterion,
+            scaler=scaler,
             epoch=epoch,
             step=step,
             global_optim_step=self.current_global_step,
+            total_tokens=self.current_total_tokens,
             dataloader_state=dataloader_state,
+            # Persist the best-so-far monitored metric so a resume does not reset it
+            # to +/-inf and overwrite ``best.pt`` with a worse post-resume model.
+            best_metric=self.best_metric,
         )
         self.total_checkpoints_saved += 1
         logger.info(
@@ -195,30 +216,54 @@ class CheckpointCallback(callback.Callback):  # pylint: disable=too-many-instanc
 
     def on_batch_end(
         self,
-        step: int,
+        step: int,  # pylint: disable=unused-argument
         phase: str,
-        data: dict,  # pylint: disable=unused-argument
+        data: dict,
     ):
         """Called when the batch ends.
 
         Args:
-            step: Current step number.
+            step: Micro-batch counter (unused — step checkpoints are gated on the
+                optimizer-step count, which is grad-accum-invariant).
             phase: Current phase (train/val/test).
-            data: Unified data container (unused by this callback).
+            data: Unified data container (carries ``global_optim_step``/``total_tokens``).
         """
+        if phase != "train":
+            return
+
         # Track the latest optimizer-step count so any checkpoint (periodic,
         # best, last) records the correct resume position.
-        if phase == "train":
-            gs = data.get("global_optim_step")
-            if gs is not None:
-                self.current_global_step = int(gs)
+        gs = data.get("global_optim_step")
+        if gs is not None:
+            self.current_global_step = int(gs)
+        tt = data.get("total_tokens")
+        if tt is not None:
+            self.current_total_tokens = int(tt)
 
-        # Save periodic checkpoints by step during training
-        if phase == "train" and self.save_every_n_steps is not None:
-            if step > 0 and step % self.save_every_n_steps == 0:
-                self._save_checkpoint(
-                    f"checkpoint-step-{step}", epoch=self.current_epoch, step=step, is_periodic=True
-                )
+        # Save periodic step checkpoints every ``save_every_n_steps`` OPTIMIZER
+        # steps. Gating on the optimizer-step count (not the micro-batch ``step``)
+        # means the cadence is invariant to ``gradient_accumulation_steps`` and the
+        # save always lands right AFTER an optimizer step — fully-applied grads,
+        # consistent optimizer/scheduler state — never mid-accumulation-window.
+        #
+        # Threshold-crossing (``- last >= N``) rather than ``% N == 0`` because
+        # ``on_batch_end`` fires once per micro-batch while ``current_global_step``
+        # only advances on accumulation boundaries: an equality check would both
+        # re-fire on the non-boundary micro-batches sharing that step value and
+        # miss the save entirely whenever a step is skipped (``skip_nonfinite_steps``).
+        # The watermark fires exactly once per N steps regardless.
+        if (
+            self.save_every_n_steps is not None
+            and self.current_global_step > 0
+            and self.current_global_step - self.last_step_checkpoint >= self.save_every_n_steps
+        ):
+            self.last_step_checkpoint = self.current_global_step
+            self._save_checkpoint(
+                f"checkpoint-step-{self.current_global_step}",
+                epoch=self.current_epoch,
+                step=self.current_global_step,
+                is_periodic=True,
+            )
 
     def log_metrics(
         self, step: int, phase: str, metrics: dict[str, float]  # pylint: disable=unused-argument

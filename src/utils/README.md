@@ -6,10 +6,10 @@ Cross-cutting helpers used by trainer, callbacks, and tools.
 
 ### `initializer.py` — Experiment Initialization
 
-`CUDAPrefetcher` — wraps a `DataLoader` and prefetches batches to GPU using a side CUDA stream. Overlaps HtoD transfers with compute, significantly reducing GPU idle time. Behaves like a DataLoader iterator.
+`CUDAPrefetcher` — wraps a `DataLoader` and prefetches batches to GPU using a side CUDA stream. Overlaps HtoD transfers with compute, significantly reducing GPU idle time. Behaves like a DataLoader iterator, and transparently forwards attribute access (`sampler`, `state_dict`, `load_state_dict`, …) to the wrapped loader so DDP `set_epoch` and streaming-resume keep working through it.
 
 Key functions:
-- `initialize_device(device_str)` — returns `torch.device`, handles `"gpu"` (CUDA/MPS), CPU
+- `initialize_device(device_str, local_rank=-1, use_distributed=False)` — returns `torch.device`, handles `"gpu"` (CUDA/MPS), CPU. Under DDP (`use_distributed=True`) it calls `torch.cuda.set_device(local_rank)` and returns `cuda:{local_rank}` so each rank binds to its own GPU (otherwise all ranks land on `cuda:0`)
 - `initialize_dtype(dtype_str)` — returns `torch.dtype`, falls back to float32 if bfloat16 unsupported
 - `set_seeds(seed)` — seeds PyTorch, CUDA, NumPy, Python random
 - `initialize_dataset(dataloader_config, ...)` — instantiates dataset + dataloader from Hydra config, wraps in `CUDAPrefetcher`, sets up `DistributedSampler` if needed; returns a `{"train", "val", "test"}` dict
@@ -21,9 +21,9 @@ Key functions:
 
 ### `checkpoint.py` — Checkpoint I/O
 
-`save_checkpoint(path, model, optimizer, scheduler, criterion, epoch, step)` — saves all components to a single `.pt` file.
+`save_checkpoint(path, model, optimizer, scheduler, criterion, scaler, epoch, step)` — saves all components to a single `.pt` file. `scaler` (fp16 GradScaler) is optional and only written when passed.
 
-`load_checkpoint(path, model, optimizer, scheduler, criterion, ...)` — loads state back. Supports both standard format (with `model_state_dict` key) and raw state dict files.
+`load_checkpoint(path, model, optimizer, scheduler, criterion, scaler, ...)` — loads state back. Supports both standard format (with `model_state_dict` key) and raw state dict files. `GradScaler.load_state_dict` takes no `strict` (handled like optimizer/scheduler).
 
 `find_latest_checkpoint(results_dir, experiment_name)` — scans results directory for runs matching the experiment base name, returns path to most recent valid checkpoint. Preference order: `last.pt` → `best.pt` → `checkpoint-step-N.pt` → `checkpoint-epoch-N.pt`.
 
@@ -32,11 +32,14 @@ Both `save/load` handle `ModuleDict` (GAN) and dict optimizers/schedulers.
 ### `distributed.py` — Distributed Training
 
 Thin wrappers around PyTorch DDP:
-- `setup_distributed(rank, world_size, backend)` — initializes process group
+- `setup_distributed(rank, world_size, backend)` — binds the process to `cuda:{rank}` (before the process group inits, so NCCL doesn't collide every rank on `cuda:0`) then initializes the process group
 - `cleanup_distributed()` — destroys process group
 - `wrap_model_ddp(model, device)` — wraps in `DDP`, handles `ModuleDict` (GAN)
 - `get_distributed_dataloader(dataloader, rank, world_size)` — creates `DistributedSampler`
 - `is_main_process()` — True if rank 0 or not distributed
+- `get_world_size()` — number of DDP processes (1 when not distributed); used to scale per-rank token counts to a global total
+
+**Rank-0 scoping.** Callbacks and the remote-backup strategy are built on the main process only (`initialize_callbacks` / `initialize_remote_backup` return an empty list / `None` on non-main ranks): W&B logging, checkpoint writes, and metric logging are all rank-0 concerns, and none of them do cross-rank collectives. Checkpoint save/load unwrap the DDP `.module` prefix (and torch.compile's `_orig_mod`) so a checkpoint from an N-GPU run loads into a plain single-GPU / exported model.
 
 ### `s3_cache_backend.py` — S3 Remote Cache for torch.compile
 

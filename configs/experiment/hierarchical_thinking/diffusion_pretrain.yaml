@@ -1,0 +1,71 @@
+# @package _global_
+# hierarchical-thinking V0 joint pretraining — three-stream hierarchical masked-diffusion LM
+# trained on FineWeb-EDU. Loads MAE-pretrained compressors for the three
+# scales (N=3, N=10, N=30) via checkpoint surgery before joint training,
+# otherwise initialises from scratch.
+#
+# Usage:
+#   # 1) Pretrain each compressor MAE (three separate stage-1 runs)
+#   uv run python src/trainer.py experiment/hierarchical_thinking/compressor_pretrain_n3
+#   uv run python src/trainer.py experiment/hierarchical_thinking/compressor_pretrain_n10
+#   uv run python src/trainer.py experiment/hierarchical_thinking/compressor_pretrain_n30
+#
+#   # 2) Joint pretraining
+#   uv run python src/trainer.py experiment/hierarchical_thinking/diffusion_pretrain
+#
+#   # Smoke run (no compressor init):
+#   uv run python src/trainer.py experiment/hierarchical_thinking/diffusion_pretrain \
+#       num_epochs=1 dataset.dataloader.train.dataset.max_docs=2000 \
+#       load_checkpoint_path=null
+
+defaults:
+  - /default
+  - /dataset: fineweb_edu
+  - /model: hierarchical_thinking/multi_scale_lm_v0
+  - /loss: hierarchical_thinking_masked_diffusion
+  - /optimizer: muon_adamw
+  - /scheduler: nanochat_warmup_cosine
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: hierarchical_thinking_diffusion_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/hierarchical_thinking/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false
+
+batch_size: 16
+gradient_accumulation_steps: 4
+num_epochs: 1
+validation_interval: 0
+clip_grad_norm: 1.0
+
+warmup_steps: 1000
+total_steps: 100000
+
+seq_len: 2048
+
+# Compressor MAE checkpoints are loaded by an external one-shot merge step
+# (src/tools/hierarchical_thinking_merge_init.py) before launching this run. The merged
+# starting checkpoint should be set via ``load_checkpoint_path`` below.
+# Override on the command line:
+#   load_checkpoint_path=results/hierarchical_thinking/diffusion_v0_init/checkpoints/latest.pt
+load_checkpoint_path: null
+
+# Decode token tensors to text in W&B (tokenizer_path comes from the dataset).
+to_log:
+  input/input: text
+  target: text
+  pred: text
+
+callbacks:
+  wandb:
+    logging_interval: 50
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
+  checkpoint:
+    save_every_n_epochs: 1

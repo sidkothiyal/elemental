@@ -295,4 +295,9 @@ commented ONNX-level entries.
 | Token sampling (top-k/p/temperature) | `src/utils/sampling.py` |
 | Tokenizer training entry point | `src/tools/train_tokenizer.py` |
 | Checkpoint surgery | `src/tools/checkpoint_surgeon.py` |
+| GPU throughput benchmark (value-for-money) | `src/callback/benchmark_callback.py`, `configs/benchmark/default.yaml`, `configs/experiment/*/pretrain_benchmark.yaml` |
+| Benchmark value analyzer (cost-to-train ranking) | `src/tools/benchmark_value.py` |
 | Nanochat full pipeline | `configs/experiment/nanochat/{pretrain,sft,grpo_gsm8k}.yaml` |
+| Recursive-trunk + PEER memory LM ("Mixture of a Million Experts") | `src/model/{peer_memory,recursive_memory_gpt}.py`, `configs/experiment/recursive_memory/pretrain.yaml` |
+| Hierarchical-thinking multi-scale LM — causal-AR (clean A/B vs nanochat) | `src/model/hierarchical_lm.py`, `configs/experiment/hierarchical_thinking/causal_pretrain.yaml` |
+| Hierarchical-thinking multi-scale LM — masked-diffusion track | `src/model/{multi_scale_lm,compressor_mae,sliding_perceiver_compressor,transformer_blocks}.py`, `configs/experiment/hierarchical_thinking/diffusion_pretrain.yaml` |

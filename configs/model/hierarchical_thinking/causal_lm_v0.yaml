@@ -1,0 +1,74 @@
+# @package _global_
+# Hierarchical-thinking causal-AR V0 — the CLEAN A/B model vs nanochat_gpt_d12.
+#
+# Same causal next-token objective as nanochat (loss: lm_pretrain), so the
+# multi-scale hierarchical architecture is the ONLY variable. Three compressor
+# streams (word / phrase / sentence ≈ N=3 / 10 / 30) feed a token-resolution
+# causal decoder via top-down tanh-gated *causal* cross-attention.
+#
+# Sizing (candidate "H"): ~188.2M params ≈ nanochat_gpt_d12's 185.6M (+1.4%,
+# within the ±2% match band). Verify against the trainer's printed param count.
+# Budget: embedding+lm_head 100.7M (2×65536×768, identical to nanochat) +
+# decoder 41.3M + coarse towers 27.2M + compressors 19.1M.
+#
+# Towers are tiered inversely to sequence length (coarsest is deepest/widest,
+# decoder is moderate) — the shorter a stream, the cheaper its depth.
+#
+# vocab_size is 65536 (NO mask sentinel — this arm never masks), matching the
+# nanochat BPE tokenizer exactly.
+
+vocab_size: 65536
+token_embed_dim: 768
+max_length: 2048
+cross_attn_every: 4
+
+model:
+  _target_: model.hierarchical_lm.HierarchicalLM
+  vocab_size: ${vocab_size}
+  token_embed_dim: ${token_embed_dim}
+  max_length: ${max_length}
+  cross_attn_every: ${cross_attn_every}
+
+  # Token-resolution causal decoder (the surface generator).
+  decoder_cfg:
+    num_layers: 5
+    embed_dim: 768
+    num_heads: 12
+    ff_embed_dim: 3072
+
+  stream_cfgs:
+    # Word-scale stream.
+    - compressor:
+        window_size: 3
+        num_layers: 2
+        num_heads: 6
+        ff_embed_dim: 768
+      tower:
+        num_layers: 2
+        embed_dim: 384
+        num_heads: 6
+        ff_embed_dim: 1152
+
+    # Phrase-scale stream.
+    - compressor:
+        window_size: 10
+        num_layers: 2
+        num_heads: 8
+        ff_embed_dim: 768
+      tower:
+        num_layers: 3
+        embed_dim: 512
+        num_heads: 8
+        ff_embed_dim: 1536
+
+    # Sentence-scale stream (deepest/widest — the "thinking" tower).
+    - compressor:
+        window_size: 30
+        num_layers: 2
+        num_heads: 8
+        ff_embed_dim: 768
+      tower:
+        num_layers: 4
+        embed_dim: 640
+        num_heads: 8
+        ff_embed_dim: 1920

@@ -76,6 +76,34 @@ class TestPerStepLogging:
 
 
 @pytest.mark.unit
+class TestTokenLogging:
+    """Cumulative `tokens_consumed` + `optim_step` are logged so LM runs can be
+    compared on tokens-seen rather than the micro-batch `step`."""
+
+    def test_tokens_consumed_accumulates_and_is_logged(self):
+        # log_interval=2 → logs at steps 0, 2; input has 2*4=8 tokens/batch.
+        trainer = _make_trainer({"log_interval": 2})
+        loader = [{"input": torch.zeros(2, 4)} for _ in range(4)]
+        trainer._run_batch_loop("train", 0, loader)
+
+        # Non-distributed → world_size 1, so cumulative == sum of numel() seen.
+        assert trainer._total_tokens == 4 * 8
+        per_step = trainer.callbacks.log_metrics.call_args_list[0].args[2]
+        assert "tokens_consumed" in per_step
+        assert "optim_step" in per_step
+        # First log fires at batch 0: 1 batch counted (8 tokens), 1 optimizer step.
+        assert per_step["tokens_consumed"] == 8
+        assert per_step["optim_step"] == 1
+
+    def test_tokens_not_counted_during_validation(self):
+        trainer = _make_trainer({"log_interval": 1})
+        trainer.eval_batch = MagicMock(return_value={"total": torch.tensor(1.0)})
+        loader = [{"input": torch.zeros(2, 4)} for _ in range(4)]
+        trainer._run_batch_loop("val", 0, loader)
+        assert trainer._total_tokens == 0
+
+
+@pytest.mark.unit
 class TestMaxSteps:
     """max_steps is a hard cap measured in OPTIMIZER steps (accumulation
     boundaries), not micro-batches — so it lines up with the LR scheduler."""

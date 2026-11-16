@@ -140,8 +140,30 @@ class WandbCallback(callback.Callback):
         )
         self._wandb_logger = wandb.init(**wandb_init_kwargs)
 
+        # Make token/optimizer-step counts the default x-axes for train panels.
+        self._define_step_metrics()
+
         # Save wandb run ID to results directory for future resumption
         self._save_wandb_run_id()
+
+    def _define_step_metrics(self) -> None:
+        """Declare cumulative tokens / optimizer step as W&B step metrics.
+
+        The trainer logs ``train/tokens_consumed`` and ``train/optim_step``
+        alongside the raw micro-batch ``train/step``. For LM runs the raw step is
+        NOT comparable across configs (it differs by ``gradient_accumulation_steps``),
+        so point all ``train/*`` panels at ``train/tokens_consumed`` by default —
+        then runs with different micro-batching overlay correctly on tokens seen.
+        Best-effort: older wandb without ``define_metric`` is silently skipped.
+        """
+        if self._wandb_logger is None or not hasattr(self._wandb_logger, "define_metric"):
+            return
+        try:
+            self._wandb_logger.define_metric("train/tokens_consumed")
+            self._wandb_logger.define_metric("train/optim_step")
+            self._wandb_logger.define_metric("train/*", step_metric="train/tokens_consumed")
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning("wandb.define_metric failed — using default step x-axis", exc_info=True)
 
     # ------------------------------------------------------------------
     # Init helpers
