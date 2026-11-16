@@ -12,7 +12,12 @@ defaults:
   - /loss: lm_sft
   - /optimizer: muon_adamw
   - /scheduler: nanochat_warmup_cosine
+  # LM eval metrics BEFORE /callback: default (ordering — see lm_eval_metrics.yaml).
+  # SFT targets mask non-assistant positions with -100, so accuracy/bpb score
+  # only assistant content.
+  - /callback/lm_eval_metrics@callbacks.metrics
   - /callback: default
+  - /postprocessor/lm_generate
   - /torch_compile
   - /remote_backup: wandb
   - _self_
@@ -36,6 +41,14 @@ warmup_steps: 200
 total_steps: 5000
 
 tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+# Decode token tensors to text in W&B (input/target context + argmax of pred,
+# plus the validation generation sample).
+to_log:
+  input/input: text
+  target: text
+  pred: text
+  post_processed/generated: text
 
 # Override the optimizer LRs for SFT (smaller than pretrain).
 optimizer_groups:
@@ -62,6 +75,7 @@ resume_training: false
 callbacks:
   wandb:
     logging_interval: 25
-    log_text_data: false
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
   checkpoint:
     save_every_n_epochs: 1

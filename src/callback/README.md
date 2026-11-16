@@ -2,6 +2,14 @@
 
 Training lifecycle hooks that monitor, log, and checkpoint training runs.
 
+**Multi-GPU:** callbacks run on the **main process only**. Under DDP they are
+built solely on rank 0 (`initializer.initialize_callbacks` returns an empty
+`CallbackList` on other ranks), so W&B spawns one run — not one per GPU — and
+only rank 0 writes checkpoints. Don't add cross-rank collective ops (e.g.
+`all_reduce`) inside a callback; they'd deadlock, since the other ranks never
+enter it. Reduce across ranks in the trainer instead, then hand rank 0 the
+result to log.
+
 ## Files
 
 ### `callback.py` — Base classes
@@ -20,6 +28,9 @@ Saves model, optimizer, scheduler, and loss state to disk.
 - Periodic saves every N epochs or N steps
 - Rolling window (delete old periodic checkpoints beyond `max_checkpoints_saved`)
 - Remote backup upload (SSH or W&B) after each save
+- Persists resume bookkeeping: `global_optim_step` (the true optimizer-step count, for a correct LR-schedule resume under gradient accumulation), `total_tokens` (cumulative global tokens, so `train/tokens_consumed` stays continuous), `best_metric` (so a post-resume validation can't overwrite `best.pt` with a worse model), the fp16 GradScaler state (only when enabled), and, when a `StatefulDataLoader` train loader is wired, its `dataloader_state` (streaming position). All restored on resume.
+- `save_every_n_steps` counts **optimizer** steps, not micro-batches: step checkpoints fire on a threshold watermark (`global_optim_step - last_saved >= N`), so the cadence is unaffected by `gradient_accumulation_steps`, never lands mid-accumulation-window, and can't be missed by a skipped step. Files are named `checkpoint-step-<optimizer_step>.pt`.
+- `monitor_metric` (for `save_best`) must name an emitted metric key. The trainer emits losses as `loss_<name>`, so use `loss_total` — a bare `total` matches nothing and silently disables best-checkpoint tracking.
 
 **When to use**: Include in `callbacks` config for all training runs.
 
@@ -44,6 +55,8 @@ Computes metrics (IoU, PSNR, SSIM, accuracy, etc.) using [TorchMetrics](https://
 - Configurable `pred_key` and `target_key` for data-container access
 - Optional `transform_pred` / `transform_target` callables
 - Injects computed metrics into `log_metrics()` so they reach `WandbCallback`
+
+**Ordering**: `MetricsCallback` mutates the shared metrics dict, and `WandbCallback.log_metrics` commits immediately — so the metrics callback must come **before** `WandbCallback` in the broadcast. Place it ahead of `/callback: default` in the experiment `defaults` list (e.g. `- /callback/lm_eval_metrics@callbacks.metrics` before `- /callback: default`). See `configs/callback/lm_eval_metrics.yaml` (next-token accuracy + bits-per-byte for the LM stages).
 
 **When to use**: Add when you need quantitative metrics beyond loss values.
 
@@ -112,6 +125,38 @@ python src/trainer.py experiment/autoencoder/compression_ae \
   max_steps=200 --no-remote-logging
 ```
 
+### `benchmark_callback.py` — GPU throughput benchmark
+
+Measures **steady-state training throughput** on the current GPU node so you can pick the
+best value-for-money hardware. **Opt-in** — composed via the `/benchmark: default` bundle
+(see `configs/benchmark/`), never in default training. It only *observes* the real
+training loop (no forked trainer): the base `Trainer` already computes
+`throughput/tokens_per_sec`, `achieved_tflops`, `mfu`, and peak memory every
+`log_interval`; this callback discards a `warmup_steps` window (torch.compile / cuDNN
+first-step cost), times the next `measure_steps` optimizer steps, and writes the result.
+
+**How it measures**: the window is keyed on `data["global_optim_step"]` (an *optimizer*
+step, so grad-accum is handled). At the open/close boundaries it calls
+`torch.cuda.synchronize` for accurate wall-time, then computes tokens **analytically** —
+`measure_steps × batch_size × seq_len × grad_accum × world_size` — so the figure is exact
+and independent of laggy counters. Throughput is reported both `_per_gpu` and `_aggregate`
+(= per-GPU × world_size); MFU is scale-invariant (per-GPU numerator ÷ per-GPU peak, from a
+device-name lookup or `peak_flops_per_sec` override).
+
+**Output**: `results/<mode>/<experiment>/benchmark.json` (+ a `benchmark/*` block in
+`wandb.run.summary` when W&B is active). Rank candidate GPUs by cost-to-train with
+`src/tools/benchmark_value.py`. `status` is `incomplete` if the run doesn't reach
+`warmup_steps + measure_steps + 1` optimizer steps.
+
+**When to use**: Before committing a long pretraining sweep to a rented node — benchmark
+each arm on the **actual N-GPU node** you'll rent, then compare $/train.
+
+```bash
+uv run python src/trainer.py experiment/recursive_memory/pretrain_benchmark
+uv run python src/tools/benchmark_value.py \
+  --records "results/**/benchmark.json" --price rtx6000=9.25 a100=9.25 h100=18.5
+```
+
 ### `wandb_callback.py` — Weights & Biases logging
 
 Logs scalars, images, video clips, text, and 3D point clouds to W&B.
@@ -125,13 +170,42 @@ Logs scalars, images, video clips, text, and 3D point clouds to W&B.
 - Auto-routes 5-D `(B, T, C, H, W)` tensors to `wandb.Video` (denormalises
   `video_value_range` → uint8 `[0, 255]`, configurable `video_fps`)
 - Configurable `image_value_range` for images normalised outside `[0, 1]`
-- Selective logging via `to_log` list (logs all keys by default)
-- `field_loggers` dict to override per-key logging method
-- Warns once per key (instead of silently dropping) on unsupported tensor shapes
+- Per-key modality via the top-level `to_log` (see below)
+- Token tensors decoded to an accumulating `wandb.Table` (`{phase}/text_samples`)
+- Warns once per key (and refuses oversized 2-D tensors such as `(seq_len, vocab)`
+  logits) instead of logging a junk image
 - Auto-resume: saves run ID to file, resumes W&B run on `resume_training: true`
+- Sets `train/tokens_consumed` as the default x-axis for `train/*` panels (via `define_metric`), so runs with different `gradient_accumulation_steps` overlay on tokens-seen rather than the raw micro-batch `train/step`
 
-**When to use**: Include in all runs. Configure `log_text_data: true` for
-language models. For video AEs the defaults
+**Choosing what to log (`to_log`)**: the top-level `to_log` controls *which*
+data-container keys are logged and *how*:
+- `null` (default) → `input/input`, `target`, `pred` as images.
+- `list[str]` → each listed key as an image (legacy).
+- `dict[str, str]` → explicit `{key: modality}`, where modality is one of
+  `text | image | video | point3d | line3d | scalars`.
+
+For `text`, set `tokenizer` (path/name) and optionally `tokenizer_type`
+(`bpe`/`char`/`hf`; `bpe`/`char` inferred from a `.json` extension when unset,
+`hf` — a transformers `AutoTokenizer`, e.g. `"gpt2"` — must be set explicitly).
+Decoded samples are written one fresh `wandb.Table` per interval under
+`{phase}/text_samples` (stepped media, no accumulation). Example
+(autoregressive LM):
+
+```yaml
+to_log:
+  input/input: text
+  target: text
+  pred: text       # logits → argmax → decode
+callbacks:
+  wandb:
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
+```
+
+(`log_text_data` and `field_loggers` are deprecated aliases, still folded into
+`to_log` for back-compat.)
+
+**When to use**: Include in all runs. For video AEs the defaults
 (`video_value_range: [-1, 1]`, `video_fps: 8`) match BVI-AOM and
 `clip_length: 8`, so no overrides are required.
 

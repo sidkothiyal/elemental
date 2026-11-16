@@ -9,6 +9,16 @@ mode: ${mode}
 results_dir: ${results_dir}
 resume_training: ${oc.select:resume_training,false}
 load_checkpoint_path: ${oc.select:load_checkpoint_path,null}
+# Which keys to log and how is controlled by the top-level `to_log`:
+#   - null        → default keys (input/input, target, pred) logged as images.
+#   - list[str]   → each key logged as an image (legacy).
+#   - dict        → {key: modality} where modality is one of
+#                   text | image | video | point3d | line3d | scalars.
+# For `text`, set the tokenizer below. (`log_text_data` and `field_loggers`
+# are deprecated aliases that are folded into `to_log`.)
+tokenizer: null
+# "bpe" (.json artifact) or "char"; null = infer from the tokenizer path.
+tokenizer_type: null
 # Visual logging knobs.
 # - video_value_range: range of 5-D video tensors in the data container.
 #     Defaults to BVI-AOM convention (-1, 1); set to (0, 1) for datasets that

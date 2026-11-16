@@ -1,0 +1,32 @@
+# @package _global_
+# hierarchical-thinking joint training loss.
+#
+# 1. ``masked_ce``: LLaDA-style masked-discrete-diffusion CE on the Fine
+#    tower's logits. Loss is averaged over positions selected by
+#    ``pred/loss_mask``. ``target_key: input/input`` because for masked-
+#    diffusion we reconstruct the *unshifted clean tokens*, not the next
+#    token (FineWebEduDataset's ``target`` is shifted by 1 and unused here).
+# 2. ``aux_coarse_recon``: small-weight CE on the coarse stream's auxiliary
+#    head — forces the coarse stream to actually carry token-level content.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    masked_ce:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.masked_cross_entropy.MaskedCrossEntropy
+      pred_key: pred/pred
+      target_key: input/input
+      context_mapping:
+        pred/loss_mask: mask
+      weight: 1.0
+
+    aux_coarse_recon:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.masked_cross_entropy.MaskedCrossEntropy
+      pred_key: pred/aux_coarse_logits
+      target_key: input/input
+      context_mapping:
+        pred/loss_mask: mask
+      weight: 0.1

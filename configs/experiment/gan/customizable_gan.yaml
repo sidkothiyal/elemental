@@ -44,3 +44,9 @@ dtype:
 metrics_format:
   generator: generator_loss
   discriminator: discriminator_loss
+
+# Log inputs/targets/reconstructions as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

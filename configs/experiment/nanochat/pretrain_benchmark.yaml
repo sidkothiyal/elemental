@@ -1,0 +1,14 @@
+# @package _global_
+# Throughput benchmark for the nanochat pretrain arm. Composes the real pretrain config
+# and layers the benchmark bundle (short window + BenchmarkCallback, checkpoints/backup/
+# generation disabled). See configs/benchmark/default.yaml.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/nanochat/pretrain_benchmark
+#   uv run python src/tools/benchmark_value.py \
+#     --records "results/**/benchmark.json" --price rtx6000=9.25 a100=9.25 h100=18.5
+
+defaults:
+  - /experiment/nanochat/pretrain
+  - /benchmark: default
+  - _self_

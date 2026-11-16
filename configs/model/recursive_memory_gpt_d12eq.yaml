@@ -1,0 +1,56 @@
+# @package _global_
+# Recursive-trunk + PEER-memory LM, param-matched to nanochat_gpt_d12 (~186M).
+# Trunk: 4 distinct blocks looped K=3 times (effective depth 12, weights shared).
+# Memory: one shared PEER bank of 36864 (192^2) single-neuron experts replaces
+# every block's MLP; sweep num_experts up to 1048576 (recursive_memory_gpt_1m).
+#
+# Param budget (192^2 experts): embeddings 100.66M + trunk attention/query-proj
+# 28.32M + PEER bank 57.02M = ~186.0M, matching nanochat_gpt_d12 (185.6M) within
+# ~0.2%. The old default 65536 (256^2) was ~230M — NOT param-matched to d12.
+vocab_size: 65536
+embed_dim: 768
+num_heads: 6
+n_trunk_layers: 4
+num_loops: 3
+max_length: 2048
+rope_base: 10000.0
+
+# PEER memory bank.
+num_experts: 36864        # 192^2; param-matches nanochat_gpt_d12 (~186M). Must be a perfect square.
+peer_heads: 8
+peer_top_k: 16            # active experts/token = peer_heads * peer_top_k = 128
+sub_key_dim: 128
+peer_query_norm: batchnorm  # batchnorm (PEER recipe) | rmsnorm (DDP-safe) | none
+peer_activation: relu
+
+# Recursion controls (lean V0: full backprop, fixed loops, no deep supervision).
+grad_mode: full           # full | last_loop (TRM last-loop gradient trick)
+deep_supervision: false
+tie_embeddings: false
+
+# Recompute the PEER expert gather in backward instead of saving the
+# (B,T,peer_heads,peer_top_k,d) tables for all 12 (n_trunk_layers*num_loops) PEER
+# calls — the dominant activation cost. Keeps full backprop (parity-preserving),
+# trades ~30% wall-clock for the memory needed to fit a 24GB card. Turn off on a
+# larger GPU with `model.gradient_checkpointing=false`.
+gradient_checkpointing: true
+
+model:
+  _target_: model.recursive_memory_gpt.RecursiveMemoryGPT
+  vocab_size: ${vocab_size}
+  embed_dim: ${embed_dim}
+  num_heads: ${num_heads}
+  n_trunk_layers: ${n_trunk_layers}
+  num_loops: ${num_loops}
+  max_length: ${max_length}
+  rope_base: ${rope_base}
+  num_experts: ${num_experts}
+  peer_heads: ${peer_heads}
+  peer_top_k: ${peer_top_k}
+  sub_key_dim: ${sub_key_dim}
+  peer_query_norm: ${peer_query_norm}
+  peer_activation: ${peer_activation}
+  grad_mode: ${grad_mode}
+  deep_supervision: ${deep_supervision}
+  tie_embeddings: ${tie_embeddings}
+  gradient_checkpointing: ${gradient_checkpointing}

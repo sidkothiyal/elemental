@@ -9,6 +9,9 @@ Training callback configurations for logging and checkpointing.
 | `default.yaml` | Composes wandb + checkpoint callbacks |
 | `wandb.yaml` | Weights & Biases logging callback |
 | `checkpoint.yaml` | Model checkpoint saving callback |
+| `lm_eval_metrics.yaml` | Next-token accuracy + bits-per-byte for LM stages (`MetricsCallback`) |
+| `trial_summary.yaml` | Opt-in `trial_summary.json` writer for autoresearch (not in `default`) |
+| `benchmark.yaml` | Opt-in GPU throughput benchmark (composed via `/benchmark: default`, not in `default`) |
 
 ## Usage
 

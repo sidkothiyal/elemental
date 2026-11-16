@@ -1,0 +1,29 @@
+# Language-model eval metrics (next-token accuracy + bits-per-byte).
+# Referenced as `/callback/lm_eval_metrics@callbacks.metrics`, placed BEFORE
+# `/callback: default` in the experiment defaults so this callback runs ahead of
+# WandbCallback in the broadcast — MetricsCallback injects its results into the
+# metrics dict that WandbCallback then logs (order matters: wandb commits
+# immediately).
+_target_: callback.metrics_callback.MetricsCallback
+
+metrics:
+  next_token_acc:
+    _target_: metrics.next_token_accuracy.NextTokenAccuracy
+    ignore_index: -100
+  bits_per_byte:
+    _target_: metrics.bits_per_byte.BitsPerByte
+    tokenizer_path: ${tokenizer_path}
+    ignore_index: -100
+
+# Eval only: per-token accuracy/bpb over the (B, T, vocab) logits is expensive,
+# and the held-out signal is what we care about. -1 disables a phase.
+phases:
+  train: -1
+  val: 1
+  test: 1
+
+log_per_batch: false
+pred_key: pred
+target_key: target
+transform_pred: null
+transform_target: null

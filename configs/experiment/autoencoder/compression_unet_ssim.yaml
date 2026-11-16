@@ -36,3 +36,9 @@ dtype:
 callbacks:
   checkpoint:
     save_every_n_epochs: 10
+
+# Log reconstructions/targets as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

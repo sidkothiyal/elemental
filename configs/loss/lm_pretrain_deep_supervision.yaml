@@ -1,0 +1,25 @@
+# @package _global_
+# Deep-supervision LM loss (Phase-4 ablation only): next-token CE on the final
+# loop's logits plus averaged CE over all per-loop logits. Requires the model to
+# run with deep_supervision=true (returns a dict {pred, deep_logits}); the dict
+# is namespaced by the trainer to pred/pred and pred/deep_logits.
+loss:
+  _target_: loss.loss_container.LossContainer
+  losses:
+    cross_entropy:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.shifted_teacher_forcing.ShiftedTeacherForcing
+        shift: 0
+        ignore_index: -100
+      pred_key: pred/pred
+      target_key: target
+      weight: 1.0
+    deep_supervision:
+      _target_: loss.loss_container.LossComponent
+      loss_fn:
+        _target_: loss.deep_supervision_ce.DeepSupervisionCE
+        ignore_index: -100
+      pred_key: pred/deep_logits
+      target_key: target
+      weight: 0.5

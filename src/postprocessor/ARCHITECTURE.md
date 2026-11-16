@@ -13,6 +13,9 @@ class PostProcessorPipeline:
 
 ### PostProcessorStep.__call__(data)
 
+0. **Phase gate:** if `step.phases is not None` and `data["phase"]` (set by the trainer)
+   is not in `step.phases`, skip the step entirely. Confines expensive steps (e.g.
+   generation) to specific phases like `[val]`.
 1. Build `kwargs` from `input_mapping`:
    - Special key `"input"` collects all `input/*` entries into a sub-dict
    - Other keys: `kwargs[kwarg_name] = data[data_path]`

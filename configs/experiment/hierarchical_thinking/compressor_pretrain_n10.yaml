@@ -1,0 +1,49 @@
+# @package _global_
+# Stage-1: pretrain the N=10 ("phrase"-scale) sliding Perceiver compressor as
+# a token MAE on FineWeb-EDU. Sizing matches stream 1 of the joint
+# MultiScaleLM (latent_dim=640).
+
+defaults:
+  - /default
+  - /dataset: fineweb_edu
+  - /model: hierarchical_thinking/compressor_mae_n10
+  - /loss: hierarchical_thinking_compressor_mae
+  - /optimizer: adamw
+  - /scheduler: nanochat_warmup_cosine
+  - /callback: default
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: hierarchical_thinking_compressor_pretrain_n10_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/hierarchical_thinking/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false
+
+batch_size: 28
+gradient_accumulation_steps: 2
+num_epochs: 1
+validation_interval: 0
+clip_grad_norm: 1.0
+
+warmup_steps: 500
+total_steps: 30000
+
+seq_len: 2048
+
+# Decode token tensors to text in W&B (tokenizer_path comes from the dataset).
+to_log:
+  input/input: text
+  target: text
+  pred: text
+
+callbacks:
+  wandb:
+    logging_interval: 50
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
+  checkpoint:
+    save_every_n_epochs: 1

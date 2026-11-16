@@ -3,7 +3,11 @@
 
 Usage::
 
-    uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+    uv run python src/tools/train_tokenizer.py +tokenizer=nanochat_bpe
+
+The leading ``+`` adds the ``tokenizer`` group to the composed config —
+``configs/config.yaml`` doesn't list it under ``defaults``, so referencing
+it without ``+`` would raise a Hydra "Could not override 'tokenizer'" error.
 
 The Hydra config under ``configs/tokenizer/`` specifies the corpus source,
 vocab size, and output path. The corpus source is a Hydra-instantiable iterator

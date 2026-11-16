@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel
 
 logger = logging.getLogger(__name__)
 
@@ -15,18 +16,29 @@ logger = logging.getLogger(__name__)
 _DATETIME_SUFFIX_RE = re.compile(r"_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
 
 
-def _unwrap_compiled(obj: Any) -> Any:
-    """Unwrap a torch.compile OptimizedModule to get the original nn.Module.
+def _unwrap_module(obj: Any) -> Any:
+    """Peel training wrappers to reach the original ``nn.Module``.
 
-    torch.compile wraps the model in an OptimizedModule that registers the
-    original model as a submodule under ``_orig_mod``.  This causes
-    ``state_dict()`` to return keys prefixed with ``_orig_mod.``, which are
-    incompatible with the plain model used at load time.  Unwrapping before
-    save/load keeps checkpoint keys stable regardless of compilation state.
+    Two wrappers mangle ``state_dict()`` keys and must be removed before
+    save/load so checkpoints stay portable across compilation and DDP:
+
+    - **torch.compile** wraps the model in an OptimizedModule that registers the
+      original model under ``_orig_mod``, prefixing keys with ``_orig_mod.``.
+    - **DistributedDataParallel** registers the wrapped model under ``module``,
+      prefixing keys with ``module.``. Without this, a checkpoint saved during
+      an 8-GPU DDP run cannot be loaded into a plain (single-GPU / exported)
+      model, and resume into a DDP model would also mismatch.
+
+    Both wrappers can nest in either order (compile-of-DDP or DDP-of-compile),
+    so peel in a loop until neither attribute is present.
     """
-    while hasattr(obj, "_orig_mod"):
-        obj = obj._orig_mod
-    return obj
+    while True:
+        if hasattr(obj, "_orig_mod"):
+            obj = obj._orig_mod  # pylint: disable=protected-access
+        elif isinstance(obj, DistributedDataParallel):
+            obj = obj.module
+        else:
+            return obj
 
 
 def add_state_to_checkpoint(checkpoint: dict[str, Any], obj: Any, obj_type: str) -> None:
@@ -40,12 +52,12 @@ def add_state_to_checkpoint(checkpoint: dict[str, Any], obj: Any, obj_type: str)
     if obj is None:
         return
 
-    obj = _unwrap_compiled(obj)
+    obj = _unwrap_module(obj)
 
     state_dict = None
     if isinstance(obj, dict):
         # Handle dict of objects (e.g., GAN with generator/discriminator)
-        state_dict = {key: _unwrap_compiled(value).state_dict() for key, value in obj.items()}
+        state_dict = {key: _unwrap_module(value).state_dict() for key, value in obj.items()}
     elif hasattr(obj, "state_dict"):
         # Handle single object with state_dict method
         state_dict = obj.state_dict()
@@ -75,7 +87,7 @@ def load_state_from_checkpoint(
     if obj is None:
         return
 
-    obj = _unwrap_compiled(obj)
+    obj = _unwrap_module(obj)
 
     state_dict_key = f"{obj_type}_state_dict"
     state_dict = checkpoint.get(state_dict_key)
@@ -91,6 +103,7 @@ def load_state_from_checkpoint(
         # Handle dict of objects (e.g., GAN with generator/discriminator)
         if isinstance(state_dict, dict) and all(isinstance(v, dict) for v in state_dict.values()):
             for key, value in obj.items():
+                value = _unwrap_module(value)
                 if key in state_dict and hasattr(value, "load_state_dict"):
                     value.load_state_dict(state_dict[key], strict=strict)
         else:
@@ -100,17 +113,22 @@ def load_state_from_checkpoint(
     elif hasattr(obj, "load_state_dict"):
         # Handle single object with load_state_dict method
         load_state_dict_kwargs = {}
-        if not isinstance(obj, (torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler)):
+        # Optimizer / LRScheduler / GradScaler ``load_state_dict`` take no ``strict``.
+        if not isinstance(
+            obj,
+            (torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler, torch.amp.GradScaler),
+        ):
             load_state_dict_kwargs["strict"] = strict
         obj.load_state_dict(state_dict, **load_state_dict_kwargs)
 
 
-def save_checkpoint(
+def save_checkpoint(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     checkpoint_path: str,
     model: nn.Module | nn.ModuleDict,
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
     scheduler: Any | None = None,
     criterion: nn.Module | None = None,
+    scaler: Any | None = None,
     epoch: int | None = None,
     step: int | None = None,
     **kwargs,
@@ -123,6 +141,7 @@ def save_checkpoint(
         optimizer: Optimizer to save (optional).
         scheduler: Scheduler to save (optional).
         criterion: Loss function to save (optional).
+        scaler: GradScaler to save (optional; fp16 AMP loss-scale state).
         epoch: Current epoch number (optional).
         step: Current step number (optional).
         **kwargs: Additional data to save in checkpoint.
@@ -140,6 +159,7 @@ def save_checkpoint(
     add_state_to_checkpoint(checkpoint, optimizer, "optimizer")
     add_state_to_checkpoint(checkpoint, scheduler, "scheduler")
     add_state_to_checkpoint(checkpoint, criterion, "criterion")
+    add_state_to_checkpoint(checkpoint, scaler, "scaler")
 
     # Save to disk
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -149,12 +169,13 @@ def save_checkpoint(
     logger.info("Saved checkpoint: %s", checkpoint_path)
 
 
-def load_checkpoint(
+def load_checkpoint(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     checkpoint_path: str,
     model: nn.Module | nn.ModuleDict | None = None,
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer] | None = None,
     scheduler: Any | None = None,
     criterion: nn.Module | None = None,
+    scaler: Any | None = None,
     map_location: str | torch.device = "cpu",
     strict: bool = True,
     weights_only: bool = False,
@@ -195,6 +216,7 @@ def load_checkpoint(
     load_state_from_checkpoint(optimizer, checkpoint, "optimizer")
     load_state_from_checkpoint(scheduler, checkpoint, "scheduler")
     load_state_from_checkpoint(criterion, checkpoint, "criterion")
+    load_state_from_checkpoint(scaler, checkpoint, "scaler")
 
     logger.info(
         "Checkpoint loaded successfully (epoch: %s, step: %s)",
@@ -202,10 +224,10 @@ def load_checkpoint(
         checkpoint.get("step"),
     )
 
-    return {
-        "epoch": checkpoint.get("epoch"),
-        "step": checkpoint.get("step"),
-    }
+    # Return all non-state metadata (epoch, step, global_optim_step,
+    # dataloader_state, …) so callers can restore resume bookkeeping. The large
+    # ``*_state_dict`` blobs are already loaded into the passed objects above.
+    return {key: value for key, value in checkpoint.items() if not key.endswith("_state_dict")}
 
 
 def _find_latest_numbered_checkpoint(run_dir: str, prefix: str) -> str | None:
@@ -240,7 +262,7 @@ def _find_latest_numbered_checkpoint(run_dir: str, prefix: str) -> str | None:
     return best_path
 
 
-def find_latest_checkpoint(
+def find_latest_checkpoint(  # pylint: disable=too-many-locals
     results_dir: str,
     experiment_name: str,
     checkpoint_preference: list[str] | None = None,

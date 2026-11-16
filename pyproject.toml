@@ -12,7 +12,7 @@ dependencies = [
   "black (>=25.1.0, <26.0.0)",
   "boto3",
   "dill",
-  "datasets",
+  "datasets>=2.21,<4",
   "einops",
   "fire (>=0.6.0, <1.0.0)",
   "fsspec",
@@ -30,6 +30,7 @@ dependencies = [
   "pytest-cov",
   "pytorch-msssim",
   "pyyaml (>=6.0.2, <7.0.0)",
+  "requests>=2.32.2",
   "s3fs",
   "sshfs",
   "tfrecord",
@@ -42,6 +43,7 @@ dependencies = [
   "zstandard",
   "onnxscript>=0.6.2",
   "lpips>=0.1.4",
+  "torchdata>=0.10",
 ]
 
 [tool.uv]

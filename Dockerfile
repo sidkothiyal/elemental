@@ -1,7 +1,19 @@
 # ============================================================================
+# Base images (override per provider via --build-arg for faster pulls).
+#   BUILDER_BASE_IMAGE : builds the venv (base-independent wheels) — keep default.
+#   RUNTIME_BASE_IMAGE : base of the final/pushed image. Set this to a base the
+#                        target provider caches on its hosts so only our thin
+#                        apt+venv layers pull (e.g. runpod/pytorch on RunPod;
+#                        nvidia/cuda on Vast). Both must be Ubuntu 24.04 (py3.12).
+# Defaults preserve the original single-image behavior for local/manual builds.
+# ============================================================================
+ARG BUILDER_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+ARG RUNTIME_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
+# ============================================================================
 # Stage 1: Builder — compile mmcv, flash-attn, and other native extensions
 # ============================================================================
-FROM --platform=linux/amd64 nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
+FROM --platform=linux/amd64 ${BUILDER_BASE_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -59,7 +71,7 @@ RUN rm -rf \
 # ============================================================================
 # Stage 2: Runtime — slim image with only what's needed to run
 # ============================================================================
-FROM --platform=linux/amd64 nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+FROM --platform=linux/amd64 ${RUNTIME_BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -1,5 +1,6 @@
 """Unit tests for src/training/helpers.py — pure functions and moderate-coupling helpers."""
-# pylint: disable=missing-class-docstring,missing-function-docstring,too-few-public-methods
+# pylint: disable=missing-class-docstring,missing-function-docstring
+# pylint: disable=too-few-public-methods,protected-access
 
 import inspect
 import math
@@ -482,6 +483,31 @@ class TestOptimizerStep:
         optimizer_step(optim=optim, parameters=model.parameters(), scaler=None, clip_grad_norm=1.0)
         # not asserting exact clipping value, just that it ran without error
 
+    def test_returns_grad_norm_when_clipping(self):
+        # With clipping enabled, the pre-clip total grad norm is returned (free,
+        # since clip_grad_norm_ computes it). Here grads are all-ones over 4
+        # params → norm = 2.0.
+        model = nn.Linear(2, 2, bias=False)
+        optim = torch.optim.SGD(model.parameters(), lr=0.0)
+        for p in model.parameters():
+            p.grad = torch.ones_like(p)
+        grad_norm = optimizer_step(
+            optim=optim, parameters=model.parameters(), scaler=None, clip_grad_norm=10.0
+        )
+        assert grad_norm == pytest.approx(2.0, rel=1e-5)
+
+    def test_returns_none_without_clipping(self):
+        model = nn.Linear(2, 2)
+        optim = torch.optim.SGD(model.parameters(), lr=0.1)
+        for p in model.parameters():
+            p.grad = torch.ones_like(p)
+        assert (
+            optimizer_step(
+                optim=optim, parameters=model.parameters(), scaler=None, clip_grad_norm=None
+            )
+            is None
+        )
+
     def test_scaler_path_calls_unscale_and_update(self):
         scaler = MagicMock()
         scaler.is_enabled.return_value = True
@@ -501,6 +527,35 @@ class TestOptimizerStep:
         scaler.unscale_.assert_not_called()
         scaler.step.assert_not_called()
         optim.step.assert_called_once()
+
+
+# =========================================================================
+# Trainer._add_derived_metrics
+# =========================================================================
+
+
+@pytest.mark.unit
+class TestAddDerivedMetrics:
+    def test_adds_perplexity_from_cross_entropy(self):
+        from training.trainer import Trainer  # pylint: disable=import-outside-toplevel
+
+        metrics = {"loss_cross_entropy": 2.0, "loss_total": 2.0}
+        Trainer._add_derived_metrics(metrics)
+        assert metrics["perplexity"] == pytest.approx(math.exp(2.0), rel=1e-6)
+
+    def test_noop_without_cross_entropy(self):
+        from training.trainer import Trainer  # pylint: disable=import-outside-toplevel
+
+        metrics = {"loss_mse": 0.5}
+        Trainer._add_derived_metrics(metrics)
+        assert "perplexity" not in metrics
+
+    def test_clamps_huge_loss_to_avoid_overflow(self):
+        from training.trainer import Trainer  # pylint: disable=import-outside-toplevel
+
+        metrics = {"loss_cross_entropy": 1e9}
+        Trainer._add_derived_metrics(metrics)
+        assert math.isfinite(metrics["perplexity"])
 
 
 # =========================================================================

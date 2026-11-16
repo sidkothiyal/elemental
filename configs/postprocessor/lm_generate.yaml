@@ -1,0 +1,24 @@
+# @package _global_
+# Free-running text generation for LM eval logging.
+#
+# Runs `model.generate()` on a short prompt to produce an autoregressive sample —
+# the only honest coherence signal (the `pred` text logged elsewhere is
+# teacher-forced argmax, conditioned on the ground-truth prefix at every step).
+#
+# `phases: [val]` confines generation to validation so it never runs on every
+# training micro-batch. The decoded sample is logged via the `post_processed/
+# generated: text` entry the experiment adds to `to_log`.
+postprocessors:
+  _target_: postprocessor.pipeline.PostProcessorPipeline
+  steps:
+    generate:
+      _target_: postprocessor.pipeline.PostProcessorStep
+      processor:
+        _target_: postprocessor.generate.GeneratePostProcessor
+        max_new_tokens: 64
+        prompt_length: 16
+      input_mapping:
+        model: model
+        input/input: input_data
+      output_key: post_processed/generated
+      phases: [val]

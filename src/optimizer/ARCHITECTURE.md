@@ -55,6 +55,14 @@ parameters: `embedding`, `embed`, `lm_head`, `wte`, `wpe`. A custom model with
 a different naming convention either renames its params or supplies a custom
 predicate via Hydra `_target_:`.
 
+Two such custom predicates ship today, each extending the exclusion list with
+2-D *tables* that would be wrong/wasteful under Newton-Schulz:
+- `is_recursive_memory_matrix_param` / `recursive_memory_default` — adds
+  `expert`, `subkey`, `sub_key`, `loop_emb`, `bank` (the PEER memory bank).
+- `is_hierarchical_matrix_param` / `hierarchical_default` — adds `latent`,
+  `alpha`, `gate`, `pos_emb`, `null_context` (Perceiver compressor latents and
+  cross-attention gates for `HierarchicalLM` / `MultiScaleLM`).
+
 ## WarmupCosineLR (schedulers.py)
 
 The lambda factor at step `s` (where `total_steps = T`, `warmup_steps = W`,

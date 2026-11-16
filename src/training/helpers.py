@@ -300,9 +300,16 @@ def populate_predictions(pred: torch.Tensor | dict[str, torch.Tensor], data: dic
     return data
 
 
-def should_step_optimizer(batch_idx: int, grad_accum_steps: int, total_batches: int) -> bool:
-    """Return True when the optimizer should step (accumulation boundary or final batch)."""
-    return (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == total_batches
+def should_step_optimizer(batch_idx: int, grad_accum_steps: int, total_batches: int | None) -> bool:
+    """Return True when the optimizer should step (accumulation boundary or final batch).
+
+    ``total_batches`` is ``None`` for ``IterableDataset`` loaders whose length is
+    unknown. In that case the tail-flush branch is skipped — we step only on
+    accumulation boundaries.
+    """
+    on_boundary = (batch_idx + 1) % grad_accum_steps == 0
+    on_final = total_batches is not None and (batch_idx + 1) == total_batches
+    return on_boundary or on_final
 
 
 def backward_step(
@@ -328,18 +335,23 @@ def optimizer_step(
     parameters: Any,
     scaler: torch.amp.GradScaler | None,
     clip_grad_norm: float | None,
-) -> None:
+) -> float | None:
     """Run an optimizer step: unscale (if scaled) → clip → step → scaler.update → zero_grad.
 
     Callers must gate this with ``should_step_optimizer(...)`` to respect
     gradient accumulation boundaries.
+
+    Returns the total (pre-clip) gradient norm when clipping is enabled — the
+    ``clip_grad_norm_`` call computes it anyway, so it is free to surface for
+    logging — otherwise ``None``.
     """
     use_scaler = scaler is not None and scaler.is_enabled()
+    grad_norm: float | None = None
     if clip_grad_norm is not None:
         if use_scaler:
             assert scaler is not None  # mypy narrowing
             scaler.unscale_(optim)
-        torch.nn.utils.clip_grad_norm_(parameters, max_norm=clip_grad_norm)
+        grad_norm = float(torch.nn.utils.clip_grad_norm_(parameters, max_norm=clip_grad_norm))
     if use_scaler:
         assert scaler is not None  # mypy narrowing
         scaler.step(optim)
@@ -347,6 +359,7 @@ def optimizer_step(
     else:
         optim.step()
     optim.zero_grad(set_to_none=False)
+    return grad_norm
 
 
 def build_optim_dict_or_single(
@@ -467,7 +480,8 @@ def materialize_and_average_losses(
     total_batches: int,
 ) -> dict[str, float]:
     """Materialize GPU loss tensors to CPU and divide by batch count."""
-    return {key: value.item() / total_batches for key, value in running_loss_gpu.items()}
+    denom = max(total_batches, 1)
+    return {key: value.item() / denom for key, value in running_loss_gpu.items()}
 
 
 def _accumulate_loss(

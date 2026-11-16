@@ -1,0 +1,105 @@
+# @package _global_
+# Hierarchical-thinking causal-AR pretraining on FineWeb-EDU — the CLEAN A/B arm.
+# A byte-for-byte clone of experiment/nanochat/pretrain.yaml, swapping ONLY the
+# model (multi-scale hierarchical instead of nanochat_gpt_d12) and the optimizer
+# partition (Perceiver latents/gates -> AdamW; tower/decoder matrices -> Muon).
+# Everything else — dataset, loss, scheduler, callbacks, tokens, steps, schedule,
+# eval cadence, global batch — is identical, so the architecture is the only
+# variable and the run is matched-token / compute-optimal against nanochat.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/hierarchical_thinking/causal_pretrain
+#
+# Prereq: BPE tokenizer trained first via
+#   uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+
+defaults:
+  - /default
+  - /dataset: fineweb_edu
+  - /model: hierarchical_thinking/causal_lm_v0
+  - /loss: lm_pretrain
+  - /optimizer: muon_adamw_hierarchical
+  - /scheduler: nanochat_warmup_cosine
+  # LM eval metrics (next-token acc + bpb) BEFORE /callback: default so this
+  # callback precedes WandbCallback in the broadcast and its metrics get logged.
+  - /callback/lm_eval_metrics@callbacks.metrics
+  - /callback: default
+  # Free-running generation samples during validation (phases: [val]).
+  - /postprocessor/lm_generate
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: hierarchical_thinking_causal_pretrain_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/hierarchical_thinking/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false  # token shape is constant; benchmark not useful
+
+# torch.compile — tuned for the multi-scale hierarchical model on a long (7500-step)
+# 8×H100 run.
+#   mode=max-autotune-no-cudagraphs: autotuned Triton matmuls (compile cost amortizes
+#     over thousands of steps) WITHOUT CUDA graphs, which conflict with DDP allreduce
+#     hooks + gradient accumulation. reduce-overhead/cudagraphs would be fragile here.
+#   fullgraph=false: the three compressor streams + windowed pooling + top-down gated
+#     cross-attention introduce graph breaks — allow them rather than crash.
+#   dynamic=false: token shape is constant (batch × max_length) and the per-stream
+#     compressed lengths (T/3, T/10, T/30) are static given fixed T, so specialise.
+torch_compile:
+  enabled: false
+  mode: max-autotune-no-cudagraphs
+  fullgraph: false
+  dynamic: false
+
+# Pretraining knobs (override on the command line for smoke runs).
+# Sized for an 8×H100 run at global batch 256 (= per-GPU batch_size × grad_accum ×
+# 8 GPUs = 0.524M tokens/optimizer-step), MATCHED to the nanochat / recursive_memory
+# arms. The hierarchical model adds compressor + coarse-tower activations on top of
+# a d768 decoder; batch_size 16 × grad_accum 2 keeps the per-GPU product at 32 (global
+# batch 256). If it OOMs, drop to 8 and set grad_accum=4 (keep the per-GPU product
+# = 32). On headroom, raise batch_size and lower grad_accum to match.
+batch_size: 4
+gradient_accumulation_steps: 8
+num_epochs: 1
+validation_interval: 0  # epoch-based eval off; use step-based eval below instead
+# Held-out eval every 1k optimizer steps, capped at 50 batches (identical to nanochat).
+validation_interval_steps: 1000
+validation_max_batches: 50
+clip_grad_norm: 1.0
+# Resilience: drop a non-finite accumulation window instead of crashing.
+skip_nonfinite_steps: true
+
+# Scheduler horizon (used by warmup-cosine). Compute-optimal (~Chinchilla 20×) for
+# this ~188M model: 7500 optimizer steps × 0.524M tokens ≈ 3.9B tokens (~21×/param).
+# Identical to the nanochat / recursive_memory arms so all arms are token-comparable.
+warmup_steps: 750
+total_steps: 7500
+min_lr_ratio: 0.001
+
+# Drive run length by optimizer steps, not dataset exhaustion (streaming dataset).
+max_steps: ${total_steps}
+
+# Hand the tokenizer artifact through to dataset + metrics (bpb).
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+# Decode token tensors to text in W&B. The model returns a plain logits tensor
+# (no aux head in the clean A/B), so pred is a tensor as the loggers expect.
+to_log:
+  input/input: text
+  target: text
+  pred: text
+  post_processed/generated: text
+
+callbacks:
+  wandb:
+    logging_interval: 250
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
+  checkpoint:
+    save_every_n_epochs: 1
+    # Step-level checkpoints for the single-epoch streaming run. Counts OPTIMIZER
+    # steps (grad-accum-invariant); 1k so a ~7.5k-step run still produces several
+    # resume points.
+    save_every_n_steps: 1000

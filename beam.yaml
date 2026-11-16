@@ -1,0 +1,175 @@
+# Beam configuration — elemental
+# Docs: https://github.com/your-org/beam
+
+project:
+  name: elemental
+  docker_image: elemental
+  dep_files: [pyproject.toml, uv.lock]
+
+registry:
+  ghcr_image_name: loom-env
+  ghcr_tag: latest
+
+remote:
+  project_dir: /workspace
+  home: /root
+  user: root
+
+ssh:
+  connect_timeout: 20
+  retry_attempts: 5
+  retry_interval: 10
+
+credentials:
+  env_vars:
+    - WANDB_API_KEY
+    - HUGGING_FACE_HUB_TOKEN
+    - GITHUB_USERNAME
+    - RUNPOD_API_KEY
+    - VAST_API_KEY
+    - DOCKER_GHRC_TOKEN
+    - TORCH_COMPILE_S3_REMOTE_CACHE
+    - TORCHINDUCTOR_FX_GRAPH_REMOTE_CACHE
+    - TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE
+    - TORCHINDUCTOR_BUNDLED_AUTOTUNE_REMOTE_CACHE
+    - TORCHINDUCTOR_S3_CACHE_BUCKET
+    - TORCHINDUCTOR_S3_CACHE_REGION
+    - AWS_ACCESS_KEY_ID
+    - AWS_SECRET_ACCESS_KEY
+    - AWS_ENDPOINT_URL
+
+  # -- Credential files synced to remote (path relative to remote_home) --------
+  credential_files:
+    - local: ~/.kaggle/kaggle.json
+      remote: .kaggle/kaggle.json
+      chmod: "600"
+
+providers:
+  runpod:
+    configs:
+      - name: default
+        gpu_type: "NVIDIA A40"
+        gpu_count: 1
+        cloud_tier: secure
+        spot: true
+        recovery_policy: new
+        image: "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+        # Runtime base the registry image is built FROM (cached on RunPod hosts
+        # -> only our apt+venv layers pull). See Dockerfile RUNTIME_BASE_IMAGE.
+        base_image: "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+        container_disk_size: 30
+        volume_size: 50
+        volume_path: /workspace
+        ports: ["22/tcp"]
+        ssh_public_key_files: [~/.ssh/id_ed25519.pub]
+    fallback_order: [default]
+
+  vastai:
+    configs:
+      - name: default
+        instance_label: elemental-training
+        gpu_ram_min: 80          # minimum 24GB VRAM per GPU
+        num_gpus_max: 1
+        dlperf_min: 30
+        offer_type: bid
+        offer_limit: 30
+        pick_strategy: best_value # pick for best DLPerf/$/hr
+        bid_strategy: multiplier  # Add a multiplier when computing the bid
+        bid_multiplier: 1.25      # 25% above host minimum for stability
+        price: 0.080              # floor for progressive-bidding fallback ($/hr)
+        price_max: 0.225          # absolute cap ($/hr)
+        price_step: 0.01
+        disk_gb: 100
+        recovery_policy: new
+        # Vast caches nvidia/cuda base layers on its hosts; == Dockerfile default.
+        base_image: "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+        onstart: "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && chown root:root /root/.ssh /root/.ssh/authorized_keys"
+      - name: 8gpu
+        instance_label: elemental-training-8gpu
+        gpu_ram_min: 80          # minimum 80GB VRAM per GPU
+        num_gpus: 8              # exactly 8 GPUs (gte 8)
+        num_gpus_max: 8          # exactly 8 GPUs (lte 8)
+        dlperf_min: 800
+        offer_type: bid
+        offer_limit: 30
+        pick_strategy: best_value # pick for best DLPerf/$/hr
+        bid_strategy: multiplier  # Add a multiplier when computing the bid
+        bid_multiplier: 1.05       # 5% above host minimum for stability
+        price: 0.080              # floor for progressive-bidding fallback ($/hr)
+        price_max: 10.0           # absolute cap ($/hr)
+        price_step: 0.01
+        disk_gb: 100
+        recovery_policy: new
+        # Vast caches nvidia/cuda base layers on its hosts; == Dockerfile default.
+        base_image: "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+        onstart: "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && chown root:root /root/.ssh /root/.ssh/authorized_keys"
+
+      # ---- Benchmark node configs: exactly 8 GPUs, pinned to one model each ------
+      # `gpu_name` is Vast's model filter. CONFIRM the exact label per model with:
+      #   vastai search offers 'num_gpus=8 gpu_name=<NAME>'
+      # price_max reflects the whole-node $/hr you expect for that model.
+      - name: 8gpu_rtx6000
+        instance_label: elemental-bench-8xrtx6000
+        gpu_ram_min: 90          # RTX PRO 6000 Blackwell = 96GB (reports ~95.6 GiB)
+        gpu_name: "RTX PRO 6000" # whole-token prefix: matches both "... S" and "... WS" variants
+        num_gpus: 8
+        num_gpus_max: 8
+        dlperf_min: 800
+        offer_type: bid
+        offer_limit: 30
+        pick_strategy: best_value
+        bid_strategy: multiplier
+        bid_multiplier: 1.05
+        price: 0.080
+        price_max: 10.0          # ~$8.5–10/hr for 8× RTX PRO 6000
+        price_step: 0.05
+        disk_gb: 100
+        recovery_policy: new
+        base_image: "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+        onstart: "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && chown root:root /root/.ssh /root/.ssh/authorized_keys"
+      - name: 8gpu_a100
+        instance_label: elemental-bench-8xa100
+        gpu_ram_min: 80          # A100 SXM4 80GB (beam applies ~3% GiB tolerance)
+        gpu_name: "A100 SXM4"
+        num_gpus: 8
+        num_gpus_max: 8
+        dlperf_min: 800
+        offer_type: bid
+        offer_limit: 30
+        pick_strategy: best_value
+        bid_strategy: multiplier
+        bid_multiplier: 1.05
+        price: 0.080
+        price_max: 10.0          # ~$8.5–10/hr for 8× A100
+        price_step: 0.05
+        disk_gb: 100
+        recovery_policy: new
+        base_image: "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+        onstart: "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && chown root:root /root/.ssh /root/.ssh/authorized_keys"
+      - name: 8gpu_h100
+        instance_label: elemental-bench-8xh100
+        gpu_ram_min: 80          # H100 SXM 80GB reports ~79.6 GiB; beam applies ~3% GiB tolerance
+        gpu_name: "H100 SXM"
+        num_gpus: 8
+        num_gpus_max: 8
+        dlperf_min: 800
+        offer_type: bid
+        offer_limit: 30
+        pick_strategy: best_value
+        bid_strategy: multiplier
+        bid_multiplier: 1.05
+        price: 0.080
+        price_max: 30.0          # ~$18.5/hr for 8× H100
+        price_step: 0.05
+        disk_gb: 100
+        recovery_policy: new
+        base_image: "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+        onstart: "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && chown root:root /root/.ssh /root/.ssh/authorized_keys"
+    fallback_order: [default]
+
+pulse:
+  interval: 5m            # default pulse cron interval when `beam run` omits --pulse
+  idle_stop: true         # stop the instance when the GPU goes idle (default)
+  gpu_idle_threshold: 5
+  gpu_idle_max_strikes: 3
+  max_retries: 5

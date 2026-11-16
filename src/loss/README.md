@@ -118,6 +118,39 @@ ShiftedTeacherForcing(shift=1, ignore_index=-100)
 Use `shift=0` when the dataset already returns shifted `(input, target)` pairs
 (see `FineWebEduDataset`, `SmolTalkSFTDataset`).
 
+### `masked_cross_entropy.py` — Masked Cross-Entropy
+
+Cross-entropy averaged over positions selected by a boolean mask. Used for
+masked-language-modelling and LLaDA-style masked-discrete-diffusion training
+where loss should fire only at corrupted positions. Pulls `mask` from the
+data container via `LossComponent.context_mapping`.
+
+```python
+MaskedCrossEntropy(ignore_index=-100)
+# forward(pred: (B, T, V), target: (B, T), mask: (B, T)) -> scalar
+```
+
+Internally rewrites unmasked target positions to `ignore_index` and calls
+`F.cross_entropy(pred.transpose(1, 2), ...)`. Returns `0` (with gradient
+zero) when no positions are masked. The hierarchical-thinking compressor MAE and joint
+masked-diffusion configs both use this — see
+`configs/loss/hierarchical_thinking_compressor_mae.yaml` and
+`configs/loss/hierarchical_thinking_masked_diffusion.yaml`.
+
+### `deep_supervision_ce.py` — Deep-Supervision Cross-Entropy
+
+Next-token cross-entropy averaged over per-loop logits for the recursive LM
+(`RecursiveMemoryGPT` with `deep_supervision=True`), which emits logits stacked
+as `(K, B, T, V)`. Applies CE at every loop step against the same targets (the
+TRM/HRM deep-supervision recipe). Only used in the Phase-4 recursion ablations
+— see `configs/loss/lm_pretrain_deep_supervision.yaml`; the lean V0 run returns
+a plain tensor and uses `ShiftedTeacherForcing`.
+
+```python
+DeepSupervisionCE(ignore_index=-100)
+# forward(pred: (K, B, T, V), target: (B, T)) -> scalar
+```
+
 ### `grpo_loss.py` — GRPO clipped surrogate (per-token, masked)
 
 Per-token clipped surrogate for GRPO with optional KL-to-reference. Pulls

@@ -1,0 +1,106 @@
+# @package _global_
+# Recursive-trunk + PEER-memory LM pretraining on FineWeb-EDU (Track-B, Phase 1).
+# Matched-compute parity run vs nanochat_gpt_d12. Mirrors experiment/nanochat/pretrain.yaml,
+# swapping the model (recursive trunk + shared PEER bank) and the optimizer partition
+# (PEER bank/sub-keys/loop-emb -> AdamW; trunk attention + query projections -> Muon).
+#
+# Usage:
+#   uv run python src/trainer.py experiment/recursive_memory/pretrain
+#
+# Prereq: BPE tokenizer trained first via
+#   uv run python src/tools/train_tokenizer.py tokenizer=nanochat_bpe
+
+defaults:
+  - /default
+  - /dataset: fineweb_edu
+  - /model: recursive_memory_gpt_d12eq
+  - /loss: lm_pretrain
+  - /optimizer: muon_adamw_peer
+  - /scheduler: nanochat_warmup_cosine
+  # LM eval metrics (next-token acc + bpb) BEFORE /callback: default so this
+  # callback precedes WandbCallback in the broadcast and its metrics get logged.
+  - /callback/lm_eval_metrics@callbacks.metrics
+  - /callback: default
+  # Free-running generation samples during validation (phases: [val]).
+  - /postprocessor/lm_generate
+  - /torch_compile
+  - /remote_backup: wandb
+  - _self_
+
+experiment_name: recursive_memory_pretrain_${now:%Y-%m-%d}_${now:%H-%M-%S}
+results_dir: results/recursive_memory/
+
+mode: "autoregressive"
+dtype: bfloat16
+channels_last: false
+cudnn_benchmark: false  # token shape is constant; benchmark not useful
+
+# torch.compile — tuned for the recursive trunk + shared PEER bank on a long
+# (7500-step) 8×H100 run.
+#   mode=max-autotune-no-cudagraphs: autotuned Triton kernels (compile cost amortizes
+#     over thousands of steps) WITHOUT CUDA graphs, which conflict with DDP allreduce
+#     hooks, gradient accumulation, and this model's gradient_checkpointing recompute.
+#   fullgraph=false: gradient_checkpointing (recompute-in-backward) and the PEER
+#     per-token expert gather introduce graph breaks — allow them rather than crash.
+#   dynamic=false: token shape is constant (batch × max_length), so specialise on it.
+torch_compile:
+  enabled: true
+  mode: max-autotune-no-cudagraphs
+  fullgraph: false
+  dynamic: false
+
+# Pretraining knobs (override on the command line for smoke runs).
+# Sized for an 8×H100 run at global batch 256 (= per-GPU batch_size × grad_accum ×
+# 8 GPUs = 0.524M tokens/optimizer-step), MATCHED to the nanochat / memory_bank arms.
+# PEER's per-token expert gather (B*T*peer_heads*peer_top_k*d) is memory-heavy and is
+# saved for backward at all 12 (n_trunk_layers*num_loops) PEER calls — the recursive
+# trunk is the most memory-hungry of the three arms. With model.gradient_checkpointing
+# (set true in the model config) recomputing that gather in backward, batch_size 8
+# should fit an 80GB H100; if it OOMs, drop to 4 and set grad_accum=8 (keep the
+# product = 32 per GPU so the global batch stays 256). On headroom, try
+# model.gradient_checkpointing=false for ~30% more throughput. If you still OOM,
+# lower model.peer_top_k or model.peer_heads.
+batch_size: 16
+gradient_accumulation_steps: 2
+num_epochs: 1
+validation_interval: 0  # epoch-based eval off; use step-based eval below instead
+# Held-out eval every 1k optimizer steps, capped at 50 batches (10k would never fire
+# in this ~7.5k-step compute-optimal run).
+validation_interval_steps: 1000
+validation_max_batches: 50
+clip_grad_norm: 1.0
+# Resilience: drop a non-finite accumulation window instead of crashing.
+skip_nonfinite_steps: true
+
+# Scheduler horizon (used by warmup-cosine). Compute-optimal (~Chinchilla 20×) for
+# this ~186M model: 7500 optimizer steps × 0.524M tokens ≈ 3.9B tokens (~21×/param).
+# Identical to the nanochat / memory_bank arms so all three are token-comparable.
+warmup_steps: 750
+total_steps: 7500
+min_lr_ratio: 0.001
+
+# Drive run length by optimizer steps, not dataset exhaustion (streaming dataset).
+max_steps: ${total_steps}
+
+# Hand the tokenizer artifact through to dataset + model overrides.
+tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+# Decode token tensors to text in W&B. The model returns a plain logits tensor in
+# this lean V0 (no deep supervision), so pred is a tensor as the loggers expect.
+to_log:
+  input/input: text
+  target: text
+  pred: text
+  post_processed/generated: text
+
+callbacks:
+  wandb:
+    logging_interval: 250
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
+  checkpoint:
+    save_every_n_epochs: 1
+    # Step-level checkpoints for the single-epoch streaming run. Counts OPTIMIZER
+    # steps (grad-accum-invariant); 1k so a ~7.5k-step run still produces several
+    # resume points.
+    save_every_n_steps: 1000

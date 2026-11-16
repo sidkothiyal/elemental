@@ -61,3 +61,9 @@ callbacks:
     logging_interval: 200
   checkpoint:
     save_every_n_epochs: 10
+
+# Log 5-D clips as videos in W&B.
+to_log:
+  input/input: video
+  target: video
+  pred: video

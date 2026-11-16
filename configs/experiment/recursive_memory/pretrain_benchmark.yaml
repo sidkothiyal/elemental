@@ -1,0 +1,14 @@
+# @package _global_
+# Throughput benchmark for the recursive_memory pretrain arm (heaviest of the three).
+# Composes the real pretrain config and layers the benchmark bundle (short window +
+# BenchmarkCallback, checkpoints/backup/generation disabled). See configs/benchmark/default.yaml.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/recursive_memory/pretrain_benchmark
+#   uv run python src/tools/benchmark_value.py \
+#     --records "results/**/benchmark.json" --price rtx6000=9.25 a100=9.25 h100=18.5
+
+defaults:
+  - /experiment/recursive_memory/pretrain
+  - /benchmark: default
+  - _self_

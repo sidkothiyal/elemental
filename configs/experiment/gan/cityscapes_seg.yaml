@@ -27,3 +27,9 @@ batch_size: 8
 callbacks:
   wandb:
     num_classes: 31
+
+# Log inputs/targets/reconstructions as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

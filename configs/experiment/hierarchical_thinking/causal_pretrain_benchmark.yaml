@@ -1,0 +1,16 @@
+# @package _global_
+# Throughput benchmark for the hierarchical-thinking causal-AR pretrain arm.
+# Composes the real pretrain config and layers the benchmark bundle (short window
+# + BenchmarkCallback, checkpoints/backup/generation disabled). Because params are
+# matched but per-token FLOPs differ from nanochat, this measures the honest
+# value-for-money (tokens/sec, MFU) yardstick. See configs/benchmark/default.yaml.
+#
+# Usage:
+#   uv run python src/trainer.py experiment/hierarchical_thinking/causal_pretrain_benchmark
+#   uv run python src/tools/benchmark_value.py \
+#     --records "results/**/benchmark.json" --price h100=18.5
+
+defaults:
+  - /experiment/hierarchical_thinking/causal_pretrain
+  - /benchmark: default
+  - _self_

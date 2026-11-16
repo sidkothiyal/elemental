@@ -1,0 +1,46 @@
+# @package _global_
+# GPU throughput benchmark for value-for-money analysis. Runs the REAL training loop
+# for a short warmup + measurement window and writes benchmark.json (+ wandb summary)
+# via BenchmarkCallback; disables everything that isn't pure-training throughput.
+#
+# This is a REUSABLE bundle, not a standalone entry point. Compose it into an experiment
+# via a thin wrapper (Hydra can't select a root group with `+group=` from a nested
+# experiment config), e.g. configs/experiment/<arm>/pretrain_benchmark.yaml:
+#   defaults:
+#     - /experiment/<arm>/pretrain
+#     - /benchmark: default
+#     - _self_
+# Then run the wrapper (heaviest arm shown):
+#   uv run python src/trainer.py experiment/recursive_memory/pretrain_benchmark
+#
+# Then rank candidate GPUs by cost-to-train:
+#   uv run python src/tools/benchmark_value.py \
+#     --records "results/**/benchmark.json" --price rtx6000=9.25 a100=9.25 h100=18.5
+#
+# Tips:
+#   * For a clean fail-fast benchmark set skip_nonfinite_steps=false.
+#   * A large p90/median step-time gap suggests a mid-window recompile — raise
+#     callbacks.benchmark.warmup_steps.
+#   * Benchmark on the ACTUAL multi-GPU node you'll rent (measured scaling) rather than
+#     extrapolating from one GPU — matters most for PCIe-only cards (e.g. RTX PRO 6000).
+
+defaults:
+  - /callback/benchmark@callbacks.benchmark
+  - _self_
+
+# End the run right after the window closes. MUST be >= warmup_steps + measure_steps + 1
+# (the +1 lets on_batch_end observe the closing optimizer step, since global_optim_step
+# is stamped one step behind the loop's counter). 20 + 50 + 1 = 71.
+max_steps: 71
+validation_interval: 0 # no epoch-based eval
+validation_interval_steps: 0 # no step-based eval during the window
+log_interval: 5 # sample throughput/peak-mem several times inside the window
+peak_flops_per_sec: null # null → BenchmarkCallback device auto-lookup for MFU
+remote_backup: null # skip checkpoint-artifact upload
+postprocessors: null # drop generation postprocessors (e.g. lm_generate)
+
+callbacks:
+  benchmark:
+    warmup_steps: 20
+    measure_steps: 50
+  checkpoint: null # disable checkpoint writes (null callbacks are skipped by CallbackList)

@@ -29,3 +29,9 @@ dtype:
   _target_: hydra.utils.get_object
   _args_:
     - torch.bfloat16
+
+# Log reconstructions/targets as images in W&B.
+to_log:
+  input/input: image
+  target: image
+  pred: image

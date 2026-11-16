@@ -30,6 +30,7 @@ BOS = "<|bos|>"
 USER = "<|user|>"
 ASSISTANT = "<|assistant|>"
 EOT = "<|eot|>"
+MASK = "<|mask|>"
 DEFAULT_SPECIAL_TOKENS: tuple[str, ...] = (BOS, USER, ASSISTANT, EOT)
 
 
@@ -44,7 +45,7 @@ class ChatMessage:
 class BPETokenizer:
     """Byte-level BPE tokenizer + chat-aware encoding."""
 
-    def __init__(self, tokenizer_path: str):
+    def __init__(self, tokenizer_path: str, *, register_mask: bool = False):
         if not os.path.exists(tokenizer_path):
             raise FileNotFoundError(f"tokenizer artifact not found at {tokenizer_path!r}")
         self._tokenizer = HFTokenizer.from_file(tokenizer_path)
@@ -56,11 +57,19 @@ class BPETokenizer:
                     f"required special token {tok!r} missing from tokenizer at {tokenizer_path!r}"
                 )
             self.special_token_ids[tok] = tok_id
+        if register_mask:
+            # Reserve a virtual ``<|mask|>`` sentinel id one past the real
+            # vocabulary. The HF tokenizer is not modified — this id is never
+            # produced by ``encode()`` nor consumed by ``decode()``; it is
+            # only inserted into already-tokenized streams by masked-diffusion
+            # model code (LLaDA-style training).
+            self.special_token_ids[MASK] = self._tokenizer.get_vocab_size()
 
     @property
     def vocab_size(self) -> int:
-        """Total vocab size including added special tokens."""
-        return self._tokenizer.get_vocab_size()
+        """Total vocab size, including the virtual ``<|mask|>`` sentinel if registered."""
+        base = self._tokenizer.get_vocab_size()
+        return base + (1 if MASK in self.special_token_ids else 0)
 
     @property
     def bos_token_id(self) -> int:
@@ -71,6 +80,15 @@ class BPETokenizer:
     def eot_token_id(self) -> int:
         """ID of the ``<|eot|>`` end-of-turn special token."""
         return self.special_token_ids[EOT]
+
+    @property
+    def mask_token_id(self) -> int:
+        """ID of the virtual ``<|mask|>`` sentinel (only valid when ``register_mask=True``)."""
+        if MASK not in self.special_token_ids:
+            raise RuntimeError(
+                "mask token not registered — pass register_mask=True to BPETokenizer."
+            )
+        return self.special_token_ids[MASK]
 
     def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
         """Encode raw text. Special tokens are NOT inserted unless explicitly requested."""

@@ -28,6 +28,18 @@ Supervised base. Drives the full training/validation/test lifecycle.
 - `run_epoch(epoch)` — one training epoch plus optional validation.
 - `train_batch(batch, ..., *, training=True) -> dict[str, Tensor]` — the single override point. Runs forward + loss inside `torch.autocast` and `torch.set_grad_enabled(training)`. Backward / optimizer.step / grad-clip / per-batch scheduler step are gated on `training=True`.
 - `eval_batch(...)` — one-liner: `return self.train_batch(..., training=False)`.
+- `_validate(epoch, *, log_step=None, max_batches=None)` — one validation pass, shared by epoch-boundary validation and mid-training step validation. Snapshots/restores transient loop state + the model's train/eval mode.
+
+**Mid-training step validation & production logging:**
+- `validation_interval_steps` (config) runs a short held-out eval every N optimizer steps (independent of the epoch-based `validation_interval`); `validation_max_batches` bounds it. Essential for streaming `IterableDataset`s whose epoch never ends. Logs `val/loss_*`, `val/perplexity`, and (with the LM metrics callback) `val/next_token_acc`, `val/bits_per_byte`.
+- `_run_batch_loop(..., max_batches=None, log_step=None)` — `max_batches` caps the loop (bounded eval); `log_step` aligns the final metrics to the global optimizer step.
+- Every `log_interval` steps the trainer also emits `train/optim_step` (the `_global_optim_step` count), `train/tokens_consumed` (cumulative GLOBAL tokens seen, summed across DDP ranks), `train/grad_norm`, `throughput/tokens_per_sec`, `throughput/achieved_tflops`, `throughput/mfu` (when `peak_flops_per_sec` is set), `gpu_mem_allocated_gb`/`gpu_mem_reserved_gb`, and `perplexity`. Per-group LRs are logged as `learning_rate/<sub-optimizer>` (e.g. `learning_rate/muon`, `learning_rate/adamw`).
+  - **Compare LM runs on `train/tokens_consumed` or `train/optim_step`, not the raw `train/step`** — the raw step is a micro-batch counter and differs by `gradient_accumulation_steps` between runs, so it misaligns configs with different micro-batching. The WandbCallback sets `train/tokens_consumed` as the default x-axis for `train/*` panels via `define_metric`.
+- `skip_nonfinite_steps` (config): a NaN/Inf loss drops the accumulation window (counted as `train/skipped_steps`) instead of raising `NaNLossError`.
+
+**Resume:** `_global_optim_step` and `_total_tokens` are saved into the checkpoint and restored on resume (so the LR schedule and `train/tokens_consumed` stay continuous; the legacy `step` field is the micro-batch counter and over-advances the LR schedule under gradient accumulation). These two counters are stamped into the data container **post-optimizer-step** (just before `on_batch_end`), so the value the checkpoint callback persists stays in lockstep with the scheduler's step count — resume then reproduces the exact LR. `_restore_dataloader_state()` replays a `StatefulDataLoader`'s saved stream position so a streaming dataset continues past consumed docs (document-granular: the in-flight packing buffer under one `seq_len+1` window is not persisted).
+
+**Resume epoch selection:** a mid-epoch **step** checkpoint (`checkpoint-step-N.pt`, non-None `step`, in-progress `epoch`) resumes by **re-entering the same epoch** and running it to completion under the restored dataloader position + `max_steps` cap; an epoch-boundary checkpoint (`last`/`best`/`checkpoint-epoch-N`, `step` is None) resumes at the **next** epoch. This is what lets a single-epoch streaming run (`num_epochs=1`, driven by `max_steps`) resume correctly — advancing to `epoch+1` unconditionally would leave `range(1, 1)` and train nothing.
 
 **`_build_*` classmethod hooks (override points):**
 - `_build_model(config, device, use_distributed) -> nn.Module`

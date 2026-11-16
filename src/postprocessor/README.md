@@ -28,6 +28,11 @@ postprocessors:
 
 `unfurl_output: true` merges a dict result directly into the data container (instead of nesting under `output_key`).
 
+`phases: [<phase>, ...]` (optional) confines a step to the given phases (read from
+`data["phase"]`, set by the trainer). `None` (default) runs every phase. Use
+`phases: [val]` to keep an expensive step like `GeneratePostProcessor` (autoregressive
+`model.generate`) off the per-train-batch path and run it only during validation.
+
 ### `base.py` — BasePostProcessor
 
 Abstract base class. Subclasses implement `__call__(**kwargs)`.

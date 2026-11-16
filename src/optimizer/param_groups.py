@@ -71,3 +71,75 @@ def nanochat_default() -> dict[str, ParamPredicate]:
         "muon": is_matrix_block_param,
         "adamw": matches_anything,
     }
+
+
+# PEER bank tables, product sub-keys, and the per-loop conditioning embedding are
+# memory / embedding tables, not reasoning matrices — Newton-Schulz on a
+# (num_experts, d) bank would materialize a (num_experts)^2 intermediate and OOM,
+# so they must be routed to AdamW even though some are 2-D.
+_PEER_ADAMW_TOKENS = ("expert", "subkey", "sub_key", "loop_emb", "bank")
+
+
+def is_recursive_memory_matrix_param(name: str, p: nn.Parameter) -> bool:
+    """Predicate: 2-D reasoning matrix in RecursiveMemoryGPT routable to Muon.
+
+    Like :func:`is_matrix_block_param` but additionally excludes the PEER bank's
+    expert tables / sub-keys and the loop-conditioning embedding. The trunk's
+    attention projections (qkv/out_proj) and the PEER query projections stay on
+    Muon; the bank, sub-keys, loop-emb, token-embedding, lm_head, RMSNorm and
+    BatchNorm params all fall through to AdamW.
+    """
+    if p.ndim != 2:
+        return False
+    lowered = name.lower()
+    excluded_tokens = ("embedding", "embed", "lm_head", "wte", "wpe") + _PEER_ADAMW_TOKENS
+    return not any(tok in lowered for tok in excluded_tokens)
+
+
+def recursive_memory_default() -> dict[str, ParamPredicate]:
+    """Muon (trunk attention + PEER query projections) + AdamW (everything else).
+
+    Used by the recursive-trunk + PEER-memory experiment via
+    ``optimizer_partition: {_target_: optimizer.param_groups.recursive_memory_default}``.
+    """
+    return {
+        "muon": is_recursive_memory_matrix_param,
+        "adamw": matches_anything,
+    }
+
+
+# Perceiver latent arrays are 2-D ``(num_latents, d)`` tables and the aux
+# window positional embedding is a 2-D ``(window, d)`` table — both are
+# lookup/embedding-like, not reasoning matrices, so they must go to AdamW even
+# though they are 2-D. The gate scalars (``alpha``) and null-context vectors are
+# 0-/1-D and already fall through, but the tokens are listed for clarity.
+_HIERARCHICAL_ADAMW_TOKENS = ("latent", "alpha", "gate", "pos_emb", "null_context")
+
+
+def is_hierarchical_matrix_param(name: str, p: nn.Parameter) -> bool:
+    """Predicate: 2-D reasoning matrix in HierarchicalLM / MultiScaleLM routable to Muon.
+
+    Like :func:`is_matrix_block_param` but additionally excludes the Perceiver
+    compressors' learnable latent arrays and any positional-embedding tables.
+    The tower/decoder attention + MLP matrices, cross-attention projections, and
+    compressor cross-attention projections stay on Muon; token-embedding,
+    ``lm_head``, latents, pos-embeddings, RMSNorm/LayerNorm scales and all 1-D
+    params fall through to AdamW.
+    """
+    if p.ndim != 2:
+        return False
+    lowered = name.lower()
+    excluded_tokens = ("embedding", "embed", "lm_head", "wte", "wpe") + _HIERARCHICAL_ADAMW_TOKENS
+    return not any(tok in lowered for tok in excluded_tokens)
+
+
+def hierarchical_default() -> dict[str, ParamPredicate]:
+    """Muon (tower/decoder/compressor matrices) + AdamW (everything else).
+
+    Used by the hierarchical-thinking experiments via
+    ``optimizer_partition: {_target_: optimizer.param_groups.hierarchical_default}``.
+    """
+    return {
+        "muon": is_hierarchical_matrix_param,
+        "adamw": matches_anything,
+    }

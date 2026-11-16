@@ -38,3 +38,7 @@ dtype:
 # Trainer emits the graph's scalar outputs keyed by name; rename for display.
 metrics_format:
   distillation: distillation_loss
+
+# Log the input image in W&B (pred/target shown as caption labels / are features).
+to_log:
+  input/input: image

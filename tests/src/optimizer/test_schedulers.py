@@ -65,6 +65,36 @@ class TestWarmupCosine:
         sched2.step()
         assert opt.param_groups[0]["lr"] == pytest.approx(opt2.param_groups[0]["lr"], rel=1e-9)
 
+    def test_numerical_100step_example(self):
+        # Concrete example: base_lr=1e-3, warmup=10, total=100, min_lr_ratio=0.1
+        # Warmup: lr = (step+1)/10 * base_lr
+        # Decay: lr = (0.1 + 0.9 * 0.5 * (1 + cos(pi * progress))) * base_lr
+        p = nn.Parameter(torch.zeros(2, 2))
+        opt = AdamW([p], lr=1e-3)
+        sched = WarmupCosineLR(opt, warmup_steps=10, total_steps=100, min_lr_ratio=0.1)
+
+        def lr():
+            return opt.param_groups[0]["lr"]
+
+        def step_to(target):
+            for _ in range(target - sched.last_epoch):
+                sched.step()
+
+        # Warmup checkpoints (before any step, last_epoch=-1 → step 0 already applied)
+        assert lr() == pytest.approx(1e-4, rel=1e-6)  # step 0: 1/10 * 1e-3
+        step_to(4)
+        assert lr() == pytest.approx(5e-4, rel=1e-6)  # step 4: 5/10 * 1e-3
+        step_to(9)
+        assert lr() == pytest.approx(1e-3, rel=1e-6)  # step 9: 10/10 * 1e-3
+
+        # Cosine decay checkpoints
+        step_to(10)
+        assert lr() == pytest.approx(1e-3, rel=1e-5)  # progress=0.00, cos(0)=1
+        step_to(55)
+        assert lr() == pytest.approx(5.5e-4, rel=1e-5)  # progress=0.50, cos(π/2)=0
+        step_to(100)
+        assert lr() == pytest.approx(1e-4, rel=1e-5)  # progress=1.00, cos(π)=-1 → min
+
     def test_works_with_multi_optimizer(self):
         from optimizer.multi_optimizer import MultiOptimizer
 

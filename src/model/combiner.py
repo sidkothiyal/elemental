@@ -122,7 +122,7 @@ class DiffusionCombiner(nn.Module):
         return self.model(x, *model_args)
 
 
-class CrossAttentionBlock(nn.Module):
+class CrossAttentionBlock(nn.Module):  # pylint: disable=too-many-instance-attributes
     """Configurable cross-attention block with optional self-attention, feedforward, and AdaLN.
 
     Can be configured from a minimal cross-attention-only block (matching the
@@ -141,9 +141,16 @@ class CrossAttentionBlock(nn.Module):
             feedforward sub-layers (requires both to be present). Modulation
             params are passed via ``adaln_modulation`` in ``forward``.
         dropout: Dropout rate for attention and feedforward layers.
+        tanh_gate: If True, gate every residual sub-layer (self-attn,
+            cross-attn, feedforward) with its own learned scalar
+            ``tanh(alpha)``, with ``alpha`` initialised to zero. The block
+            then warm-starts to the identity, which is the Flamingo-style
+            recipe for grafting cross-attention onto an existing tower
+            without destabilising early training. Mutually exclusive with
+            ``adaln`` (AdaLN already provides per-sub-layer gates).
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         embed_dim: int,
         num_heads: int,
@@ -151,14 +158,20 @@ class CrossAttentionBlock(nn.Module):
         ff_dim: int | None = None,
         adaln: bool = False,
         dropout: float = 0.0,
+        tanh_gate: bool = False,
     ) -> None:
         super().__init__()
         self.use_self_attention = self_attention
         self.use_ff = ff_dim is not None
         self.use_adaln = adaln
+        self.use_tanh_gate = tanh_gate
 
         if adaln and not (self_attention and ff_dim):
             raise ValueError("AdaLN requires both self_attention=True and ff_dim to be set")
+        if adaln and tanh_gate:
+            raise ValueError(
+                "tanh_gate is redundant with AdaLN (which already provides per-sub-layer gates)."
+            )
 
         # ── Self-attention (optional) ──
         if self_attention:
@@ -184,6 +197,16 @@ class CrossAttentionBlock(nn.Module):
                 nn.Linear(ff_dim, embed_dim),
                 nn.Dropout(dropout),
             )
+
+        # ── Flamingo-style tanh gates (optional) ──
+        # One learned scalar per active sub-layer, initialised to zero so the
+        # block returns its input unchanged at step 0.
+        if tanh_gate:
+            if self_attention:
+                self.self_attn_alpha = nn.Parameter(torch.zeros(()))
+            self.cross_attn_alpha = nn.Parameter(torch.zeros(()))
+            if ff_dim is not None:
+                self.ff_alpha = nn.Parameter(torch.zeros(()))
 
     def forward(
         self,
@@ -217,6 +240,8 @@ class CrossAttentionBlock(nn.Module):
             attn_out, _ = self.self_attn(x_norm, x_norm, x_norm)
             if gate1 is not None:
                 attn_out = attn_out * gate1.unsqueeze(1)
+            if self.use_tanh_gate:
+                attn_out = attn_out * torch.tanh(self.self_attn_alpha)
             x = residual + attn_out
 
         # ── Cross-attention (plain pre-norm, no timestep modulation) ──
@@ -224,6 +249,8 @@ class CrossAttentionBlock(nn.Module):
             residual = x
             x_norm = self.cross_attn_norm(x)
             attn_out, _ = self.cross_attn(x_norm, context, context)
+            if self.use_tanh_gate:
+                attn_out = attn_out * torch.tanh(self.cross_attn_alpha)
             x = residual + attn_out
 
         # ── Feedforward ──
@@ -235,6 +262,8 @@ class CrossAttentionBlock(nn.Module):
             ff_out = self.ff(x_norm)
             if gate2 is not None:
                 ff_out = ff_out * gate2.unsqueeze(1)
+            if self.use_tanh_gate:
+                ff_out = ff_out * torch.tanh(self.ff_alpha)
             x = residual + ff_out
 
         return x

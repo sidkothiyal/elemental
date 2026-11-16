@@ -33,6 +33,13 @@ dataloader: null
 
 # Top-level knobs (referenced by env / rollout_buffer / rl configs).
 tokenizer_path: artifacts/tokenizer/nanochat_bpe.json
+
+# Decode token tensors to text in W&B. RL data-container keys vary; absent
+# keys are skipped by the callback, so this is a safe superset.
+to_log:
+  input/input: text
+  target: text
+  pred: text
 grpo_prompts_per_batch: 8
 grpo_group_size: 8
 grpo_capacity: 64  # prompts_per_batch * group_size
@@ -92,6 +99,7 @@ resume_training: false
 callbacks:
   wandb:
     logging_interval: 1
-    log_text_data: false
+    tokenizer: ${tokenizer_path}
+    tokenizer_type: bpe
   checkpoint:
     save_every_n_epochs: 5

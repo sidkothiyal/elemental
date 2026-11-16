@@ -74,11 +74,29 @@ Streaming `IterableDataset` that pulls FineWeb-EDU documents from HuggingFace,
 tokenizes with the project BPE, separates docs with `<|bos|>`, and packs into
 fixed `(seq_len + 1)`-token windows. Yields already-shifted training examples
 `{"input": tokens[:-1], "target": tokens[1:]}`, so `ShiftedTeacherForcing(shift=0)`
-works directly. Sharding (rank × DataLoader worker) is performed inside
-`__iter__`; the trainer skips `DistributedSampler` for `IterableDataset`s.
+works directly. Sharding splits two ways: the DDP-rank (node) dimension is
+sharded inside `__iter__` via `split_dataset_by_node`, while the DataLoader-worker
+dimension is left to HF `datasets`, which auto-shards across workers on its own.
+Sharding the worker dimension here too would double-shard it and silently drop
+`1 - 1/num_workers` of the corpus (e.g. 75% at `num_workers=4`). The trainer skips
+`DistributedSampler` for `IterableDataset`s.
 
 The pure packer `pack_token_stream(text_iter, tokenizer, seq_len)` is exposed
 for unit tests and reuse.
+
+**Held-out split (`holdout_mod`/`holdout_residue`/`holdout_mode`/`holdout_key`):**
+hashes each document id into `holdout_mod` buckets via `zlib.crc32` (stable across
+processes/workers, unlike `hash()`) and keeps/drops bucket `holdout_residue`.
+`holdout_mode="exclude"` (training) and `"keep"` (eval) with the same `(mod, residue)`
+are exact complements, so a train and val loader over the same stream are guaranteed
+disjoint regardless of sharding. The pure predicate `holdout_keep(...)` is unit-tested.
+Disabled (`holdout_mod=None`) by default.
+
+**Stateful resume:** `state_dict()` / `load_state_dict()` delegate to the underlying
+HF `IterableDataset` (datasets ≥ 2.20) at HF-document granularity (the sub-window
+packing buffer is not persisted). Paired with a `torchdata.stateful_dataloader.StatefulDataLoader`
+train loader, the checkpoint callback saves this state and `Trainer._restore_dataloader_state`
+replays it so resume continues past consumed docs instead of restarting the stream.
 
 ### `smoltalk_sft_dataset.py` — SmolTalk-style SFT dataset
 

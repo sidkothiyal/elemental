@@ -72,7 +72,25 @@ Also authenticate Docker with GHCR:
 echo $GITHUB_TOKEN | docker login ghcr.io -u $GITHUB_USERNAME --password-stdin
 ```
 
-The image is tagged as `ghcr.io/$GITHUB_USERNAME/loom-env:latest` (configured in `beam.yaml`).
+The image is tagged per provider — `ghcr.io/$GITHUB_USERNAME/loom-env:latest-<provider>`
+(e.g. `latest-runpod`, `latest-vastai`); a provider-less/manual build uses plain `latest`.
+The tag name is configured via `registry.ghcr_image_name`/`ghcr_tag` in `beam.yaml`.
+
+### Provider-optimized base images (faster instance pulls)
+
+The `Dockerfile` takes a `RUNTIME_BASE_IMAGE` build arg (default
+`nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04`) that sets the base of the final image. `beam`
+builds each provider's image `FROM` a base that provider **already caches on its hosts**, so a
+fresh instance only pulls our thin apt+venv layers instead of the whole ~10GB image:
+
+- **RunPod** → `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404` (RunPod's own cached pod image)
+- **Vast.ai** → `nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04` (Vast caches nvidia/cuda base layers)
+
+Set per provider via `providers.<provider>.configs[*].base_image` in `beam.yaml`. We keep our own
+self-contained venv (torch 2.10) layered on top — the base's torch is unused. Build manually with:
+```bash
+docker build --build-arg RUNTIME_BASE_IMAGE=runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 .
+```
 
 ---
 
