@@ -1,5 +1,10 @@
 # CLAUDE.md — elemental
 
+Start with [AGENTS.md](AGENTS.md), the outermost agent guide and directory lookup table.
+It links the maintained subsystem guides, [GLOSSARY.md](GLOSSARY.md), current status,
+and remaining work. Treat implementation as the source of truth when older examples
+in this file differ; update relevant guides when correcting or extending behavior.
+
 **elemental** is a modular PyTorch ML training library for image compression autoencoders, classifiers, diffusion models, GANs, masked autoencoders, and autoregressive LMs. Config via [Hydra](https://hydra.cc/); tracking via W&B.
 
 ## Tooling

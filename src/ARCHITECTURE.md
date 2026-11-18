@@ -14,7 +14,7 @@ Class hierarchy that owns the epoch loop, batch step, and initialization.
 - `gan_trainer.py` — `class GANTrainer(Trainer)`. Inherits `_build_optimizer` / `_build_scheduler` from base (shared helpers auto-detect ModuleDict → dict-of-optimizers).
 - `customizable_trainer.py` — `class CustomizableTrainer(Trainer)`. Overrides `train_batch` to execute a user-defined `GraphNode` per batch. Config-driven `metrics_format` for metric naming.
 - `graph_trainer.py` — `class GraphTrainer`. Standalone graph-execution trainer (does not inherit from `Trainer`). Manages `DependencyResolver`, `GraphExecutor`, and epoch loop for fully declarative pipelines.
-- `rl_trainer.py` — `class RLTrainer(Trainer)` skeleton (stubs raise `NotImplementedError`).
+- `rl_trainer.py` — `class RLTrainer(Trainer)` implements rollout collection, policy updates, and simulation evaluation; see [current integration limits](../docs/STATUS.md).
 - `builder.py` — `build_trainer(config_file, local_rank, overrides) -> Trainer | GraphTrainer`; composes Hydra config, dispatches `mode: graph` to `GraphTrainer` early. Other modes go through `_trainer_class_for(config.mode)` → `cls._build_{model,optimizer,scheduler,loss,scaler}` classmethods.
 ### Trainer dispatch (`config.mode`)
 
@@ -24,7 +24,7 @@ Class hierarchy that owns the epoch loop, batch step, and initialization.
 | `gan` | `GANTrainer` | Three-phase imperative GAN |
 | `customizable` | `CustomizableTrainer` | Per-batch graph, inherits full Trainer lifecycle |
 | `graph` | `GraphTrainer` | Standalone graph executor, own epoch loop |
-| `rl` | `RLTrainer` | Stub |
+| `rl` | `RLTrainer` | Rollout/update loop; PPO and GRPO components, with integration limits documented in STATUS.md |
 
 ### Key methods
 

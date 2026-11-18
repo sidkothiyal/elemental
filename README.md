@@ -1,5 +1,9 @@
 # Elemental
 
+Project navigation: [AGENTS.md](AGENTS.md) contains the directory-guide lookup table;
+[GLOSSARY.md](GLOSSARY.md) defines project terms. See [current status](docs/STATUS.md)
+and [remaining work](docs/ROADMAP.md) for implementation-backed support and limitations.
+
 A modular PyTorch ML training library supporting image compression, classification, generative models (diffusion, GANs), and autoregressive language models. Configuration is managed by [Hydra](https://hydra.cc/), experiments are tracked with [Weights & Biases](https://wandb.ai/).
 
 ## Key Features

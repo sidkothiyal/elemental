@@ -2,6 +2,11 @@
 
 High-level architecture reference for the elemental ML training library.
 
+Start with [AGENTS.md](AGENTS.md) for the maintained directory-guide lookup table.
+See [current status](docs/STATUS.md) and [remaining work](docs/ROADMAP.md) for reconciled
+implementation boundaries. The actual source and composed configs take precedence over
+historical walkthroughs below.
+
 ## Project Structure
 
 ```

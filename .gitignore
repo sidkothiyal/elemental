@@ -14,6 +14,10 @@ models/
 
 # Logs / Temp files
 autoresearch/runs/*
+!autoresearch/runs/AGENTS.md
+!autoresearch/runs/torch_compile_1e8956/
+autoresearch/runs/torch_compile_1e8956/*
+!autoresearch/runs/torch_compile_1e8956/AGENTS.md
 debug/
 exports/
 outputs/
@@ -49,5 +53,9 @@ deploy/logs/
 .coverage*
 htmlcov/
 
-# Local planning documents
-/.plans/
+# Local planning documents stay private; retain only directory navigation guides.
+/.plans/*
+!/.plans/AGENTS.md
+!/.plans/*/
+/.plans/*/*
+!/.plans/*/AGENTS.md
